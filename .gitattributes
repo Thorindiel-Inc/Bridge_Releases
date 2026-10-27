@@ -1,0 +1,2 @@
+*.bas -text
+manifest.txt text eol=lf
