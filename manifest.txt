@@ -2,6 +2,5 @@
 # id|version|changelog   (blank lines and # comments are ignored;
 # changelog may be empty)
 bridge-macro-updater|2026-10-30a|Strips Attribute lines (VB_Name) from downloaded modules before writing them in
-global-input-pull|2026-10-27d|Reads the global sheet and cell straight from TARGETS (one input sheet per bridge); two-pass sheet calculation; bridge must be listed in WORKBOOKS
-input-pull|2026-10-30a|One pull macro for all workbooks: matches G_ named cells, second file for Tablo/Sekil/Sayfa numbers
-report-lists|2026-10-30b|Report sheets found by name (1_RAPOR, 2_YUKLER...); optional link target in column BG
+input-pull|2026-10-30b|Third optional file for G_ names that are not in the 1-2 workbook (e.g. G_PHI3 from 3A)
+report-lists|2026-10-30d|Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic

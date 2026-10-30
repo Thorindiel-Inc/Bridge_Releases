@@ -21,6 +21,13 @@ Option Explicit
 '                 G_ONCEKI_NUMARA) -> its G_SON_NUMARA (last Tablo / Sekil /
 '                 Sayfa, 3 cells) is written into G_ONCEKI_NUMARA here.
 '                 Cancel = numbers not changed.
+'    3. others  : ONLY when some G_ names here were not found in the 1-2
+'                 workbook - another chapter workbook that has them (e.g. 3A
+'                 for G_PHI3). Fills only the missing names, so 1-2 always
+'                 wins; asked again while names are still missing. A name
+'                 whose cells here are all formulas is an export of this
+'                 workbook (G_PHI3 in 3A) and is never asked for.
+'                 Cancel = leave them as they are.
 '    The same file may be chosen twice. Each dialog starts in the folder of
 '    the file chosen last time (kept in the workbook's document properties).
 '
@@ -31,14 +38,15 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "input-pull"
-Private Const SCRIPT_VERSION As String = "2026-10-30a"
-Private Const SCRIPT_CHANGELOG As String = "One pull macro for all workbooks: matches G_ named cells, second file for Tablo/Sekil/Sayfa numbers"
+Private Const SCRIPT_VERSION As String = "2026-10-30b"
+Private Const SCRIPT_CHANGELOG As String = "Third optional file for G_ names that are not in the 1-2 workbook (e.g. G_PHI3 from 3A)"
 
 Private Const NAME_PREFIX As String = "G_"
 Private Const NUM_SOURCE As String = "G_SON_NUMARA"
 Private Const NUM_TARGET As String = "G_ONCEKI_NUMARA"
 Private Const PROP_INPUT As String = "DEGER_CAGIRMA_INPUT_PATH"
 Private Const PROP_NUMBERS As String = "DEGER_CAGIRMA_NUMARA_PATH"
+Private Const PROP_OTHER As String = "DEGER_CAGIRMA_DIGER_PATH"
 Private Const MSG_TITLE As String = "DEGER_CAGIRMA"
 
 Private nWritten As Long, nSame As Long, nFormula As Long, nError As Long
@@ -51,6 +59,8 @@ Public Sub DEGER_CAGIRMA()
     Dim nm As Name, sName As String, tR As Range, sR As Range
     Dim nNames As Long, missing As String, nMissing As Long, bad As String, nBad As Long
     Dim msg As String, numMsg As String
+    Dim missNames() As String, wbOther As Workbook, openedOther As Boolean, pathOther As String
+    Dim otherMsg As String, nFound As Long, i As Long
 
     On Error GoTo Fail
     nWritten = 0: nSame = 0: nFormula = 0: nError = 0: formulaList = ""
@@ -89,8 +99,10 @@ Public Sub DEGER_CAGIRMA()
             If tR Is Nothing Then
                 nBad = nBad + 1: bad = bad & vbLf & "  " & sName & " here does not point to cells (#REF?)"
             ElseIf sR Is Nothing Then
+                If tR.HasFormula = True Then GoTo NextName   ' all formulas here = a value this workbook exports (e.g. G_PHI3 in 3A)
                 nMissing = nMissing + 1
-                If nMissing <= 10 Then missing = missing & vbLf & "  " & sName
+                ReDim Preserve missNames(1 To nMissing)
+                missNames(nMissing) = sName
             ElseIf Not SameShape(sR, tR) Then
                 nBad = nBad + 1: bad = bad & vbLf & "  " & sName & ": " & sR.Address(False, False) & " in the source, " & tR.Address(False, False) & " here (size differs)"
             Else
@@ -98,6 +110,7 @@ Public Sub DEGER_CAGIRMA()
                 nNames = nNames + 1
             End If
         End If
+NextName:
     Next nm
 
     ' 2. Tablo / Sekil / Sayfa numbers of the previous chapter
@@ -118,7 +131,53 @@ Public Sub DEGER_CAGIRMA()
     End If
     SetProp PROP_INPUT, pathIn
 
+    ' 3. names not in the 1-2 workbook, from other chapter workbooks
+    Do While nMissing > 0
+        pathOther = PickFile(GetProp(PROP_OTHER), "3/3  Not in " & wbIn.Name & ": " & ListNames(missNames, nMissing) & _
+                             " - choose the workbook that has them (Cancel = leave as they are)")
+        If pathOther = "" Then Exit Do
+        openedOther = False
+        If StrComp(pathOther, wbIn.FullName, vbTextCompare) = 0 Then
+            Set wbOther = wbIn
+        ElseIf Not wbNum Is Nothing And StrComp(pathOther, pathNum, vbTextCompare) = 0 Then
+            Set wbOther = wbNum
+        Else
+            Set wbOther = OpenSource(pathOther, openedOther)
+        End If
+        If wbOther Is Nothing Then Exit Do
+        nFound = 0
+        i = 1
+        Do While i <= nMissing
+            Set tR = TargetRange(missNames(i))
+            Set sR = FindRange(wbOther, missNames(i))
+            If sR Is Nothing Then
+                i = i + 1
+            Else
+                If SameShape(sR, tR) Then
+                    CopyCells sR, tR, missNames(i)
+                    otherMsg = otherMsg & vbLf & "  " & missNames(i) & " from " & wbOther.Name
+                Else
+                    nBad = nBad + 1: bad = bad & vbLf & "  " & missNames(i) & ": " & sR.Address(False, False) & " in " & wbOther.Name & ", " & tR.Address(False, False) & " here (size differs)"
+                End If
+                nFound = nFound + 1
+                missNames(i) = missNames(nMissing)   ' drop entry i
+                nMissing = nMissing - 1
+            End If
+        Loop
+        If openedOther Then openedOther = False: wbOther.Close SaveChanges:=False
+        Set wbOther = Nothing
+        If nFound = 0 Then
+            MsgBox "That workbook has none of the missing names.", vbExclamation, MSG_TITLE
+        Else
+            SetProp PROP_OTHER, pathOther
+        End If
+    Loop
+    For i = 1 To nMissing
+        If i <= 10 Then missing = missing & vbLf & "  " & missNames(i)
+    Next i
+
     msg = nNames & " names copied from " & wbIn.Name & ": " & nWritten & " cells changed, " & nSame & " already equal." & vbLf & numMsg
+    If otherMsg <> "" Then msg = msg & "From other workbooks:" & otherMsg & vbLf
     If nMissing > 0 Then msg = msg & nMissing & " names of this workbook are not in the source (left as they are):" & missing & IIf(nMissing > 10, vbLf & "  ...", "") & vbLf
     If nBad > 0 Then msg = msg & nBad & " names could not be copied:" & bad & vbLf
     If nFormula > 0 Then msg = msg & nFormula & " cells hold a formula here and a different value in the source (kept):" & formulaList & vbLf
@@ -131,6 +190,7 @@ Done:
         Application.ScreenUpdating = True
         Application.Calculate
     End If
+    If openedOther Then openedOther = False: wbOther.Close SaveChanges:=False
     If openedNum Then openedNum = False: wbNum.Close SaveChanges:=False
     If openedIn Then openedIn = False: wbIn.Close SaveChanges:=False
     If busy Then MsgBox msg, IIf(nBad + nMissing + nFormula + nError > 0, vbExclamation, vbInformation), MSG_TITLE
@@ -143,6 +203,7 @@ Fail:
         Application.EnableEvents = True
         Application.ScreenUpdating = True
     End If
+    If openedOther Then wbOther.Close SaveChanges:=False
     If openedNum Then wbNum.Close SaveChanges:=False
     If openedIn Then wbIn.Close SaveChanges:=False
     On Error GoTo 0
@@ -222,6 +283,14 @@ End Function
 ' "INPUT!G_X" (sheet scope) -> "G_X"
 Private Function ShortName(fullName As String) As String
     ShortName = Mid$(fullName, InStrRev(fullName, "!") + 1)
+End Function
+
+Private Function ListNames(arr() As String, n As Long) As String
+    Dim i As Long
+    For i = 1 To n
+        If i > 5 Then ListNames = ListNames & " ...": Exit Function
+        ListNames = ListNames & IIf(i > 1, ", ", "") & arr(i)
+    Next i
 End Function
 
 Private Function JoinValues(r As Range) As String
