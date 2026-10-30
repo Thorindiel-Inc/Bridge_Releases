@@ -4,9 +4,10 @@ Option Explicit
 '  GLOBAL_CAGIRMA - pull this workbook's INPUT values from GLOBAL_INPUT.xlsx
 ' ----------------------------------------------------------------------------
 '  Replaces DEGER_CAGIRMA / KIRIS_CAGIRMA (hard-coded ranges, one divergent
-'  copy per workbook). Here the cells to fill come from the TARGETS sheet of
-'  the global file, matched BY KEY, so layout differences between workbooks
-'  no longer matter.
+'  copy per workbook). Here the cells to fill AND the global cell to read from
+'  both come from the TARGETS sheet of the global file (generated per workbook),
+'  so layout differences between workbooks no longer matter. The global sheets
+'  are read at FIXED addresses: never insert rows or columns on them.
 '
 '  NAME THE MODULE something else than GLOBAL_CAGIRMA (for example
 '  modGlobalCagirma): a module with the same name as its macro breaks
@@ -19,9 +20,12 @@ Option Explicit
 '      file is already open it uses that open copy (unsaved edits included),
 '      says so, and leaves it open.
 '   3. Bridge = WORKBOOKS sheet default, or the one you type (GLOBAL_CAGIRMA_SEC).
-'   4. For every TARGETS row of this workbook: writes the BRIDGES value of
-'      that bridge as a VALUE (Value2: numbers are never converted through
-'      text, so a decimal comma cannot corrupt them).
+'      The bridge is the NAME of its input sheet in the global file (KP-019, KP-018).
+'   4. For every TARGETS row of this workbook: reads the global cell (column
+'      G of TARGETS, on the bridge sheet when column F is @BRIDGE, else on the
+'      named sheet, e.g. KIRIS_INPUT) and writes it as a VALUE (Value2:
+'      numbers are never converted through text, so a decimal comma cannot
+'      corrupt them).
 '
 '  RULES
 '   * a TYPED cell that holds a FORMULA is skipped and reported
@@ -35,14 +39,12 @@ Option Explicit
 '     (none of the 16 workbooks has sheet or workbook event code)
 ' ============================================================================
 
-Private Const SCRIPT_VERSION As String = "2026-10-27b"
-Private Const SCRIPT_CHANGELOG As String = "Review fixes: reuse an already open global file, skip empty strings, list replaced DERIVED formulas, guard multi-cell and failed writes, manual calc while writing"
+Private Const SCRIPT_VERSION As String = "2026-10-27d"
+Private Const SCRIPT_CHANGELOG As String = "Reads the global sheet and cell straight from TARGETS (one input sheet per bridge); two-pass sheet calculation; bridge must be listed in WORKBOOKS"
 Private Const SCRIPT_ID As String = "global-input-pull"
 
 Private Const PROP_PATH As String = "GLOBAL_INPUT_PATH"
-Private Const BRIDGES_HEADER_ROW As Long = 4
 Private Const MAX_LISTED As Long = 10
-Private Const MARKER As String = "###"
 
 ' Entry 1: default bridge of this workbook.
 Public Sub GLOBAL_CAGIRMA()
@@ -52,7 +54,7 @@ End Sub
 ' Entry 2: ask which bridge.
 Public Sub GLOBAL_CAGIRMA_SEC()
     Dim b As String
-    b = InputBox("Bridge column of GLOBAL_INPUT (BRIDGES sheet header), e.g. KP-019:", "GLOBAL_CAGIRMA")
+    b = InputBox("Bridge = name of its input sheet in GLOBAL_INPUT, e.g. KP-019:", "GLOBAL_CAGIRMA")
     If Len(Trim$(b)) = 0 Then Exit Sub
     Call PullGlobalInput(Trim$(b), False)
 End Sub
@@ -73,23 +75,25 @@ End Sub
 Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Boolean)
 
     Dim gWb As Workbook
-    Dim wsBr As Worksheet, wsTg As Worksheet, wsWb As Worksheet
+    Dim gWs As Worksheet, wsTg As Worksheet, wsWb As Worksheet, gSh As Worksheet
+    Dim pass As Long
+    Dim gsName As String, lastGsName As String
     Dim path As String, wbId As String, bridge As String
-    Dim keyRow As Object
-    Dim i As Long, lastRow As Long, bridgeCol As Long
+    Dim i As Long, lastRow As Long
     Dim tg As Variant
-    Dim key As String, sh As String, addr As String, kind As String
+    Dim key As String, sh As String, addr As String, kind As String, gs As String, gc As String
+    Dim gCell As Range
     Dim v As Variant
     Dim target As Range
     Dim ws As Worksheet
     Dim wb As Workbook
     Dim nWritten As Long, nTargets As Long, nReplaced As Long
-    Dim nFormula As Long, nBlank As Long, nNoKey As Long, nNoSheet As Long, nError As Long, nBadCell As Long, nWriteFail As Long
+    Dim nFormula As Long, nBlank As Long, nNoGlobal As Long, nNoSheet As Long, nError As Long, nBadCell As Long, nWriteFail As Long
     Dim issues As String, nIssues As Long
     Dim replacedList As String, nListed As Long
     Dim stage As String
     Dim report As String, msg As String
-    Dim wasOpen As Boolean, quiet As Boolean, pathIsNew As Boolean
+    Dim wasOpen As Boolean, quiet As Boolean, pathIsNew As Boolean, isReplace As Boolean
     Dim prevScreen As Boolean, prevEvents As Boolean, prevCalc As Long
 
     prevScreen = Application.ScreenUpdating
@@ -122,12 +126,17 @@ Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Bool
     If gWb Is Nothing Then Set gWb = Workbooks.Open(path, UpdateLinks:=0, ReadOnly:=True, AddToMru:=False)
 
     stage = "read the global sheets"
-    Set wsBr = gWb.Worksheets("BRIDGES")
     Set wsTg = gWb.Worksheets("TARGETS")
     Set wsWb = gWb.Worksheets("WORKBOOKS")
     If pathIsNew Then Call StorePath(path)
-    stage = "calculate the global sheet"
-    wsBr.Calculate
+    stage = "calculate the global file"
+    ' Workbook has no Calculate method: calculate sheet by sheet, twice, because
+    ' the bridge sheets read KIRIS_INPUT, which comes after them.
+    For pass = 1 To 2
+        For Each gSh In gWb.Worksheets
+            gSh.Calculate
+        Next gSh
+    Next pass
 
     stage = "choose the bridge"
     bridge = bridgeOverride
@@ -138,35 +147,20 @@ Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Bool
         quiet = True
         GoTo Done
     End If
-    bridgeCol = 0
-    For i = 3 To wsBr.Cells(BRIDGES_HEADER_ROW, wsBr.Columns.Count).End(xlToLeft).Column
-        If StrComp(SafeStr(wsBr.Cells(BRIDGES_HEADER_ROW, i).Value2), bridge, vbTextCompare) = 0 Then
-            bridgeCol = i
-            Exit For
-        End If
-    Next i
-    If bridgeCol = 0 Then
-        MsgBox "Bridge """ & bridge & """ is not a column of the BRIDGES sheet.", vbExclamation, "GLOBAL_CAGIRMA"
+    If Not BridgeIsListed(wsWb, bridge) Then
+        MsgBox "Bridge """ & bridge & """ is not a bridge listed in the WORKBOOKS sheet.", vbExclamation, "GLOBAL_CAGIRMA"
         quiet = True
         GoTo Done
     End If
-
-    stage = "index the keys"
-    Set keyRow = CreateObject("Scripting.Dictionary")
-    keyRow.CompareMode = 1
-    lastRow = wsBr.Cells(wsBr.Rows.Count, 1).End(xlUp).Row
-    For i = BRIDGES_HEADER_ROW + 1 To lastRow
-        key = SafeStr(wsBr.Cells(i, 1).Value2)
-        If Len(key) > 0 Then
-            If Left$(key, 3) <> MARKER Then
-                If keyRow.Exists(key) Then
-                    Call AddIssue(issues, nIssues, "duplicate key in BRIDGES (first row used): " & key)
-                Else
-                    keyRow.Add key, i
-                End If
-            End If
-        End If
-    Next i
+    Set gWs = Nothing
+    On Error Resume Next
+    Set gWs = gWb.Worksheets(bridge)
+    On Error GoTo Fail
+    If gWs Is Nothing Then
+        MsgBox "Bridge """ & bridge & """ is not a sheet of the global file.", vbExclamation, "GLOBAL_CAGIRMA"
+        quiet = True
+        GoTo Done
+    End If
 
     stage = "read TARGETS"
     lastRow = wsTg.Cells(wsTg.Rows.Count, 1).End(xlUp).Row
@@ -175,21 +169,48 @@ Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Bool
         quiet = True
         GoTo Done
     End If
-    tg = wsTg.Range(wsTg.Cells(2, 1), wsTg.Cells(lastRow, 5)).Value2
+    tg = wsTg.Range(wsTg.Cells(2, 1), wsTg.Cells(lastRow, 7)).Value2
 
     stage = "write the values"
+    Set gWs = Nothing
+    lastGsName = ""
     If Not dryRun Then Application.Calculation = xlCalculationManual
     For i = 1 To UBound(tg, 1)
         If StrComp(SafeStr(tg(i, 2)), wbId, vbTextCompare) = 0 Then
             nTargets = nTargets + 1
+            isReplace = False
             key = SafeStr(tg(i, 1))
             sh = SafeStr(tg(i, 3))
             addr = SafeStr(tg(i, 4))
             kind = SafeStr(tg(i, 5))
+            gs = SafeStr(tg(i, 6))
+            gc = SafeStr(tg(i, 7))
 
-            If Not keyRow.Exists(key) Then
-                nNoKey = nNoKey + 1
-                Call AddIssue(issues, nIssues, "key not in BRIDGES: " & key)
+            If StrComp(Trim$(gs), "@BRIDGE", vbTextCompare) = 0 Then gsName = bridge Else gsName = Trim$(gs)
+            If StrComp(gsName, lastGsName, vbBinaryCompare) <> 0 Or gWs Is Nothing Then
+                Set gWs = Nothing
+                On Error Resume Next
+                Set gWs = gWb.Worksheets(gsName)
+                On Error GoTo Fail
+                lastGsName = gsName
+            End If
+            If gWs Is Nothing Then
+                nNoGlobal = nNoGlobal + 1
+                Call AddIssue(issues, nIssues, "global sheet missing: " & gsName & " (" & key & ")")
+                GoTo NextTarget
+            End If
+            Set gCell = Nothing
+            On Error Resume Next
+            Set gCell = gWs.Range(gc)
+            On Error GoTo Fail
+            If gCell Is Nothing Then
+                nNoGlobal = nNoGlobal + 1
+                Call AddIssue(issues, nIssues, "bad global cell " & gsName & "!" & gc & " (" & key & ")")
+                GoTo NextTarget
+            End If
+            If gCell.Cells.CountLarge <> 1 Then
+                nNoGlobal = nNoGlobal + 1
+                Call AddIssue(issues, nIssues, "global cell is not a single cell " & gsName & "!" & gc & " (" & key & ")")
                 GoTo NextTarget
             End If
             Set ws = Nothing
@@ -223,10 +244,10 @@ Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Bool
                 End If
             End If
 
-            v = wsBr.Cells(CLng(keyRow(key)), bridgeCol).Value2
+            v = gCell.Value2
             If IsError(v) Then
                 nError = nError + 1
-                Call AddIssue(issues, nIssues, "error value in global file for " & key)
+                Call AddIssue(issues, nIssues, "error value in global cell " & gsName & "!" & gc & " (" & key & ")")
                 GoTo NextTarget
             End If
             If IsEmpty(v) Then
@@ -245,11 +266,7 @@ Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Bool
                     Call AddIssue(issues, nIssues, "formula kept (listed TYPED): " & sh & "!" & addr & " " & key)
                     GoTo NextTarget
                 End If
-                nReplaced = nReplaced + 1
-                If nListed < MAX_LISTED Then
-                    replacedList = replacedList & "  " & sh & "!" & addr & " " & key & vbCrLf
-                    nListed = nListed + 1
-                End If
+                isReplace = True
             End If
 
             If Not dryRun Then
@@ -269,11 +286,19 @@ Private Sub PullGlobalInput(ByVal bridgeOverride As String, ByVal dryRun As Bool
                 On Error GoTo Fail
             End If
             nWritten = nWritten + 1
+            If isReplace Then
+                nReplaced = nReplaced + 1
+                If nListed < MAX_LISTED Then
+                    replacedList = replacedList & "  " & sh & "!" & addr & " " & key & vbCrLf
+                    nListed = nListed + 1
+                End If
+            End If
         End If
 NextTarget:
     Next i
 
 Done:
+    stage = "close the global file"
     Application.Calculation = prevCalc
     If Not gWb Is Nothing Then
         If Not wasOpen Then gWb.Close SaveChanges:=False
@@ -297,7 +322,7 @@ Done:
     report = report & "DERIVED formula cells replaced by values: " & nReplaced & vbCrLf & _
              "blank in global file (left alone): " & nBlank & vbCrLf & _
              "formula kept: " & nFormula & "   write failed: " & nWriteFail & vbCrLf & _
-             "key missing: " & nNoKey & "   sheet missing: " & nNoSheet & "   bad cell: " & nBadCell & "   error value: " & nError
+             "global cell missing/bad: " & nNoGlobal & "   sheet missing: " & nNoSheet & "   bad cell: " & nBadCell & "   error value: " & nError
     If nReplaced > 0 Then report = report & vbCrLf & vbCrLf & "Formulas replaced (first " & nListed & "):" & vbCrLf & replacedList
     If nIssues > 0 Then report = report & vbCrLf & "First issues:" & vbCrLf & issues
     Debug.Print report
@@ -346,6 +371,17 @@ Private Function WorkbookId(ByVal fileName As String) As String
     End If
 End Function
 
+Private Function BridgeIsListed(ByVal wsWb As Worksheet, ByVal bridge As String) As Boolean
+    Dim i As Long, lastRow As Long
+    lastRow = wsWb.Cells(wsWb.Rows.Count, 1).End(xlUp).Row
+    For i = 2 To lastRow
+        If StrComp(Trim$(SafeStr(wsWb.Cells(i, 3).Value2)), Trim$(bridge), vbTextCompare) = 0 Then
+            BridgeIsListed = True
+            Exit Function
+        End If
+    Next i
+End Function
+
 Private Function DefaultBridge(ByVal wsWb As Worksheet, ByVal wbId As String) As String
     Dim i As Long, lastRow As Long
     lastRow = wsWb.Cells(wsWb.Rows.Count, 1).End(xlUp).Row
@@ -367,7 +403,12 @@ Private Function GlobalPath(ByRef isNew As Boolean) As String
     p = CStr(ThisWorkbook.CustomDocumentProperties(PROP_PATH).Value)
     On Error GoTo 0
     If Len(p) > 0 Then
-        If Len(Dir$(p)) > 0 Then
+        Dim found As Boolean
+        found = False
+        On Error Resume Next
+        found = (Len(Dir$(p)) > 0)
+        On Error GoTo 0
+        If found Then
             GlobalPath = p
             Exit Function
         End If

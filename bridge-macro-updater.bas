@@ -12,7 +12,9 @@ Option Explicit
 '  loop by fetching the current one.
 '
 '  HOW MODULES ARE IDENTIFIED
-'  The .bas files carry no "Attribute VB_Name", so the module name inside a
+'  A .bas may carry "Attribute VB_Name" (so File > Import names the module);
+'  every "Attribute ..." line is stripped before the code is written in
+'  (AddFromString would turn it into a syntax error). The module name inside a
 '  workbook is whatever the person pasting it typed. Matching on that would
 '  be unreliable, so every managed module declares its own SCRIPT_ID,
 '  SCRIPT_VERSION and SCRIPT_CHANGELOG, and this updater reads those out of
@@ -84,11 +86,11 @@ Option Explicit
 '  CONFIG
 ' ---------------------------------------------------------------------------
 
-Private Const SCRIPT_VERSION As String = "2026-10-27a"
+Private Const SCRIPT_VERSION As String = "2026-10-30a"
 
 ' One-line summary of what changed in THIS version, shown when the updater
 ' finds itself stale. One physical line, no "|".
-Private Const SCRIPT_CHANGELOG As String = "First Bridge version, adapted from the Culvert updater; feed Thorindiel-Inc/Bridge_Releases"
+Private Const SCRIPT_CHANGELOG As String = "Strips Attribute lines (VB_Name) from downloaded modules before writing them in"
 
 ' Identifies this module to the updater regardless of what it was
 ' named when pasted into Excel - these files carry no VB_Name, so the
@@ -351,11 +353,30 @@ Private Function ReplaceComponentCode(ByVal comp As Object, ByVal newCode As Str
     On Error Resume Next
     With comp.CodeModule
         If .CountOfLines > 0 Then .DeleteLines 1, .CountOfLines
-        .AddFromString newCode
+        .AddFromString StripAttributes(newCode)
     End With
     ReplaceComponentCode = (Err.Number = 0)
     Err.Clear
     On Error GoTo 0
+
+End Function
+
+
+' Drops the "Attribute ..." lines of an exported .bas (VB_Name etc.); they are
+' only valid in a file import, not inside a code module.
+Private Function StripAttributes(ByVal code As String) As String
+
+    Dim lines() As String
+    Dim i As Long
+    Dim out As String
+
+    lines = Split(Replace(code, vbCrLf, vbLf), vbLf)
+    For i = LBound(lines) To UBound(lines)
+        If StrComp(Left$(LTrim$(lines(i)), 10), "Attribute ", vbTextCompare) <> 0 Then
+            out = out & lines(i) & vbCrLf
+        End If
+    Next i
+    StripAttributes = out
 
 End Function
 
