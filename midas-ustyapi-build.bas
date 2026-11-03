@@ -32,7 +32,7 @@ Option Explicit
 '  session; never written to a cell or file.
 '
 '  Asked in pop-ups (button macro): strip spacing, link length, fixed-spring
-'  stiffness. From geometry: end strip width = sarkiklik + dx/2, extra girder
+'  stiffness. From geometry: end strip width = sarkiklik/2, extra girder
 '  node at sarkiklik + H/2 from each girder end.
 '  Constants below that are NOT inputs of the workbooks (taken from the
 '  reference model; change here if needed): WL_ECC, NOSING_Q, NOSING_LEN,
@@ -40,8 +40,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03i"
-Private Const SCRIPT_CHANGELOG As String = "CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-03m"
+Private Const SCRIPT_CHANGELOG As String = "Unused load cases WA-1, EH, EV, ES, LS, S, IC and combinations ICE-1, SNOW-1, DEAD, Servis 2, Servis 4 and STR-2 removed (owner); Summary / report boxes shortened (MsgBox 1024-character limit, full text to a file if longer); CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -190,9 +190,9 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outD
         Exit Sub
     End If
 
-    msg = Summary() & vbCrLf & vbCrLf & _
-          "YES = WIPE the model open in Civil NX (all its nodes, elements, loads, stages, combinations), rebuild it and SAVE that file." & vbCrLf & _
-          "NO = only write the JSON payloads next to this workbook (MIDAS\payload)."
+    msg = FitBox(Summary(), "summary", 160) & vbCrLf & vbCrLf & _
+          "YES = WIPE the open Civil NX model, rebuild it and SAVE it." & vbCrLf & _
+          "NO = only write the JSON payloads (MIDAS\payload)."
     Select Case MsgBox(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
         Case vbNo
             WritePayloads ThisWorkbook.Path & "\MIDAS\payload"
@@ -206,7 +206,7 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outD
 
     rep = SendAll()
     Application.StatusBar = False
-    MsgBox rep, IIf(InStr(rep, "FAIL") > 0, vbExclamation, vbInformation), MSG_TITLE
+    MsgBox FitBox(rep, "report", 0), IIf(InStr(rep, "FAIL") > 0, vbExclamation, vbInformation), MSG_TITLE
     Exit Sub
 Fail:
     Dim d As String: d = Err.Description
@@ -1080,10 +1080,11 @@ End Function
 
 Private Function StldJson() As String
     Dim a As Variant, i As Long, p As Variant, s As String
-    a = Array("DC|D|Self Wieght", "DW_1|DC|Barrier + Pavement", "DW_2|DW|Wearing Surface", "Prestress|PS|", "WA-1|FP|Static Water Pressure", _
+    ' owner 2026-11-03: water, earth, surcharge, snow and ice cases removed (no such loads on this superstructure);
+    ' FR, PL, TU+/TU-, BR, CF, WS-X, WS-Z stay as (still empty) placeholders
+    a = Array("DC|D|Self Wieght", "DW_1|DC|Barrier + Pavement", "DW_2|DW|Wearing Surface", "Prestress|PS|", _
         "FR|FR|Friction Force", "WS-X|W|Horizontal Wind Load (Long.)", "WS-Y|W|Horizontal Wind Load (Trans.)", "WS-Z|W|Vertical Wind Load", _
-        "WL|WL|Wind Load on Live Load", "EH|EPMC|Horizontal Earth Pressure", "EV|EV|Vertical Earth Pressure", "ES|ES|Earth Surchage Load", _
-        "LS|LS|Live Load Surchage", "TU+|T|Temperature Effect (+)", "TU-|T|Temperature Effect (-)", "S|S|Snow Load", "IC|IP|Ice Pressure", _
+        "WL|WL|Wind Load on Live Load", "TU+|T|Temperature Effect (+)", "TU-|T|Temperature Effect (-)", _
         "PL|L|Pedestrian Live Load", "BR|BRK|Breaking Load", "CF|CF|Centrifugal Force", "MOVE|L|Eq. Loading")
     For i = 0 To UBound(a)
         p = Split(a(i), "|")
@@ -1137,28 +1138,32 @@ End Function
 
 ' ---- combinations ----
 Private Sub AddCombs(ByVal ep As String, ByVal conc As Boolean)
-    Dim t1 As String, t2 As String, no As Long, k As Long, mins As Variant, maxs As Variant, cbs As Variant
+    Dim t1 As String, t2 As String, no As Long, k As Long, sv As Variant, mins As Variant, maxs As Variant, cbs As Variant
     mins = Array("STR-1-Min.", "STR-2-Min.", "STR-3-Min", "STR-4-Min.", "STR-5-Min")
     maxs = Array("STR-1-Maks.", "STR-2-Maks.", "STR-3-Maks.", "STR-4-Maks.", "STR-5-Maks")
     cbs = Array(True, True, False, False, True)
-    For k = 1 To 4
-        no = no + 1: t1 = t1 & IIf(t1 = "", "", ",") & Comb(no, "Servis " & k, IIf(k = 4, "INACTIVE", "ACTIVE"), k < 4, 0, TableItems("Servis-" & k, 0, k), conc)
-    Next k
+    ' owner 2026-11-03: Servis 4 removed (AASHTO Service IV = prestressed substructure tension), Servis 2 removed
+    ' (Service II = steel yielding / slip-critical connections), STR-2 removed (= STR-1 with a smaller LL factor,
+    ' same LM71 loading, always enveloped by STR-1)
+    For Each sv In Array(1, 3)
+        k = sv
+        no = no + 1: t1 = t1 & IIf(t1 = "", "", ",") & Comb(no, "Servis " & k, "ACTIVE", True, 0, TableItems("Servis-" & k, 0, k), conc)
+    Next sv
     For k = 1 To 5
+        If k = 2 Then GoTo NextStr
         no = no + 1: t1 = t1 & "," & Comb(no, CStr(mins(k - 1)), "ACTIVE", CBool(cbs(k - 1)), 0, TableItems("STR-" & k, 2, k), conc)
         no = no + 1: t1 = t1 & "," & Comb(no, CStr(maxs(k - 1)), "ACTIVE", CBool(cbs(k - 1)), 0, TableItems("STR-" & k, 1, k), conc)
+NextStr:
     Next k
-    no = no + 1: t1 = t1 & "," & Comb(no, "ICE-1", "ACTIVE", True, 0, FixedItems("IC"), conc)
-    no = no + 1: t1 = t1 & "," & Comb(no, "SNOW-1", "ACTIVE", True, 0, FixedItems("S"), conc)
+    ' ICE-1 / SNOW-1 / DEAD removed (owner 2026-11-03)
     Dim env As String, a As String, i As Long
-    For k = 1 To 4: a = a & IIf(a = "", "", ";") & "CB|Servis " & k & "|1": Next k
+    a = "CB|Servis 1|1;CB|Servis 3|1"
     no = no + 1: t2 = Comb(no, "ENV_SER", "ACTIVE", True, 1, a, conc)
     a = ""
-    For k = 0 To 4: a = a & IIf(a = "", "", ";") & "CB|" & mins(k) & "|1;CB|" & maxs(k) & "|1": Next k
+    For k = 0 To 4
+        If k <> 1 Then a = a & IIf(a = "", "", ";") & "CB|" & mins(k) & "|1;CB|" & maxs(k) & "|1"
+    Next k
     no = no + 1: t2 = t2 & "," & Comb(no, "ENV_STR", "ACTIVE", True, 1, a, conc)
-    If Not conc Then
-        no = no + 1: t1 = t1 & "," & Comb(no, "DEAD", "ACTIVE", False, 0, "CS|Dead Load|1;CS|CS_DW_1|1;CS|CS_DW_2|1;ST|WA-1|1;ST|FR|1;ST|EH|1;ST|EV|1;ST|ES|1", conc)
-    End If
     Add ep, "{""Assign"":{" & t1 & "}}"
     Add ep, "{""Assign"":{" & t2 & "}}"
 End Sub
@@ -1176,9 +1181,10 @@ Private Function TableItems(ByVal lab As String, ByVal mode As Long, ByVal strNo
             fDC = IIf(strNo = 4, dcMax4, dcMax): fDW = dwMax
         End If
     End If
-    s = CsItems(fDC, fDW, mode = 0) & It("ST", "WA-1", f(2)) & It("ST", "FR", f(2)) & _
-        It("ST", "WS-X", f(3)) & It("ST", "WS-Y", f(3)) & It("ST", "WS-Z", f(3)) & It("ST", "WL", f(4)) & It("ST", "EH", fDC) & It("ST", "EV", fDC) & It("ST", "ES", fDC) & _
-        It("ST", "LS", f(1)) & It("ST", "TU+", f(5)) & It("ST", "TU-", f(5)) & It("ST", "PL", f(1)) & It("ST", "BR", f(1)) & It("ST", "CF", f(1)) & _
+    ' FR takes the Tablo 14 WA column (as in the reference model)
+    s = CsItems(fDC, fDW, mode = 0) & It("ST", "FR", f(2)) & _
+        It("ST", "WS-X", f(3)) & It("ST", "WS-Y", f(3)) & It("ST", "WS-Z", f(3)) & It("ST", "WL", f(4)) & _
+        It("ST", "TU+", f(5)) & It("ST", "TU-", f(5)) & It("ST", "PL", f(1)) & It("ST", "BR", f(1)) & It("ST", "CF", f(1)) & _
         It("ST", "MOVE", f(1)) & It("MV", "LM71", f(1))
     TableItems = Mid$(s, 2)
 End Function
@@ -1193,12 +1199,6 @@ Private Function CsItems(ByVal fDC As Double, ByVal fDW As Double, ByVal service
     s = It("CS", "Dead Load", fDC) & It("CS", "CS_DW_1", fDC) & It("CS", "CS_DW_2", fDW)
     If service Then s = s & It("CS", "Tendon Primary", 1)
     CsItems = s & It("CS", "Tendon Secondary", 1) & It("CS", "Creep Secondary", 1) & It("CS", "Shrinkage Secondary", 1)
-End Function
-
-Private Function FixedItems(ByVal extra As String) As String
-    FixedItems = Mid$(CsItems(1, 1, False) & It("ST", "WA-1", 1) & It("ST", "FR", 1) & _
-        It("ST", "EH", 1) & It("ST", "EV", 1) & It("ST", "ES", 1) & It("ST", "LS", 0.5) & It("ST", extra, 1) & It("ST", "PL", 0.5) & It("ST", "BR", 0.5) & _
-        It("ST", "CF", 0.5) & It("ST", "MOVE", 0.5) & It("MV", "LM71", 0.5), 2)
 End Function
 
 Private Function It(ByVal an As String, ByVal lc As String, ByVal f As Double) As String
@@ -1308,7 +1308,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Else
         rep = rep & "FAIL save: " & Left$(resp, 300) & vbCrLf
     End If
-    SendAll = cleanRep & vbCrLf & "All " & payloads.Count & " tables sent (" & Format(Timer - t0, "0") & " s)." & vbCrLf & rep & vbCrLf & Summary()
+    SendAll = cleanRep & vbCrLf & "All " & payloads.Count & " tables sent (" & Format(Timer - t0, "0") & " s)." & vbCrLf & rep & vbCrLf & SCRIPT_ID & " " & SCRIPT_VERSION & ", " & bridgeName & ", span " & spanNo & " = " & Lc & " m"
 End Function
 
 ' ---- clean pass ----
@@ -1429,7 +1429,7 @@ Public Sub MIDAS_USTYAPI_TEMIZLE(Optional ByVal reportFile As String = "", Optio
         End If
     End If
     Application.StatusBar = False
-    If reportFile = "" Then MsgBox rep, IIf(Left$(rep, 2) = "Cl", vbInformation, vbExclamation), MSG_TITLE Else WriteText reportFile, rep
+    If reportFile = "" Then MsgBox FitBox(rep, "clean", 0), IIf(Left$(rep, 2) = "Cl", vbInformation, vbExclamation), MSG_TITLE Else WriteText reportFile, rep
     Exit Sub
 Fail:
     Application.StatusBar = False
@@ -1479,22 +1479,37 @@ Private Function CountOf(ByVal s As String, ByVal what As String) As Long
 End Function
 
 Private Function Summary() As String
+    ' compact: a MsgBox shows about 1024 characters (FitBox writes longer texts to a file)
     Dim s As String
     s = SCRIPT_ID & " " & SCRIPT_VERSION & vbCrLf & _
-        "Bridge: " & bridgeName & ", span " & spanNo & " = " & Lc & " m, girder length " & Lg & " m (sarkiklik " & sark & " m)" & vbCrLf & _
-        "Girders: " & nG & " x " & KirisAdi() & " at " & sG & " m, H " & Hg & " m, area " & Format(polyArea, "0.000000") & " m2, slab " & tc & " m" & vbCrLf & _
-        "Deck " & Format(yR - yL, "0.000") & " m, tracks " & nTr & " (girders " & trG(1) & IIf(nTr = 2, "/" & trG(IIf(nTr = 2, 2, 1)), "") & ")" & vbCrLf & _
-        "Nodes " & nCnt & ", elements " & eCnt & ", loaded elements " & loadItems.Count & ", payloads " & payloads.Count & vbCrLf & _
-        "Bearings: kE " & kEB & ", ky " & kyB & " (free end), fixed " & kFix & ", link " & linkLen & " m" & vbCrLf & _
-        "Strips: " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end strip " & Format(endStripW, "0.000") & " m, diaphragm " & IIf(DiaFlange() > 0, "T flange " & Format(DiaFlange(), "0.000") & " m", "rectangle (Hambly 0.3 s <= web)") & _
-        ", slab t " & Format(tc, "0.000") & ", edge girder slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & " m, extra node " & Format(endExtra, "0.000") & " m from the girder end" & vbCrLf & _
-        "Loads/girder: ballast " & qBal & ", protection " & qKor & "; kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & " per edge" & vbCrLf & _
-        "Wind Wg " & wG & ", Wv " & wV & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.00000") & vbCrLf & _
-        "End zone " & zoneL & " m (" & KirisAdi() & " - Y, area " & Format(polyAreaY, "0.000000") & " m2)" & vbCrLf & _
-        "Strands: " & nTdnGroup & " in " & nTdn & " tendons (" & nRow & " rows, fpi " & fpi & " MPa, Ah " & aStr * 1000000# & " mm2); stages CS1-CS4 " & _
-        DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
-    If warnText <> "" Then s = s & vbCrLf & "WARNINGS:" & vbCrLf & warnText
+        bridgeName & ", span " & spanNo & " = " & Lc & " m; girder " & Lg & " m, a " & sark & " m, end zone " & zoneL & " m" & vbCrLf & _
+        nG & " x " & KirisAdi() & " @ " & sG & " m, H " & Hg & ", A " & Format(polyArea, "0.00000") & " / Y " & Format(polyAreaY, "0.00000") & " m2, slab " & Format(tc, "0.000") & vbCrLf & _
+        "Deck " & Format(yR - yL, "0.000") & " m, " & nTr & " track(s) on girders " & trG(1) + 1 & IIf(nTr = 2, "/" & trG(IIf(nTr = 2, 2, 1)) + 1, "") & vbCrLf & _
+        "Model: " & nCnt & " nodes, " & eCnt & " elements, " & payloads.Count & " tables" & vbCrLf & _
+        "Bearings: kE " & Format(kEB, "0") & ", ky " & Format(kyB, "0.0") & ", fixed " & Format(kFix, "0") & ", link " & linkLen & " m" & vbCrLf & _
+        "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & _
+        ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _
+        "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
+        "Wind Wg " & wG & ", Wv " & wV & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
+        "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
+    If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
+End Function
+
+' MsgBox shows about 1024 characters: a longer text is written in full to <workbook>\MIDAS\<tag>.txt
+' (or %TEMP%) and the box shows the start plus that path. reserve = characters the caller adds.
+Private Function FitBox(ByVal txt As String, ByVal tag As String, ByVal reserve As Long) As String
+    Dim lim As Long, p As String
+    lim = 1000 - reserve
+    If Len(txt) <= lim Then FitBox = txt: Exit Function
+    On Error Resume Next
+    p = ThisWorkbook.Path & "\MIDAS"
+    MakeDir p
+    If Err.Number <> 0 Or Len(Dir$(p, vbDirectory)) = 0 Then Err.Clear: p = Environ$("TEMP")
+    p = p & "\" & tag & ".txt"
+    WriteText p, txt
+    On Error GoTo 0
+    FitBox = Left$(txt, lim - Len(p) - 30) & " ..." & vbCrLf & "(full text: " & p & ")"
 End Function
 
 ' ============================================================================
