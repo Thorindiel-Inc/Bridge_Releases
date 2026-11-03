@@ -41,8 +41,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03u"
-Private Const SCRIPT_CHANGELOG As String = "Outer end beam (dis enleme, 1-2 G_DIS_ENLEME_*) on the girder-end lines; 20 eigen modes (was 100); girder nodes at the 4-7 Tablo 27 live-load stations (both halves) for MAK_LL; AASHTO creep/shrinkage (TDMT AASHTO) with ACI 209 strength gain; girder transfer age = day f'c(t) reaches the 4-7 f'ci (2.61 d); CS1 120 d; Magura relaxation KL 45; status-bar progress bar; MAPI key from INPUT!T3; TU+ / TU- system temperature loads; tendon grouting 0; exact MIDAS rectangle torsion; fewer load cases and combinations; CS1 roll restraint; service = CS Summation set; Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-03x"
+Private Const SCRIPT_CHANGELOG As String = "Outer end beam depth = girder H + tc + bearing height; inner diaphragm height + (tc - min slab); section colours (2D wireframe + 3D fill/edge, db/CO_S); outer end beam (dis enleme, 1-2 G_DIS_ENLEME_*) on the girder-end lines; 20 eigen modes (was 100); girder nodes at the 4-7 Tablo 27 live-load stations (both halves) for MAK_LL; AASHTO creep/shrinkage (TDMT AASHTO) with ACI 209 strength gain; girder transfer age = day f'c(t) reaches the 4-7 f'ci (2.61 d); CS1 120 d; Magura relaxation KL 45; status-bar progress bar; MAPI key from INPUT!T3; TU+ / TU- system temperature loads; tendon grouting 0; exact MIDAS rectangle torsion; fewer load cases and combinations; CS1 roll restraint; service = CS Summation set; Hambly grillage, composite sections by MCT"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -61,6 +61,11 @@ Private Const RAIL_HALF_GAUGE As Double = 0.7175
 Private Const GRAV As Double = 9.806          ' load-to-mass conversion (LTOM, reference model)
 Private Const GRAV_STYP As Double = 9.807     ' structure type gravity (STYP, reference model)
 Private Const BMLD_CHUNK As Long = 60
+' section colours (owner 2026-11-03): no|R,G,B base colour = 2D wireframe + 3D hidden edge; 3D hidden fill = the
+' base lightened by SECT_FILL_TINT toward white (same method as the culvert macro). Change the list to recolour.
+Private Const SECT_COLORS As String = "2|60,140,75;3|150,150,150;4|90,90,90;5|120,140,165;6|45,110,200;7|45,110,200;8|25,70,150;" & _
+    "9|40,150,170;10|25,105,125;11|40,150,170;12|25,105,125;13|140,165,140;14|150,150,150;15|225,130,35"
+Private Const SECT_FILL_TINT As Double = 0.45
 Private Const N_MODES As Long = 20         ' eigen modes (owner 2026-11-03; 20th mode ~35 Hz > 30 Hz of EN 1991-2 6.4.6)
 
 ' construction stages (owner 2026-11-02: proposal accepted; not in the workbooks)
@@ -81,7 +86,7 @@ Private Const DUR_CS4 As Double = 10000      ' long term
 Private spanNo As Long, Lc As Double, nG As Long, sG As Double, Hg As Double
 Private kSol As Double, h1 As Double, h2 As Double, kSag As Double
 Private tc As Double, tMin As Double, enlB As Double, enlH As Double
-Private disB As Double, disH As Double, disL As Double   ' outer end beam (dis enleme) beyond the girder ends (1-2 G_DIS_ENLEME_*)
+Private disB As Double, disL As Double   ' outer end beam (dis enleme) beyond the girder ends (1-2 G_DIS_ENLEME_*)
 Private eG As Double, eS As Double, clsG As String, clsS As String
 Private qBal As Double, qKor As Double, qBor As Double, qKork As Double, qCep As Double, qRay As Double
 Private sark As Double, kyB As Double, kEB As Double
@@ -316,9 +321,13 @@ Private Sub ReadInputs(wb12 As Workbook, wb47 As Workbook)
     enlB = Num(NmRange(wb12, "G_ENLEME_KALINLIGI").Cells(1).Value, "G_ENLEME_KALINLIGI")
     enlH = ReadEnlemeH(wb12)
     disB = Num(NmRange(wb12, "G_DIS_ENLEME_KALINLIGI").Cells(1).Value, "G_DIS_ENLEME_KALINLIGI")
-    disH = Num(NmRange(wb12, "G_DIS_ENLEME_YUKSEKLIGI").Cells(1).Value, "G_DIS_ENLEME_YUKSEKLIGI")
     disL = Num(NmRange(wb12, "G_DIS_ENLEME_BOYU").Cells(1).Value, "G_DIS_ENLEME_BOYU")
-    If disB <= 0 Or disB > 2 Or disH <= tc Or disH > 5 Or disL <= 0 Then Err.Raise vbObjectError + 13, , "Dis enleme " & disB & " x " & disH & " x " & disL & " m is out of range."
+    If disB <= 0 Or disB > 2 Or disL <= 0 Then Err.Raise vbObjectError + 13, , "Dis enleme " & disB & " x " & disL & " m is out of range."
+    ' cross-beam heights in 1-2 are measured from the deck top with the minimum slab G_MIN_DOSEME_KALINLIGI (0.25);
+    ' the girders carry the averaged slab tc (0.28375), so both beams get the slab difference added: their bottom
+    ' then stays where 1-2 puts it (owner 2026-11-03). The OUTER end beam is deeper: deck top down to the bearing
+' bottom = girder H + tc + bearing (link) height from the pop-up (owner 2026-11-03; 1-2 G_DIS_ENLEME_YUKSEKLIGI not used)
+    enlH = enlH - tMin + tc
 
     Set r = NmRange(wb12, "G_KIRIS_BETONU"): clsG = CStr(r.Cells(1, 1).Value)
     eG = Num(r.Cells(1, 3).Value, "Ecm kiris betonu (INPUT column D)")
@@ -891,7 +900,8 @@ Private Sub BuildPayloads()
     Dim fl As Double: fl = diaW: If fl > 0.3 * sG Then fl = 0.3 * sG
     Add "db/SECT", "{""Assign"":{" & IIf(fl > enlB + 0.001, TSect(2, "ENLEME", enlH, fl, enlB, tc), SbSect(2, "ENLEME", enlH, enlB)) & "," & SbSect(3, "DUMMY1", tc, dxAct) & "," & SbSect(4, "DUMMY2", 0.001, 0.001) & "," & _
         SbSect(5, "DUMMY3", tc, endStripW) & "," & PscSect(6) & "," & _
-        SbSect(13, "DUMMY4", tc, diaW) & IIf(visW > 0, "," & SbSect(14, "DUMMY1_VIS", tc, visW), "") & "," & SbSect(15, "DIS_ENLEME", disH, disB) & "}}"
+        SbSect(13, "DUMMY4", tc, diaW) & IIf(visW > 0, "," & SbSect(14, "DUMMY1_VIS", tc, visW), "") & "," & SbSect(15, "DIS_ENLEME", DisHgt(), disB) & "}}"
+    Add "db/CO_S", SectColorJson()
 
     s = ""
     For i = 1 To nCnt: s = s & IIf(i = 1, "", ",") & QS(CStr(i)) & ":{""X"":" & JN(nX(i)) & ",""Y"":" & JN(nY(i)) & ",""Z"":" & JN(nZ(i)) & "}": Next i
@@ -1064,6 +1074,30 @@ Private Function JoinKeys(d As Object) As String
     Dim k As Variant, s As String
     For Each k In SortedKeysL(d): s = s & IIf(s = "", "", ",") & k: Next k
     JoinKeys = s
+End Function
+
+' outer end beam depth: deck top to the bearing bottom (girder H + slab tc + bearing / link height)
+Private Function DisHgt() As Double
+    DisHgt = Hg + tc + linkLen
+End Function
+
+' db/CO_S (Section Color): W = wireframe (2D), HF = hidden fill (3D surface), HE = hidden edge (3D outline)
+Private Function SectColorJson() As String
+    Dim rows() As String, f() As String, c() As String, i As Long, s As String, k As Long, v(1 To 3) As Long, t(1 To 3) As Long
+    rows = Split(SECT_COLORS, ";")
+    For i = LBound(rows) To UBound(rows)
+        f = Split(rows(i), "|"): c = Split(f(1), ",")
+        If f(0) <> "14" Or visW > 0 Then
+            For k = 1 To 3
+                v(k) = CLng(c(k - 1))
+                t(k) = CLng(v(k) + (255 - v(k)) * SECT_FILL_TINT): If t(k) > 255 Then t(k) = 255
+            Next k
+            s = s & IIf(s = "", "", ",") & QS(f(0)) & ":{""W_R"":" & v(1) & ",""W_G"":" & v(2) & ",""W_B"":" & v(3) & _
+                ",""HF_R"":" & t(1) & ",""HF_G"":" & t(2) & ",""HF_B"":" & t(3) & _
+                ",""HE_R"":" & v(1) & ",""HE_G"":" & v(2) & ",""HE_B"":" & v(3) & ",""bBLEMD"":false,""FACT"":0.5}"
+        End If
+    Next i
+    SectColorJson = "{""Assign"":{" & s & "}}"
 End Function
 
 Private Function SbSect(ByVal no As Long, ByVal nm As String, ByVal h As Double, ByVal b As Double) As String
@@ -1625,7 +1659,7 @@ Private Function Summary() As String
         "Deck " & Format(yR - yL, "0.000") & " m, " & nTr & " track(s) on girders " & trG(1) + 1 & IIf(nTr = 2, "/" & trG(IIf(nTr = 2, 2, 1)) + 1, "") & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & payloads.Count & " tables" & vbCrLf & _
         "Bearings: kE " & Format(kEB, "0") & ", ky " & Format(kyB, "0.0") & ", fixed " & Format(kFix, "0") & ", link " & linkLen & " m" & vbCrLf & _
-        "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & ", end beam " & disB & " x " & disH & " x " & disL & _
+        "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & ", end beam " & disB & " x " & Format(DisHgt(), "0.000") & " x " & disL & _
         ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _
         "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
         "Wind Wg " & wG & ", Wv " & wV & "; TU " & tuPos & "/" & tuNeg & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
