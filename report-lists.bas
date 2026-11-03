@@ -19,8 +19,8 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-10-30d"
-Private Const SCRIPT_CHANGELOG As String = "Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
+Private Const SCRIPT_VERSION As String = "2026-11-03a"
+Private Const SCRIPT_CHANGELOG As String = "Silent entry LISTELERI_AYARLA_SESSIZ (messages returned as text); report sheets = name starts with a digit (3A1_DYN ...), *_YATAY = landscape companion; Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
 
 Private Const COL_CODE As Long = 26      ' Z  caption code on the report sheets
 Private Const COL_HEAD As Long = 30      ' AD heading code
@@ -40,6 +40,18 @@ Private Type ListEntry
     Target As String     ' 'Sheet'!C12
 End Type
 
+Private silentMode As Boolean, silentLog As String
+
+' Both lists without any message box; returns the warnings / errors as text ("" = all fine).
+' Used by BOLUM_YONETICI (one summary message) and by scripted tests (owner 2026-11-03).
+Public Function LISTELERI_AYARLA_SESSIZ() As String
+    silentMode = True: silentLog = ""
+    ICINDEKILER_AYARLA
+    FIG_TAB_AYARLA
+    silentMode = False
+    LISTELERI_AYARLA_SESSIZ = silentLog
+End Function
+
 Public Sub ICINDEKILER_AYARLA()
     Dim ws As Worksheet, msg As String
     Dim heads() As ListEntry, nHead As Long
@@ -55,7 +67,7 @@ Public Sub ICINDEKILER_AYARLA()
     Exit Sub
 Fail:
     EndWork
-    MsgBox "ICINDEKILER_AYARLA stopped: " & Err.Description, vbCritical, "ICINDEKILER"
+    Report "ICINDEKILER", "ICINDEKILER_AYARLA stopped: " & Err.Description
 End Sub
 
 Public Sub FIG_TAB_AYARLA()
@@ -77,7 +89,7 @@ Public Sub FIG_TAB_AYARLA()
     Exit Sub
 Fail:
     EndWork
-    MsgBox "FIG_TAB_AYARLA stopped: " & Err.Description, vbCritical, "FIG_TAB"
+    Report "FIG_TAB", "FIG_TAB_AYARLA stopped: " & Err.Description
 End Sub
 
 ' Headings (AD) and captions (Z) of all report sheets, in tab order and row order.
@@ -513,7 +525,9 @@ Private Sub EndWork()
 End Sub
 
 Private Sub Report(title As String, msg As String)
-    If msg <> "" Then
+    If msg <> "" And silentMode Then
+        silentLog = silentLog & title & ": " & msg & vbCrLf
+    ElseIf msg <> "" Then
         MsgBox msg, vbExclamation, title
     Else
         Application.StatusBar = title & " updated " & Format$(Now, "hh:nn")
@@ -531,10 +545,14 @@ Private Function TextOf(v As Variant) As String
     If Not IsError(v) Then TextOf = CStr(v)
 End Function
 
+' report sheet = name starts with a digit (1_GIRIS, 2_YUKLER, 3A1_DYN ...) and does not end with _YATAY;
+' *_YATAY sheets are landscape companions: their captions are link targets of the main sheet's
+' one-row placeholders (ElsewhereOr), not list entries of their own (owner 2026-11-03)
 Private Function IsReportName(shName As String) As Boolean
-    Dim p As Long
-    p = InStr(shName, "_")
-    If p > 1 Then IsReportName = IsNumeric(Left$(shName, p - 1))
+    If InStr(shName, "_") < 2 Then Exit Function
+    If Not (Left$(shName, 1) Like "#") Then Exit Function
+    If UCase$(Right$(shName, 6)) = "_YATAY" Then Exit Function
+    IsReportName = True
 End Function
 
 ' Sheets named <number>_<text> (1_GIRIS, 2_YUKLER, 1_RAPOR, ...), in tab order.
