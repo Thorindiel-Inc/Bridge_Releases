@@ -41,8 +41,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03r"
-Private Const SCRIPT_CHANGELOG As String = "AASHTO creep/shrinkage (TDMT AASHTO) with ACI 209 strength gain; girder transfer age = day f'c(t) reaches the 4-7 f'ci (2.61 d); CS1 120 d; Magura relaxation KL 45; status-bar progress bar; MAPI key from INPUT!T3; TU+ / TU- system temperature loads; tendon grouting 0; exact MIDAS rectangle torsion; fewer load cases and combinations; CS1 roll restraint; service = CS Summation set; Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-03s"
+Private Const SCRIPT_CHANGELOG As String = "Girder nodes at the 4-7 Tablo 27 live-load stations (both halves) for MAK_LL; AASHTO creep/shrinkage (TDMT AASHTO) with ACI 209 strength gain; girder transfer age = day f'c(t) reaches the 4-7 f'ci (2.61 d); CS1 120 d; Magura relaxation KL 45; status-bar progress bar; MAPI key from INPUT!T3; TU+ / TU- system temperature loads; tendon grouting 0; exact MIDAS rectangle torsion; fewer load cases and combinations; CS1 roll restraint; service = CS Summation set; Hambly grillage, composite sections by MCT"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -91,6 +91,7 @@ Private zoneL As Double         ' end-zone length from each girder end (1-2 INPU
 Private nRow As Long, rowZ() As Double, rowN() As Long
 Private nDb As Long, dbX() As Double, dbN() As Long          ' debond stations (m from girder end), debonded strands per row
 Private ageG As Double, fciRatio As Double   ' girder age at transfer (d), 4-7 f'ci / f'c
+Private nLLst As Long, llX() As Double       ' 4-7 Tablo 27 live-load stations (m from the bearing)
 Private fpi As Double, aStr As Double, dStr As Double, epS As Double, fpuS As Double, humid As Double
 Private fckG As Double, fckS As Double
 Private projName As String, clientName As String, bridgeName As String
@@ -368,6 +369,26 @@ Private Function ClassFck(ByVal cls As String) As Double
     If ClassFck <= 0 Then Err.Raise vbObjectError + 14, , "Concrete class '" & cls & "' not understood."
 End Function
 
+' 4-7 1_RAPOR Tablo 27 (live-load stations): header row with 'Yeri' in column H and 'V (kN)' in column N;
+' the rows below it hold the station x (m from the bearing) in column K until column D is empty
+Private Sub ReadLLStations(wb As Workbook)
+    Dim ws As Worksheet, r As Long, hdr As Long, last As Long
+    Set ws = wb.Worksheets("1_RAPOR")
+    last = ws.Cells(ws.Rows.Count, 8).End(xlUp).Row
+    For r = 1 To last
+        If Left$(Trim$(CStr(IIf(IsError(ws.Cells(r, 8).Value), "", ws.Cells(r, 8).Value))), 4) = "Yeri" And _
+           Left$(Trim$(CStr(IIf(IsError(ws.Cells(r, 14).Value), "", ws.Cells(r, 14).Value))), 6) = "V (kN)" Then hdr = r: Exit For
+    Next r
+    If hdr = 0 Then Err.Raise vbObjectError + 16, , "4-7 1_RAPOR: Tablo 27 header ('Yeri' in column H, 'V (kN)' in column N) not found."
+    nLLst = 0: ReDim llX(1 To 30)
+    For r = hdr + 1 To hdr + 30
+        If Trim$(CStr(IIf(IsError(ws.Cells(r, 4).Value), "", ws.Cells(r, 4).Value))) = "" Then Exit For
+        nLLst = nLLst + 1
+        llX(nLLst) = Num(ws.Cells(r, 11).Value, "4-7 1_RAPOR Tablo 27 station x (column K, row " & r & ")")
+    Next r
+    If nLLst = 0 Then Err.Raise vbObjectError + 16, , "4-7 1_RAPOR: Tablo 27 has no stations below row " & hdr & "."
+End Sub
+
 ' 4-7: strand rows + debonding from KILIFLAMA (B3 "SIRA", O3 "Halatlar"; C5:C14 row height cm,
 ' O5:O14 strands per row, D4:N4 stations in m from the bearing, D5:N14 debonded strands per row
 ' at each station), fpi / strand area / humidity from 1_RAPOR, fpu / Ep / diameter from INPUT
@@ -381,6 +402,7 @@ Private Sub ReadStrands(wb As Workbook)
         If IsNumeric(ws.Cells(4, j).Value) And Not IsEmpty(ws.Cells(4, j).Value) Then nDb = j - 3 Else Exit For
     Next j
     If nDb < 1 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: no stations in D4:N4."
+    ReadLLStations wb
     ReDim dbX(1 To nDb): ReDim rowZ(1 To 10): ReDim rowN(1 To 10): ReDim dbN(1 To 10, 1 To nDb)
     For j = 1 To nDb: dbX(j) = sark + CDbl(ws.Cells(4, j + 3).Value): Next j
     nRow = 0
@@ -548,6 +570,11 @@ Private Sub BuildModel()
     If endExtra < Lg / 2 Then AddX cand, endExtra: AddX cand, Lg - endExtra
     AddX cand, zoneL: AddX cand, Lg - zoneL                 ' end zone (section over the support)
     For i = 1 To m - 1: AddX cand, sark + i * dx: Next i
+    ' 4-7 Tablo 27 live-load stations (from the bearing), both halves: girder nodes there so MAK_LL reads
+    ' node results, no interpolation (owner 2026-11-03); AddX skips those already on a strip / other node
+    For i = 1 To nLLst
+        If llX(i) > 0 And sark + llX(i) < Lg - sark Then AddX cand, sark + llX(i): AddX cand, Lg - sark - llX(i)
+    Next i
     st = SortedKeys(cand): nSt = UBound(st)
 
     ' deck and tracks
