@@ -23,7 +23,8 @@ Option Explicit
 '
 '  Construction stages (owner 2026-11-02): CS1 girders + bearings + self-weight +
 '  pretensioned strands (4-7 KILIFLAMA, fpi from 4-7 1_RAPOR), CS2 deck, CS3 DW_1 +
-'  DW_2, CS4 long term; CEB-FIP 1990 creep/shrinkage; combinations use the stage
+'  DW_2, CS4 long term; AASHTO creep/shrinkage, ACI 209 strength gain, Magura relaxation
+'  (KL 45); girder age at transfer = day f'c(t) reaches the 4-7 f'ci; combinations use the stage
 '  results. End zones: girder "<type> - Y" over the length in the 1-2 INPUT cell right
 '  of Sarkiklik (cm from the girder end).
 '  Not built (no API endpoint): PSC design parameters, DynaGen, load
@@ -40,8 +41,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03q"
-Private Const SCRIPT_CHANGELOG As String = "Progress bar in the status bar (clean pass, MCT import, tables, read-back); MAPI key read from cell INPUT!T3 first (then MIDAS_MAPI_KEY, then a prompt); TU+ / TU- loaded with system temperature +-dT from 1-2 G_SICAKLIK_MAKS / MIN, only TU+ in the combinations; Tendon grouting 0 (pretension: no grouting stage warning); slab torsion factors use the exact MIDAS rectangle formula (Analysis Reference Eq. 2); Unused load cases WA-1, EH, EV, ES, LS, S, IC and combinations ICE-1, SNOW-1, DEAD, Servis 2, Servis 4 and STR-2 removed (owner); Summary / report boxes shortened (MsgBox 1024-character limit, full text to a file if longer); CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-03r"
+Private Const SCRIPT_CHANGELOG As String = "AASHTO creep/shrinkage (TDMT AASHTO) with ACI 209 strength gain; girder transfer age = day f'c(t) reaches the 4-7 f'ci (2.61 d); CS1 120 d; Magura relaxation KL 45; status-bar progress bar; MAPI key from INPUT!T3; TU+ / TU- system temperature loads; tendon grouting 0; exact MIDAS rectangle torsion; fewer load cases and combinations; CS1 roll restraint; service = CS Summation set; Hambly grillage, composite sections by MCT"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -62,14 +63,18 @@ Private Const GRAV_STYP As Double = 9.807     ' structure type gravity (STYP, re
 Private Const BMLD_CHUNK As Long = 60
 
 ' construction stages (owner 2026-11-02: proposal accepted; not in the workbooks)
-Private Const AGE_GIRDER As Double = 3       ' girder concrete age at transfer (CS1 start), days
-Private Const DUR_CS1 As Double = 60         ' girder storage until the deck is cast
+' girder age at transfer (CS1 start) = ageG, computed in ReadStrands: the day the ACI 209 curve
+' f(t) = t / (A + B t) f'c reaches the 4-7 ratio f'ci / f'c (owner 2026-11-03: 'the day where it hits 0.75 fc')
+Private Const ACI_A_G As Double = 1          ' ACI 209R-92: steam-cured, type I cement (precast girder)
+Private Const ACI_B_G As Double = 0.95
+Private Const ACI_A_S As Double = 4          ' ACI 209R-92: moist-cured, type I cement (cast-in-place slab)
+Private Const ACI_B_S As Double = 0.85
+Private Const DUR_CS1 As Double = 120        ' girder storage until the deck is cast (AASHTO C5.9.3.4.2c t = 120 d; owner 2026-11-03)
+Private Const RELAX_KL As Double = 45        ' Magura relaxation KL, low-relaxation strand (AASHTO C5.9.3.4.2c-1)
 Private Const AGE_SLAB As Double = 3         ' slab concrete age when it becomes composite (CS2)
 Private Const DUR_CS2 As Double = 30
 Private Const DUR_CS3 As Double = 30         ' DW_1 + DW_2
 Private Const DUR_CS4 As Double = 10000      ' long term
-Private Const CEMENT_CEB As String = "NR"    ' CEB-FIP 1990 cement: normal / rapid hardening
-Private Const CEMENT_CEB_STR As Long = 2     ' TDME iCTYPE for the same cement (N, R)
 
 ' ---- inputs ----
 Private spanNo As Long, Lc As Double, nG As Long, sG As Double, Hg As Double
@@ -85,6 +90,7 @@ Private zoneL As Double         ' end-zone length from each girder end (1-2 INPU
 ' strands (4-7 KILIFLAMA + 1_RAPOR + INPUT)
 Private nRow As Long, rowZ() As Double, rowN() As Long
 Private nDb As Long, dbX() As Double, dbN() As Long          ' debond stations (m from girder end), debonded strands per row
+Private ageG As Double, fciRatio As Double   ' girder age at transfer (d), 4-7 f'ci / f'c
 Private fpi As Double, aStr As Double, dStr As Double, epS As Double, fpuS As Double, humid As Double
 Private fckG As Double, fckS As Double
 Private projName As String, clientName As String, bridgeName As String
@@ -397,6 +403,13 @@ Private Sub ReadStrands(wb As Workbook)
     If nRow = 0 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: no strands in O5:O14."
     fpi = Num(LabelValue(wb.Worksheets("1_RAPOR"), 3, "1 Halattaki ilk gerilme", 15), "4-7 1_RAPOR fpi (1 Halattaki ilk gerilme)")
     humid = Num(LabelValue(wb.Worksheets("1_RAPOR"), 3, "Ortalama ba", 15), "4-7 1_RAPOR Ortalama bagil nem")
+    ' f'ci / f'c: 1_RAPOR row labelled '(Ongerme Aninda)' in column Q; f'c in J, f'ci in N (J40 / N40 today)
+    Dim rFci As Long
+    rFci = FindLabel(wb.Worksheets("1_RAPOR"), 17, "(" & ChrW(214) & "ngerme An").Row
+    fciRatio = Num(wb.Worksheets("1_RAPOR").Cells(rFci, 14).Value, "4-7 1_RAPOR f'ci (column N, row '(Ongerme Aninda)')") / _
+               Num(wb.Worksheets("1_RAPOR").Cells(rFci, 10).Value, "4-7 1_RAPOR f'c (column J, row '(Ongerme Aninda)')")
+    If fciRatio <= 0.2 Or fciRatio >= 1 Then Err.Raise vbObjectError + 15, , "4-7 f'ci / f'c = " & fciRatio & " is out of range (0.2-1)."
+    ageG = ACI_A_G * fciRatio / (1 - ACI_B_G * fciRatio)   ' t from t / (A + B t) = f'ci / f'c
     aStr = Num(LabelValue(wb.Worksheets("1_RAPOR"), 11, "Ahalat", 14), "4-7 1_RAPOR Ahalat") / 1000000#
     fpuS = Num(NmRange(wb, "G_HALAT_CEKME_DAYANIMI").Cells(1).Value, "4-7 G_HALAT_CEKME_DAYANIMI")
     epS = Num(NmRange(wb, "G_HALAT_ELASTISITE").Cells(1).Value, "4-7 G_HALAT_ELASTISITE")
@@ -810,11 +823,13 @@ Private Sub BuildPayloads()
         """2"":{""TYPE"":""CONC"",""NAME"":" & QS(clsS) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(clsS)) & "}]}," & _
         """3"":{""TYPE"":""CONC"",""NAME"":""Dummy"",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":2,""ELAST"":" & JN(eS * 1000#) & ",""POISN"":0.2,""THERMAL"":0.00001,""DEN"":0}]}," & _
         """4"":{""TYPE"":""STEEL"",""NAME"":""HALAT"",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.02,""PARAM"":[{""P_TYPE"":2,""ELAST"":" & JN(epS * 1000#) & ",""POISN"":0.3,""THERMAL"":0.000012,""DEN"":78.5}]}}}"
-    ' time-dependent concrete (CEB-FIP 1990; owner 2026-11-02), linked to materials 1 (girder) and 2 (slab)
-    Add "db/TDMT", "{""Assign"":{""1"":" & TdmtJson("CEB_KIRIS", fckG, AGE_GIRDER, NotionalG()) & ",""2"":" & TdmtJson("CEB_TABLIYE", fckS, AGE_SLAB, tc) & "}}"
-    Add "db/TDME", "{""Assign"":{""1"":{""NAME"":""CEB_KIRIS"",""TYPE"":""CODE"",""CODENAME"":""CEB-FIP(1990)"",""STRENGTH"":" & JN(fckG * 1000#) & ",""iCTYPE"":" & CEMENT_CEB_STR & "}," & _
-        """2"":{""NAME"":""CEB_TABLIYE"",""TYPE"":""CODE"",""CODENAME"":""CEB-FIP(1990)"",""STRENGTH"":" & JN(fckS * 1000#) & ",""iCTYPE"":" & CEMENT_CEB_STR & "}}}"
-    Add "db/TMAT", "{""Assign"":{""1"":{""TDMT_NAME"":""CEB_KIRIS"",""TDME_NAME"":""CEB_KIRIS""},""2"":{""TDMT_NAME"":""CEB_TABLIYE"",""TDME_NAME"":""CEB_TABLIYE""}}}"
+    ' time-dependent concrete (owner 2026-11-03): AASHTO creep/shrinkage (AASHTO 2020 5.4.2.3), strength gain
+    ' ACI 209 t / (A + B t) (MIDAS has no AASHTO strength curve), linked to materials 1 (girder) and 2 (slab).
+    ' V/S (m): girder = total precast surface (AASHTO 5.4.2.3.2), slab = both faces (t / 2)
+    Add "db/TDMT", "{""Assign"":{""1"":" & TdmtJson("AASHTO_KIRIS", fckG, ageG, VsG()) & ",""2"":" & TdmtJson("AASHTO_TABLIYE", fckS, AGE_SLAB, tc / 2) & "}}"
+    Add "db/TDME", "{""Assign"":{""1"":{""NAME"":""ACI_KIRIS"",""TYPE"":""CODE"",""CODENAME"":""ACI"",""STRENGTH"":" & JN(fckG * 1000#) & ",""A"":" & JN(ACI_A_G) & ",""B"":" & JN(ACI_B_G) & "}," & _
+        """2"":{""NAME"":""ACI_TABLIYE"",""TYPE"":""CODE"",""CODENAME"":""ACI"",""STRENGTH"":" & JN(fckS * 1000#) & ",""A"":" & JN(ACI_A_S) & ",""B"":" & JN(ACI_B_S) & "}}}"
+    Add "db/TMAT", "{""Assign"":{""1"":{""TDMT_NAME"":""AASHTO_KIRIS"",""TDME_NAME"":""ACI_KIRIS""},""2"":{""TDMT_NAME"":""AASHTO_TABLIYE"",""TDME_NAME"":""ACI_TABLIYE""}}}"
     ' Hambly: slab members use the slab thickness tc of the composite girder; diaphragm = T (web + slab flange)
     ' diaphragm flange (Hambly 4.4.3): to midway (diaW), but shear lag -> at most 0.3 x girder spacing;
     ' not wider than the web -> plain rectangle (support diaphragm, slab flange ignored as in Hambly 4.5.1)
@@ -887,11 +902,11 @@ Private Sub BuildPayloads()
 End Sub
 
 ' ---- construction stages + pretensioned strands (owner 2026-11-02) ----
-'  CS1 girders + bearings + self-weight + prestress (girder age AGE_GIRDER), CS2 deck (slab part of
+'  CS1 girders + bearings + self-weight + prestress (girder age ageG), CS2 deck (slab part of
 '  the composite sections, diaphragms, strips), CS3 DW_1 + DW_2, CS4 long term
 Private Sub BuildStages()
     Dim s As String
-    s = """1"":" & Stage("CS1", DUR_CS1, """ACT_ELEM"":[{""GRUP_NAME"":""SG_KIRIS"",""AGE"":" & JN(AGE_GIRDER) & "}],""ACT_BNGR"":[{""BNGR_NAME"":""BG_MESNET"",""POS"":""ORIGINAL""},{""BNGR_NAME"":""BG_GECICI"",""POS"":""ORIGINAL""}]," & _
+    s = """1"":" & Stage("CS1", DUR_CS1, """ACT_ELEM"":[{""GRUP_NAME"":""SG_KIRIS"",""AGE"":" & JN(ageG) & "}],""ACT_BNGR"":[{""BNGR_NAME"":""BG_MESNET"",""POS"":""ORIGINAL""},{""BNGR_NAME"":""BG_GECICI"",""POS"":""ORIGINAL""}]," & _
         """ACT_LOAD"":[{""LOAD_NAME"":""LG_ZATI"",""DAY"":""FIRST""},{""LOAD_NAME"":""LG_ONGERME"",""DAY"":""FIRST""}]") & "," & _
         """2"":" & Stage("CS2", DUR_CS2, """ACT_ELEM"":[{""GRUP_NAME"":""SG_TABLIYE"",""AGE"":" & JN(AGE_SLAB) & "}],""DACT_BNGR"":[""BG_GECICI""]") & "," & _
         """3"":" & Stage("CS3", DUR_CS3, """ACT_LOAD"":[{""LOAD_NAME"":""LG_DW"",""DAY"":""FIRST""}]") & "," & _
@@ -899,7 +914,7 @@ Private Sub BuildStages()
     Add "db/STAG", "{""Assign"":{" & s & "}}"
     Add "db/CSCS", "{""Assign"":{""1"":" & CscsJson(7) & ",""2"":" & CscsJson(8) & ",""3"":" & CscsJson(9) & ",""4"":" & CscsJson(10) & ",""5"":" & CscsJson(11) & ",""6"":" & CscsJson(12) & "}}"
     Add "db/TDNT", "{""Assign"":{""1"":{""NAME"":""HALAT"",""TYPE"":""INTERNAL"",""MATL"":4,""AREA"":" & JN(aStr) & ",""D_AREA"":" & JN(dStr) & _
-        ",""RM"":5,""RV"":2,""US"":" & JN(fpuS * 1000#) & ",""YS"":" & JN(0.9 * fpuS * 1000#) & ",""LT"":""PRE""}}}"
+        ",""RM"":0,""RV"":" & JN(RELAX_KL) & ",""US"":" & JN(fpuS * 1000#) & ",""YS"":" & JN(0.9 * fpuS * 1000#) & ",""LT"":""PRE""}}}"
     Add "db/TDGR", "{""Assign"":{""1"":{""NAME"":""TG_KIRIS""}}}"
     BuildTendons
     Add "db/TDNA", "{""Assign"":{" & tdnaJson & "}}"
@@ -918,15 +933,25 @@ End Function
 
 ' composite section for the stages: part 1 = girder (element material, CS1), part 2 = slab (material 2, CS2)
 Private Function CscsJson(ByVal sec As Long) As String
-    Dim hG As Double
-    hG = IIf(sec = 8 Or sec = 10 Or sec = 12, 2 * polyAreaY / polyPerY, NotionalG())
+    Dim hG As Double, vsP As Double
+    If sec = 8 Or sec = 10 Or sec = 12 Then
+        hG = 2 * polyAreaY / polyPerY: vsP = polyAreaY / polyPerY
+    Else
+        hG = NotionalG(): vsP = VsG()
+    End If
+    ' PARTINFO_H = notional size 2Ac/u (CEB codes), PARTINFO_VS = volume/surface (AASHTO / ACI codes)
     CscsJson = "{""SEC"":" & sec & ",""ASTAGE"":""CS1"",""TYPE"":""NORMAL"",""bTAP"":false,""vPARTINFO"":[" & _
-        "{""PART"":1,""MTYPE"":""ELEM"",""MAT"":"""",""CSTAGE"":"""",""AGE"":" & JN(AGE_GIRDER) & ",""PARTINFO_H"":" & JN(hG) & PartRest() & "}," & _
-        "{""PART"":2,""MTYPE"":""MATL"",""MAT"":""2"",""CSTAGE"":""CS2"",""AGE"":" & JN(AGE_SLAB) & ",""PARTINFO_H"":" & JN(tc) & PartRest() & "}]}"
+        "{""PART"":1,""MTYPE"":""ELEM"",""MAT"":"""",""CSTAGE"":"""",""AGE"":" & JN(ageG) & ",""PARTINFO_H"":" & JN(hG) & PartRest(vsP) & "}," & _
+        "{""PART"":2,""MTYPE"":""MATL"",""MAT"":""2"",""CSTAGE"":""CS2"",""AGE"":" & JN(AGE_SLAB) & ",""PARTINFO_H"":" & JN(tc) & PartRest(tc / 2) & "}]}"
 End Function
 
-Private Function PartRest() As String
-    PartRest = ",""PARTINFO_VS"":0,""PARTINFO_M"":0,""AREA"":1,""ASY"":1,""ASZ"":1,""IXX"":1,""IYY"":1,""IZZ"":1,""WAREA"":1,""IW"":1"
+Private Function PartRest(ByVal vs As Double) As String
+    PartRest = ",""PARTINFO_VS"":" & JN(vs) & ",""PARTINFO_M"":0,""AREA"":1,""ASY"":1,""ASZ"":1,""IXX"":1,""IYY"":1,""IZZ"":1,""WAREA"":1,""IW"":1"
+End Function
+
+' volume / surface of the span girder, Ac / u (m) - total precast surface (AASHTO 5.4.2.3.2)
+Private Function VsG() As Double
+    VsG = polyArea / polyPer
 End Function
 
 ' notional size of the span girder, h = 2 Ac / u (m)
@@ -934,9 +959,11 @@ Private Function NotionalG() As Double
     NotionalG = 2 * polyArea / polyPer
 End Function
 
-Private Function TdmtJson(ByVal nm As String, ByVal fck As Double, ByVal age As Double, ByVal h As Double) As String
-    TdmtJson = "{""NAME"":" & QS(nm) & ",""CODE"":""CEB"",""STR"":" & JN(fck * 1000#) & ",""HU"":" & JN(humid) & ",""AGE"":" & JN(age) & _
-        ",""MSIZE"":" & JN(h) & ",""CTYPE"":" & QS(CEMENT_CEB) & ",""TYPEOFAFFR"":0}"
+' AASHTO creep/shrinkage record (MIDAS TDMT CODE AASHTO: STR f'c, HU, AGE, VOL = V/S in m, bEXPOSE =
+' 'exposed to drying before 5 days of curing' (+20 % shrinkage, AASHTO 5.4.2.3.3) - false: cured concrete)
+Private Function TdmtJson(ByVal nm As String, ByVal fck As Double, ByVal age As Double, ByVal vs As Double) As String
+    TdmtJson = "{""NAME"":" & QS(nm) & ",""CODE"":""AASHTO"",""STR"":" & JN(fck * 1000#) & ",""HU"":" & JN(humid) & ",""AGE"":" & JN(age) & _
+        ",""VOL"":" & JN(vs) & ",""bEXPOSE"":false}"
 End Function
 
 ' transfer length: AUTO2 = the drop-down 'Auto' entry the owner chose (2026-11-03)
@@ -1547,7 +1574,7 @@ Private Function Summary() As String
         ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _
         "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
         "Wind Wg " & wG & ", Wv " & wV & "; TU " & tuPos & "/" & tuNeg & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
-        "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
+        "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; transfer " & Format(ageG, "0.00") & " d (f'ci " & Format(fciRatio, "0.00") & " f'c); CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
 End Function
