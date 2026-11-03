@@ -3,4 +3,5 @@
 # changelog may be empty)
 bridge-macro-updater|2026-10-30a|Strips Attribute lines (VB_Name) from downloaded modules before writing them in
 input-pull|2026-10-30b|Third optional file for G_ names that are not in the 1-2 workbook (e.g. G_PHI3 from 3A)
+midas-ustyapi-build|2026-11-03i|CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT
 report-lists|2026-10-30d|Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic
