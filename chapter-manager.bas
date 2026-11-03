@@ -6,7 +6,7 @@ Option Explicit
 '  Button 'BOLUMLERI GUNCELLE' on INPUT (OnAction BOLUM_YONETICI.BOLUMLERI_GUNCELLE).
 '  For every chapter type in REGISTRY one set of sheets per FILLED span of INPUT
 '  G_HESAP_ACIKLIK (B11:B16): sheet name = <code><span>_<suffix>, e.g. 3A1_DYN +
-'  3A1_DYN_YATAY for span 1, 3A2_DYN + 3A2_DYN_YATAY for span 2 (owner 2026-11-03).
+'  3A1_DYN_Y for span 1, 3A2_DYN + 3A2_DYN_Y for span 2 (owner 2026-11-03; companion renamed _Y by the owner).
 '    - missing spans: the lowest existing set (the template) is copied as one set
 '      (references between its sheets follow), renamed, span index CF2 and the
 '      heading code cell set; typed values are copied as they are (owner)
@@ -19,18 +19,18 @@ Option Explicit
 '      (G_SON_NUMARA) = the end of the last report sheet
 '    - exports: e.g. Phi3 of span n -> INPUT row 92 column B+n-1 (G_PHI3)
 '    - then the ToC and figure lists (RAPOR_LISTE) are rebuilt
-'  Report sheet = name starts with a digit and does not end with _YATAY
+'  Report sheet = name starts with a digit and does not end with _Y / _YATAY
 '  (landscape companions are link targets of the main sheet's placeholders).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "chapter-manager"
-Private Const SCRIPT_VERSION As String = "2026-11-03a"
-Private Const SCRIPT_CHANGELOG As String = "Creates / deletes per-span chapter sheets (3A<n>_DYN + 3A<n>_DYN_YATAY) from the filled spans, orders them, chains table / figure / page numbers, Phi3 row, rebuilds ToC and figure lists"
+Private Const SCRIPT_VERSION As String = "2026-11-03d"
+Private Const SCRIPT_CHANGELOG As String = "Copies named after their source sheet (fixes swapped names when _Y stood before the main sheet); removes broken #REF! names (no replicated junk names, no conflict prompts); landscape companion suffix _Y (owner rename; copies and deletions include it); no name-conflict prompts while copying; creates / deletes per-span chapter sheets (3A<n>_DYN + 3A<n>_DYN_YATAY) from the filled spans, orders them, chains table / figure / page numbers, Phi3 row, rebuilds ToC and figure lists"
 
 Private Const MSG_TITLE As String = "BOLUM_YONETICI"
 ' chapter types: code | suffixes (main first, ';') | heading code cell | export: cell>INPUT row (column B = span 1)
 ' order of the entries = order of the chapters in the workbook
-Private Const REGISTRY As String = "3A|DYN;DYN_YATAY|Z6|Q122>92"
+Private Const REGISTRY As String = "3A|DYN;DYN_Y|Z6|Q122>92"
 Private Const SPAN_NAME As String = "G_HESAP_ACIKLIK"
 Private Const MAX_SPANS As Long = 6
 Private Const H_IDX As String = "CF2"      ' helper cells on every main chapter sheet
@@ -61,6 +61,8 @@ Private Sub RunSync(ByVal reportFile As String)
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
     Set spans = FilledSpans(wb)
+    PurgeBrokenNames wb
+    OrderSheets wb                       ' tabs in canonical order before any copy
     If spans.Count = 0 Then Err.Raise vbObjectError + 1, , "No span filled in " & SPAN_NAME & "."
     ok = SyncChapters(wb, spans)
     If ok Then
@@ -161,12 +163,25 @@ Private Sub CopySet(wb As Workbook, ByVal code As String, sfx() As String, ByVal
     Next j
     ReDim Preserve names(0 To n - 1)
     before = wb.Worksheets.Count
+    ' Excel asks about every name of the copied sheets that also exists in the workbook (e.g. old #REF!
+    ' names); with alerts off it keeps the existing names - the same as answering Yes (owner 2026-11-03)
+    Application.DisplayAlerts = False
     wb.Worksheets(names).Copy After:=wb.Worksheets(wb.Worksheets.Count)
-    ' the copies are the last n sheets, in the template's order
-    For i = 0 To n - 1
-        Set ws = wb.Worksheets(before + 1 + i)
-        ws.Name = Replace(CStr(names(i)), code & tmpl & "_", code & idx & "_", 1, 1)
-        If i = 0 Then
+    Application.DisplayAlerts = True
+    ' the copies are the last n sheets, named '<source> (2)' by Excel and placed in the SOURCES' TAB
+    ' order (not the array order) - so each copy is named after its source (owner's file had _Y first)
+    Dim src As String, p As Long
+    For i = before + 1 To wb.Worksheets.Count
+        Set ws = wb.Worksheets(i)
+        src = ws.Name
+        p = InStrRev(src, " (")
+        If p > 0 Then src = Left$(src, p - 1)
+        For j = 0 To n - 1
+            If StrComp(src, CStr(names(j)), vbTextCompare) = 0 Then Exit For
+        Next j
+        If j > n - 1 Then Err.Raise vbObjectError + 5, , "Copy of '" & ws.Name & "' does not match a template sheet."
+        ws.Name = Replace(CStr(names(j)), code & tmpl & "_", code & idx & "_", 1, 1)
+        If j = 0 Then
             ws.Range(H_IDX).Value = idx
             If codeCell <> "" Then ws.Range(codeCell).Value = code & idx
         End If
@@ -296,12 +311,39 @@ Private Sub RunLists(wb As Workbook)
     On Error GoTo 0
 End Sub
 
+' Names that point to #REF! are dead (old matrix add-in names, stale _FilterDatabase of 3A ...). They
+' are copied with every chapter sheet and make Excel ask about name conflicts, so they are removed
+' (owner 2026-11-03: replicated names). Excel's own hidden _xlfn names (=#NAME?) are not touched.
+Private Sub PurgeBrokenNames(wb As Workbook)
+    Dim i As Long, nm As Name, n As Long, rt As String
+    For i = wb.Names.Count To 1 Step -1
+        Set nm = wb.Names(i)
+        rt = ""
+        On Error Resume Next
+        rt = nm.RefersTo
+        On Error GoTo 0
+        If InStr(1, rt, "#REF!", vbBinaryCompare) > 0 And Left$(nm.Name, 6) <> "_xlfn." Then
+            On Error Resume Next
+            nm.Delete
+            If Err.Number = 0 Then n = n + 1
+            Err.Clear
+            On Error GoTo 0
+        End If
+    Next i
+    If n > 0 Then msgLog = msgLog & "Removed " & n & " broken (#REF!) name(s)." & vbCrLf
+End Sub
+
 ' ---- helpers ----
 Private Function IsReportName(ByVal nm As String) As Boolean
     If Len(nm) = 0 Then Exit Function
     If Not (Left$(nm, 1) Like "#") Then Exit Function
-    If UCase$(Right$(nm, 6)) = "_YATAY" Then Exit Function
+    If IsCompanionName(nm) Then Exit Function
     IsReportName = True
+End Function
+
+' landscape companion sheets: name ends with _Y or _YATAY (owner 2026-11-03)
+Private Function IsCompanionName(ByVal nm As String) As Boolean
+    IsCompanionName = (UCase$(Right$(nm, 2)) = "_Y" Or UCase$(Right$(nm, 6)) = "_YATAY")
 End Function
 
 ' chapter code if the sheet is a managed chapter sheet, else ""

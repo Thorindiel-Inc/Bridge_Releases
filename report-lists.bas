@@ -19,8 +19,8 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-11-03a"
-Private Const SCRIPT_CHANGELOG As String = "Silent entry LISTELERI_AYARLA_SESSIZ (messages returned as text); report sheets = name starts with a digit (3A1_DYN ...), *_YATAY = landscape companion; Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
+Private Const SCRIPT_VERSION As String = "2026-11-03b"
+Private Const SCRIPT_CHANGELOG As String = "Companion sheets also named *_Y; silent entry LISTELERI_AYARLA_SESSIZ (messages returned as text); report sheets = name starts with a digit (3A1_DYN ...), *_YATAY = landscape companion; Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
 
 Private Const COL_CODE As Long = 26      ' Z  caption code on the report sheets
 Private Const COL_HEAD As Long = 30      ' AD heading code
@@ -545,13 +545,13 @@ Private Function TextOf(v As Variant) As String
     If Not IsError(v) Then TextOf = CStr(v)
 End Function
 
-' report sheet = name starts with a digit (1_GIRIS, 2_YUKLER, 3A1_DYN ...) and does not end with _YATAY;
-' *_YATAY sheets are landscape companions: their captions are link targets of the main sheet's
+' report sheet = name starts with a digit (1_GIRIS, 2_YUKLER, 3A1_DYN ...) and does not end with _Y / _YATAY;
+' *_Y / *_YATAY sheets are landscape companions: their captions are link targets of the main sheet's
 ' one-row placeholders (ElsewhereOr), not list entries of their own (owner 2026-11-03)
 Private Function IsReportName(shName As String) As Boolean
     If InStr(shName, "_") < 2 Then Exit Function
     If Not (Left$(shName, 1) Like "#") Then Exit Function
-    If UCase$(Right$(shName, 6)) = "_YATAY" Then Exit Function
+    If UCase$(Right$(shName, 2)) = "_Y" Or UCase$(Right$(shName, 6)) = "_YATAY" Then Exit Function
     IsReportName = True
 End Function
 
