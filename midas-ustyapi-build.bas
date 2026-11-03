@@ -40,8 +40,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03m"
-Private Const SCRIPT_CHANGELOG As String = "Unused load cases WA-1, EH, EV, ES, LS, S, IC and combinations ICE-1, SNOW-1, DEAD, Servis 2, Servis 4 and STR-2 removed (owner); Summary / report boxes shortened (MsgBox 1024-character limit, full text to a file if longer); CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-03o"
+Private Const SCRIPT_CHANGELOG As String = "TU+ / TU- loaded with system temperature +-dT from 1-2 G_SICAKLIK_MAKS / MIN, only TU+ in the combinations; Tendon grouting 0 (pretension: no grouting stage warning); slab torsion factors use the exact MIDAS rectangle formula (Analysis Reference Eq. 2); Unused load cases WA-1, EH, EV, ES, LS, S, IC and combinations ICE-1, SNOW-1, DEAD, Servis 2, Servis 4 and STR-2 removed (owner); Summary / report boxes shortened (MsgBox 1024-character limit, full text to a file if longer); CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -76,7 +76,7 @@ Private tc As Double, tMin As Double, enlB As Double, enlH As Double
 Private eG As Double, eS As Double, clsG As String, clsS As String
 Private qBal As Double, qKor As Double, qBor As Double, qKork As Double, qCep As Double, qRay As Double
 Private sark As Double, kyB As Double, kEB As Double
-Private wG As Double, wV As Double, alphaLM As Double
+Private wG As Double, wV As Double, alphaLM As Double, tuPos As Double, tuNeg As Double
 Private kb(1 To 12) As Double   ' b2..b7, h2..h7 (m)
 Private kbY(1 To 12) As Double  ' end-zone girder "<type> - Y" (section over the support)
 Private zoneL As Double         ' end-zone length from each girder end (1-2 INPUT, cell right of Sarkiklik, cm)
@@ -318,6 +318,11 @@ Private Sub ReadInputs(wb12 As Workbook, wb47 As Workbook)
     wG = Num(BelowHeader(wb12.Worksheets("2_YUKLER"), "Wg").Value, "2_YUKLER Wg (wind on structure)")
     wV = Num(BelowHeader(wb12.Worksheets("2_YUKLER"), "Wv").Value, "2_YUKLER Wv (wind on train)")
     alphaLM = Num(BelowHeader(wb12.Worksheets("2_YUKLER"), ChrW(945)).Value, "2_YUKLER alpha")
+
+    ' uniform temperature (owner 2026-11-03, option A): dT = the 1-2 INPUT values, reference temperature 0
+    tuPos = Num(NmRange(wb12, "G_SICAKLIK_MAKS").Cells(1).Value, "G_SICAKLIK_MAKS")
+    tuNeg = Num(NmRange(wb12, "G_SICAKLIK_MIN").Cells(1).Value, "G_SICAKLIK_MIN")
+    If tuPos <= 0 Or tuNeg >= 0 Then warnText = warnText & "- Temperature: G_SICAKLIK_MAKS = " & tuPos & ", G_SICAKLIK_MIN = " & tuNeg & " (expected > 0 and < 0)." & vbCrLf
 
     ReadCombTables wb12.Worksheets("1_GIRIS")
 
@@ -844,6 +849,8 @@ Private Sub BuildPayloads()
     Next i
     If s <> "" Then Add "db/ESSF", "{""Assign"":{" & s & "}}"
     Add "db/STLD", "{""Assign"":{" & StldJson() & "}}"
+    ' TU+ / TU-: uniform temperature change on the whole model (system temperature; STYP initial temperature 0)
+    Add "db/STMP", "{""Assign"":{""1"":{""TEMPER"":" & JN(tuPos) & ",""LCNAME"":""TU+"",""GROUP_NAME"":""""},""2"":{""TEMPER"":" & JN(tuNeg) & ",""LCNAME"":""TU-"",""GROUP_NAME"":""""}}}"
     Add "db/LDGR", "{""Assign"":{""1"":{""NAME"":""LG_ZATI""},""2"":{""NAME"":""LG_ONGERME""},""3"":{""NAME"":""LG_DW""}}}"
     Add "db/BODF", "{""Assign"":{""1"":{""LCNAME"":""DC"",""GROUP_NAME"":""LG_ZATI"",""FV"":[0,0,-1]}}}"
     s = "": cnt = 0
@@ -964,7 +971,7 @@ Private Sub AddTendon(ByVal nm As String, ByVal el As String, ByVal e1 As Long, 
         """PROFZ"":[{""PT"":[0," & JN(zr) & "],""bFIX"":true,""R"":0,""bBOTZ"":false},{""PT"":[" & JN(Lg) & "," & JN(zr) & "],""bFIX"":true,""R"":0,""bBOTZ"":false}]}"
     tdcsJson = tdcsJson & IIf(nTdn = 1, "", ",") & k & ":{""TDNA"":" & nTdn & ",""CSCS"":" & cscsNo & ",""PART_NUM"":1}"
     tdplJson = tdplJson & IIf(nTdn = 1, "", ",") & k & ":{""ITEMS"":[{""ID"":1,""LCNAME"":""Prestress"",""GROUP_NAME"":""LG_ONGERME"",""TENDON_NAME"":" & QS(nm) & _
-        ",""TYPE"":""STRESS"",""ORDER"":""BOTH"",""BEGIN"":" & JN(fpi * 1000#) & ",""END"":" & JN(fpi * 1000#) & ",""GROUTING"":1}]}"
+        ",""TYPE"":""STRESS"",""ORDER"":""BOTH"",""BEGIN"":" & JN(fpi * 1000#) & ",""END"":" & JN(fpi * 1000#) & ",""GROUTING"":0}]}"
 End Sub
 
 Private Function JoinKeys(d As Object) As String
@@ -991,7 +998,7 @@ Private Function TSect(ByVal no As Long, ByVal nm As String, ByVal h As Double, 
 End Function
 
 ' Hambly: torsion of a slab strip of width b and depth t is b t^3 / 6 (half of the solid-bar value);
-' factor on the rectangle torsion constant that MIDAS computes (Roark: a c^3/3 (1 - 0.63 c/a), a >= c)
+' factor on the rectangle torsion constant that MIDAS computes (RectJ, Analysis Reference Eq. 2)
 ' ESSF of the visual strip (section 14, drawn visW x tc): every property back to the true strip dxAct x tc.
 ' Rectangle B x t: A, Asy, Asz, Iyy (vertical bending, b t^3/12) ~ B; Izz (in plane) ~ B^3; torsion = Hambly dx t^3/6
 ' over the rectangle J of the drawn section (same Roark formula as HamblyJ).
@@ -999,7 +1006,7 @@ Private Function VisEssf() As String
     Dim r As Double, jx As Double, a As Double, c As Double
     r = dxAct / visW
     a = IIf(visW >= tc, visW, tc): c = IIf(visW >= tc, tc, visW)
-    jx = (dxAct * tc ^ 3 / 6#) / (a * c ^ 3 / 3# * (1# - 0.63 * c / a))
+    jx = (dxAct * tc ^ 3 / 6#) / RectJ(a, c)
     VisEssf = "{""ID"":1,""AREA_SF"":" & JN(r) & ",""ASY_SF"":" & JN(r) & ",""ASZ_SF"":" & JN(r) & ",""IXX_SF"":" & JN(jx) & _
         ",""IYY_SF"":" & JN(r) & ",""IZZ_SF"":" & JN(r ^ 3) & ",""WGT_SF"":" & JN(r) & ",""GROUP_NAME"":"""",""iPart"":""Before""}"
 End Function
@@ -1016,7 +1023,15 @@ End Function
 Private Function HamblyJ(ByVal b As Double, ByVal t As Double) As Double
     Dim a As Double, c As Double
     a = IIf(b >= t, b, t): c = IIf(b >= t, t, b)
-    HamblyJ = (b * t ^ 3 / 6#) / (a * c ^ 3 / 3# * (1# - 0.63 * c / a))
+    HamblyJ = (b * t ^ 3 / 6#) / RectJ(a, c)
+End Function
+
+' torsion constant of a solid rectangle as MIDAS computes it (Civil NX Analysis Reference, "Torsional
+' Resistance (Ixx)" Eq. 2: ixx = a b^3 [16/3 - 3.36 (b/a)(1 - b^4/(12 a^4))] with 2a, 2b = sides);
+' written with the full sides a >= c: a c^3/3 (1 - 0.63 (c/a)(1 - (c/a)^4/12))
+Private Function RectJ(ByVal a As Double, ByVal c As Double) As Double
+    Dim r As Double: r = c / a
+    RectJ = a * c ^ 3 / 3# * (1# - 0.63 * r * (1# - r ^ 4 / 12#))
 End Function
 
 Private Function SectHead() As String
@@ -1181,10 +1196,11 @@ Private Function TableItems(ByVal lab As String, ByVal mode As Long, ByVal strNo
             fDC = IIf(strNo = 4, dcMax4, dcMax): fDW = dwMax
         End If
     End If
-    ' FR takes the Tablo 14 WA column (as in the reference model)
+    ' FR takes the Tablo 14 WA column (as in the reference model); TU- carries load but is not combined
+    ' (owner 2026-11-03: only TU+ in the combinations, to keep their number down)
     s = CsItems(fDC, fDW, mode = 0) & It("ST", "FR", f(2)) & _
         It("ST", "WS-X", f(3)) & It("ST", "WS-Y", f(3)) & It("ST", "WS-Z", f(3)) & It("ST", "WL", f(4)) & _
-        It("ST", "TU+", f(5)) & It("ST", "TU-", f(5)) & It("ST", "PL", f(1)) & It("ST", "BR", f(1)) & It("ST", "CF", f(1)) & _
+        It("ST", "TU+", f(5)) & It("ST", "PL", f(1)) & It("ST", "BR", f(1)) & It("ST", "CF", f(1)) & _
         It("ST", "MOVE", f(1)) & It("MV", "LM71", f(1))
     TableItems = Mid$(s, 2)
 End Function
@@ -1317,7 +1333,7 @@ End Function
 ' PJCF are single records (key 1) that the build overwrites, so they are not deleted.
 Private Function CleanTables() As Variant
     CleanTables = Array("LCOM-CONC", "LCOM-GEN", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
-        "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "LDGR", "STLD", "ESSF", _
+        "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", _
         "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
 End Function
 
@@ -1490,7 +1506,7 @@ Private Function Summary() As String
         "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & _
         ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _
         "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
-        "Wind Wg " & wG & ", Wv " & wV & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
+        "Wind Wg " & wG & ", Wv " & wV & "; TU " & tuPos & "/" & tuNeg & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
         "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
