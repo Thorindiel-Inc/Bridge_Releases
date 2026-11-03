@@ -28,8 +28,8 @@ Option Explicit
 '  of Sarkiklik (cm from the girder end).
 '  Not built (no API endpoint): PSC design parameters, DynaGen, load
 '  contribution for nonlinear case (LOADCONST), perform-analysis entries.
-'  MAPI key: environment variable MIDAS_MAPI_KEY, else asked once per Excel
-'  session; never written to a cell or file.
+'  MAPI key: cell INPUT!T3 of this workbook (owner 2026-11-03), else environment
+'  variable MIDAS_MAPI_KEY, else asked once per Excel session (InputBox, memory only).
 '
 '  Asked in pop-ups (button macro): strip spacing, link length, fixed-spring
 '  stiffness. From geometry: end strip width = sarkiklik/2, extra girder
@@ -40,11 +40,13 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03o"
-Private Const SCRIPT_CHANGELOG As String = "TU+ / TU- loaded with system temperature +-dT from 1-2 G_SICAKLIK_MAKS / MIN, only TU+ in the combinations; Tendon grouting 0 (pretension: no grouting stage warning); slab torsion factors use the exact MIDAS rectangle formula (Analysis Reference Eq. 2); Unused load cases WA-1, EH, EV, ES, LS, S, IC and combinations ICE-1, SNOW-1, DEAD, Servis 2, Servis 4 and STR-2 removed (owner); Summary / report boxes shortened (MsgBox 1024-character limit, full text to a file if longer); CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-03q"
+Private Const SCRIPT_CHANGELOG As String = "Progress bar in the status bar (clean pass, MCT import, tables, read-back); MAPI key read from cell INPUT!T3 first (then MIDAS_MAPI_KEY, then a prompt); TU+ / TU- loaded with system temperature +-dT from 1-2 G_SICAKLIK_MAKS / MIN, only TU+ in the combinations; Tendon grouting 0 (pretension: no grouting stage warning); slab torsion factors use the exact MIDAS rectangle formula (Analysis Reference Eq. 2); Unused load cases WA-1, EH, EV, ES, LS, S, IC and combinations ICE-1, SNOW-1, DEAD, Servis 2, Servis 4 and STR-2 removed (owner); Summary / report boxes shortened (MsgBox 1024-character limit, full text to a file if longer); CS1 temporary roll restraint (group BG_GECICI, released in CS2); service combinations = MIDAS CS Summation set (no creep/shrinkage primary); Hambly grillage, composite sections by MCT"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
+Private Const KEY_SHEET As String = "INPUT"   ' MAPI key cell (owner 2026-11-03)
+Private Const KEY_CELL As String = "T3"
 
 ' asked in pop-ups by the button macro (owner 2026-11-03); these are the proposed defaults
 Private Const DEF_STRIP_DX As Double = 1.5      ' nominal spacing of transverse slab strips (m)
@@ -116,6 +118,8 @@ Private rigdJson As String, elnkJson As String, consJson As String
 Private payloads As Collection
 Private mKey As String
 Private http As Object
+Private progStep As Long, progTotal As Long   ' status-bar progress bar (like the culvert build)
+Private Const PROG_BAR_WIDTH As Long = 24
 
 ' ============================================================================
 Public Sub MIDAS_USTYAPI_OLUSTUR()
@@ -1274,6 +1278,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     ' items and keeps old records, so every table this macro writes is deleted and then
     ' read back empty. Anything left -> stop before the first write.
     Dim cleanRep As String
+    ProgReset 2 * (UBound(CleanTables()) + 1) + 1 + payloads.Count + 4
     cleanRep = CleanModel()
     If Left$(cleanRep, 7) = "STOPPED" Then
         SendAll = cleanRep & vbCrLf & "Nothing was written."
@@ -1285,7 +1290,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Dim mctPath As String
     mctPath = Environ$("TEMP") & "\midas_ustyapi_sect.mct"
     WriteText mctPath, SectMct()
-    Application.StatusBar = "MIDAS_USTYAPI: composite sections (MCT import)"
+    Prog "composite sections (MCT import)"
     If Not Api("POST", "doc/IMPORTMXT", "{""Argument"":" & QS(mctPath) & "}", resp) Then
         SendAll = cleanRep & vbCrLf & "FAIL: MCT import of the composite sections (" & mctPath & "): " & Left$(resp, 300) & vbCrLf & "Nothing else was written."
         Exit Function
@@ -1298,7 +1303,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     cleanRep = cleanRep & vbCrLf & "Composite sections 7-12 imported by MCT (Hambly torsion option on)."
     For i = 1 To payloads.Count
         p = payloads(i)
-        Application.StatusBar = "MIDAS_USTYAPI: " & i & "/" & payloads.Count & "  " & p(0)
+        Prog "table " & i & "/" & payloads.Count & "  " & p(0)
         If Not Api("PUT", CStr(p(0)), CStr(p(1)), resp) Then
             SendAll = "FAIL at step " & i & " (" & p(0) & "):" & vbCrLf & Left$(resp, 600) & vbCrLf & vbCrLf & "Model is incomplete; nothing saved."
             Exit Function
@@ -1306,8 +1311,11 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Next i
     ' read back
     rep = "Read-back:" & vbCrLf
+    Prog "read-back nodes"
     If Api("GET", "db/NODE", "", resp) Then rep = rep & "  nodes " & CountOf(resp, """X"":") & " / " & nCnt & vbCrLf
+    Prog "read-back elements"
     If Api("GET", "db/ELEM", "", resp) Then rep = rep & "  elements " & CountOf(resp, """TYPE"":") & " / " & eCnt & vbCrLf
+    Prog "read-back sections"
     If Api("GET", "db/SECT", "", resp) Then
         area = SectArea(resp, "7")
         rep = rep & "  girder area (section 7) MIDAS " & Format(area, "0.000000") & " / polygon " & Format(polyArea, "0.000000") & _
@@ -1317,6 +1325,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
         rep = rep & "  end-zone area (section 8) MIDAS " & Format(area, "0.000000") & " / polygon " & Format(polyAreaY, "0.000000") & _
               IIf(Abs(area - polyAreaY) < 0.0001, "  OK", "  FAIL") & vbCrLf
     End If
+    Prog "save"
     If Not saveModel Then
         rep = rep & "Not saved (saveModel = False)." & vbCrLf
     ElseIf Api("POST", "doc/SAVE", "{""Argument"":{}}", resp) Then
@@ -1351,7 +1360,7 @@ Private Function CleanModel() As String
     For nTry = 1 To 3
         If nTry > 1 Then
             For Each t In leftTbl
-                Application.StatusBar = "MIDAS_USTYAPI: clean pass " & nTry & "  delete by key " & t
+                Prog "clean pass " & nTry & "  delete by key " & t
                 If Api("GET", "db/" & t, "", resp) Then
                     keys = TopKeys(resp)
                     If keys <> "" Then Call Api("DELETE", "db/" & t, "{""Argument"":[" & keys & "]}", resp)
@@ -1359,14 +1368,14 @@ Private Function CleanModel() As String
             Next t
         Else
             For Each t In leftTbl
-                Application.StatusBar = "MIDAS_USTYAPI: clean pass 1  delete " & t
+                Prog "clean pass 1  delete " & t
                 Call Api("DELETE", "db/" & t, "{}", resp)
             Next t
         End If
         remain = ""
         Set leftTbl = New Collection
         For Each t In CleanTables()
-            Application.StatusBar = "MIDAS_USTYAPI: clean pass " & nTry & "  check " & t
+            Prog "clean pass " & nTry & "  check " & t
             If Not Api("GET", "db/" & t, "", resp) Then
                 remain = remain & "  " & t & " (cannot read: " & Left$(resp, 80) & ")" & vbCrLf
                 leftTbl.Add CStr(t)
@@ -1384,6 +1393,31 @@ Private Function CleanModel() As String
             "Delete them by hand in Civil NX (or open an empty model) and run again."
     End If
 End Function
+
+' ---- progress bar (status bar, like the culvert build: a UserForm would need a .frm/.frx) ----
+' ProgReset sets the step count; every Prog call advances one step and shows the step that is
+' about to run. Clamped at 100 % (extra clean passes just hold the bar full). The callers'
+' existing "Application.StatusBar = False" on every exit path hands the bar back to Excel.
+Private Sub ProgReset(ByVal total As Long)
+    progStep = 0
+    progTotal = IIf(total < 1, 1, total)
+End Sub
+
+Private Sub Prog(ByVal stepName As String)
+    Dim pct As Long, filled As Long
+    progStep = progStep + 1
+    If progTotal < 1 Then progTotal = 1
+    pct = CLng((progStep - 1) * 100 / progTotal)
+    If pct < 0 Then pct = 0
+    If pct > 100 Then pct = 100
+    filled = CLng(pct * PROG_BAR_WIDTH / 100)
+    On Error Resume Next
+    ' ChrW keeps this file ASCII: 9608 full block, 9617 light shade
+    Application.StatusBar = "MIDAS_USTYAPI  [" & String(filled, ChrW(9608)) & String(PROG_BAR_WIDTH - filled, ChrW(9617)) & _
+        "] " & pct & "%   (" & progStep & "/" & progTotal & ")  " & stepName
+    On Error GoTo 0
+    DoEvents
+End Sub
 
 ' Record keys of a GET answer {"<TABLE>":{"<key>":{...},"<key>":{...}}} as "k1","k2",...
 ' (keys at depth 2; strings and escapes skipped so braces inside text do not count).
@@ -1441,6 +1475,7 @@ Public Sub MIDAS_USTYAPI_TEMIZLE(Optional ByVal reportFile As String = "", Optio
         If Not Api("GET", "db/NODE", "", resp) Then
             rep = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300)
         Else
+            ProgReset 2 * (UBound(CleanTables()) + 1)
             rep = CleanModel()
         End If
     End If
@@ -1471,6 +1506,11 @@ Bad:
 End Function
 
 Private Function GetKey() As Boolean
+    Dim cellKey As String
+    On Error Resume Next
+    cellKey = Trim$(CStr(ThisWorkbook.Worksheets(KEY_SHEET).Range(KEY_CELL).Value))
+    On Error GoTo 0
+    If cellKey <> "" Then mKey = cellKey
     If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
     If mKey = "" Then mKey = InputBox("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
     GetKey = (mKey <> "")
