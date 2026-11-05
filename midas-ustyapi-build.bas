@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-05b"
-Private Const SCRIPT_CHANGELOG As String = "Staged or Dynamic model pop-up; dynamic = no stages, no tendons, no links (supports on the girder nodes), static-based combinations, girder J brought to Hambly with measured SECF factors. Slab strips use db/SECF; warning if skew is not 0."
+Private Const SCRIPT_VERSION As String = "2026-11-05c"
+Private Const SCRIPT_CHANGELOG As String = "Staged or Dynamic model pop-up; dynamic = no stages, no tendons, no links (girder nodes: X Y start, Y end, vertical springs kv from 4-7), static-based combinations, girder J brought to Hambly with measured SECF factors. Slab strips use db/SECF; warning if skew is not 0."
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -133,7 +133,7 @@ Private polyAreaY As Double, polyJsonY As String, polyPerY As Double
 Private girdE As String, girdN As Object, deckE As String, deckN As Object
 Private tdnaJson As String, tdcsJson As String, tdplJson As String, nTdn As Long, nTdnGroup As Long
 Private Lg As Double, yL As Double, yR As Double, nTr As Long, tr(1 To 2) As Double, trG(1 To 2) As Long
-Private rigdJson As String, elnkJson As String, consJson As String
+Private rigdJson As String, elnkJson As String, consJson As String, nsprJson As String
 
 Private payloads As Collection
 Private mKey As String
@@ -687,15 +687,18 @@ Private Sub BuildModel()
     ' supports
     Dim zMid As Double, top As Long, mid As Long, bot As Long, e As Variant, kLong As Double, nL As Long
     zMid = -(Hg + tc)
-    rigdJson = "": elnkJson = "": consJson = ""
+    rigdJson = "": elnkJson = "": consJson = "": nsprJson = ""
     For Each e In Array(sark, Lg - sark)
         x = CDbl(e)
         kLong = IIf(Abs(x - sark) < 0.0001, kFix, kyB)
         For j = 0 To nG - 1
             top = AddNode(x, j * sG, 0)
             If dynMode Then
-                ' dynamic model (owner 2026-11-05): no rigid or elastic links; start line X Y Z, end line Y Z, rotations free
-                consJson = consJson & IIf(consJson = "", "", ",") & QS(CStr(top)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":""BG_MESNET"",""CONSTRAINT"":" & QS(IIf(Abs(x - sark) < 0.0001, "1110000", "0110000")) & "}]}"
+                ' dynamic model (owner 2026-11-05): no rigid or elastic links; start line X Y, end line Y, rotations free;
+                ' vertical = point spring kv (4-7 elastomer axial stiffness) on every girder bearing node
+                consJson = consJson & IIf(consJson = "", "", ",") & QS(CStr(top)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":""BG_MESNET"",""CONSTRAINT"":" & QS(IIf(Abs(x - sark) < 0.0001, "1100000", "0100000")) & "}]}"
+                nsprJson = nsprJson & IIf(nsprJson = "", "", ",") & QS(CStr(top)) & ":{""ITEMS"":[{""ID"":1,""TYPE"":""LINEAR"",""FormType"":0,""SDR"":[0,0," & JN(kEB) & ",0,0,0]," & _
+                    """F_S"":[false,false,false,false,false,false],""DAMPING"":false,""Cr"":[0,0,0,0,0,0],""EFFAREA"":0,""DK"":[0,0,0]}]}"
                 GoTo NextGirder
             End If
             mid = AddNode(x, j * sG, zMid)
@@ -958,7 +961,9 @@ Private Sub BuildPayloads()
         Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0},""2"":{""NAME"":""BG_GECICI"",""AUTOTYPE"":0},""3"":{""NAME"":""BG_SF"",""AUTOTYPE"":0}}}"
     End If
     Add "db/CONS", "{""Assign"":{" & consJson & "}}"
-    If Not dynMode Then
+    If dynMode Then
+        Add "db/NSPR", "{""Assign"":{" & nsprJson & "}}"
+    Else
         Add "db/RIGD", "{""Assign"":{" & rigdJson & "}}"
         Add "db/ELNK", "{""Assign"":{" & elnkJson & "}}"
     End If
@@ -1646,7 +1651,7 @@ End Function
 Private Function CleanTables() As Variant
     CleanTables = Array("LCOM-CONC", "LCOM-GEN", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
         "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", "SECF", _
-        "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
+        "NSPR", "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
 End Function
 
 ' Keyless DELETE of every table (a failed DELETE on an already-empty table is harmless, so all
@@ -1862,7 +1867,7 @@ Private Function Summary() As String
         "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; transfer " & Format(ageG, "0.00") & " d (f'ci " & Format(fciRatio, "0.00") & " f'c); CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
     If dynMode Then
         s = "DYNAMIC MODEL" & vbCrLf & Left$(s, InStr(s, "Strands ") - 1) & "No stages, no tendons; girder J factors are measured during the build" & vbCrLf
-        s = Left$(s, InStr(s, "Bearings: ") - 1) & "Supports on the girder nodes: start X Y Z, end Y Z (no links)" & Mid$(s, InStr(InStr(s, "Bearings: "), s, vbCrLf))
+        s = Left$(s, InStr(s, "Bearings: ") - 1) & "Supports on the girder nodes: start X Y, end Y, vertical springs kv " & Format(kEB, "0") & " (no links)" & Mid$(s, InStr(InStr(s, "Bearings: "), s, vbCrLf))
     End If
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
