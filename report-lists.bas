@@ -19,8 +19,8 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-11-03b"
-Private Const SCRIPT_CHANGELOG As String = "Companion sheets also named *_Y; silent entry LISTELERI_AYARLA_SESSIZ (messages returned as text); report sheets = name starts with a digit (3A1_DYN ...), *_YATAY = landscape companion; Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
+Private Const SCRIPT_VERSION As String = "2026-11-05a"
+Private Const SCRIPT_CHANGELOG As String = "Column Z error counted only on caption rows (T / S-cedilla in AE), helper calculations in Z ignored; Companion sheets also named *_Y; silent entry LISTELERI_AYARLA_SESSIZ (messages returned as text); report sheets = name starts with a digit (3A1_DYN ...), *_YATAY = landscape companion; Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
 
 Private Const COL_CODE As Long = 26      ' Z  caption code on the report sheets
 Private Const COL_HEAD As Long = 30      ' AD heading code
@@ -121,7 +121,9 @@ Private Sub ScanReports(heads() As ListEntry, nHead As Long, tabs() As ListEntry
 
         For r = 1 To lastRow
             If IsError(vAD(r, 1)) Then nErr = nErr + 1
-            If IsError(vZ(r, 1)) Then nErr = nErr + 1
+            If IsError(vZ(r, 1)) Then
+                If IsCaptionRow(vAE(r, 1)) Then nErr = nErr + 1   ' Z also holds helper calculations (2_YUKLER Z180)
+            End If
 
             s = TextOf(vAD(r, 1))
             If Len(s) > 0 And s <> "0" And Not seen.Exists("H|" & s) Then
@@ -543,6 +545,15 @@ End Function
 
 Private Function TextOf(v As Variant) As String
     If Not IsError(v) Then TextOf = CStr(v)
+End Function
+
+' caption row = AE holds the table / figure letter (T, S-cedilla); an error in AE counts as one too
+Private Function IsCaptionRow(v As Variant) As Boolean
+    If IsError(v) Then
+        IsCaptionRow = True
+    Else
+        IsCaptionRow = (CStr(v) = "T" Or CStr(v) = ChrW(350))
+    End If
 End Function
 
 ' report sheet = name starts with a digit (1_GIRIS, 2_YUKLER, 3A1_DYN ...) and does not end with _Y / _YATAY;
