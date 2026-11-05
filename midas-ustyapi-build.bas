@@ -1,11 +1,12 @@
 Attribute VB_Name = "MIDAS_USTYAPI"
 Option Explicit
 ' ============================================================================
-'  MIDAS_USTYAPI - builds the superstructure grillage model (dynamic model,
-'  reference models/USTYAPI_DYN.mct) in MIDAS Civil NX through the MAPI REST
-'  API. Runs from the 1-2 workbook (INT-LDS).
+'  MIDAS_USTYAPI - builds the superstructure grillage model (STAGED design model or
+'  DYNAMIC model, reference models/USTYAPI_DYN.mct) in MIDAS Civil NX through the MAPI
+'  REST API. Runs from the 1-3A workbook (INT-LDS-DYN).
 ' ----------------------------------------------------------------------------
 '  Button macro: MIDAS_USTYAPI_OLUSTUR
+'    0. asks STAGED or DYNAMIC (dynamic = no stages, no tendons, static-based combinations)
 '    1. asks for the span (Hesap Acikligi 1..6 of G_HESAP_ACIKLIK)
 '    2. asks for the 4-7 workbook (opened read-only): sarkiklik (G_SARKIKLIK)
 '       and the elastomer stiffnesses (1_RAPOR, column C labels
@@ -18,7 +19,7 @@ Option Explicit
 '       -> stop, nothing written), then writes every table into that model,
 '       reads back counts + the girder area and saves it (doc/SAVE)
 '  Clean only: MIDAS_USTYAPI_TEMIZLE (asks first).
-'  Dry run (no dialogs, no HTTP): MIDAS_USTYAPI_PAYLOAD span, path47, outDir
+'  Dry run (no dialogs, no HTTP): MIDAS_USTYAPI_PAYLOAD span, path47, outDir [, dynamicModel]
 '    writes NN_<TABLE>.json files + summary.txt.
 '
 '  Construction stages (owner 2026-11-02): CS1 girders + bearings + self-weight +
@@ -41,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-03x"
-Private Const SCRIPT_CHANGELOG As String = "Outer end beam depth = girder H + tc + bearing height; inner diaphragm height + (tc - min slab); section colours (2D wireframe + 3D fill/edge, db/CO_S); outer end beam (dis enleme, 1-2 G_DIS_ENLEME_*) on the girder-end lines; 20 eigen modes (was 100); girder nodes at the 4-7 Tablo 27 live-load stations (both halves) for MAK_LL; AASHTO creep/shrinkage (TDMT AASHTO) with ACI 209 strength gain; girder transfer age = day f'c(t) reaches the 4-7 f'ci (2.61 d); CS1 120 d; Magura relaxation KL 45; status-bar progress bar; MAPI key from INPUT!T3; TU+ / TU- system temperature loads; tendon grouting 0; exact MIDAS rectangle torsion; fewer load cases and combinations; CS1 roll restraint; service = CS Summation set; Hambly grillage, composite sections by MCT"
+Private Const SCRIPT_VERSION As String = "2026-11-05b"
+Private Const SCRIPT_CHANGELOG As String = "Staged or Dynamic model pop-up; dynamic = no stages, no tendons, no links (supports on the girder nodes), static-based combinations, girder J brought to Hambly with measured SECF factors. Slab strips use db/SECF; warning if skew is not 0."
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -103,11 +104,16 @@ Private fpi As Double, aStr As Double, dStr As Double, epS As Double, fpuS As Do
 Private fckG As Double, fckS As Double
 Private projName As String, clientName As String, bridgeName As String
 Private warnText As String
+' dynamic model (owner 2026-11-05): no stages, no tendons; without CSCS MIDAS drops the Hambly option and uses the
+' merged-section J, so the build measures it on cantilevers and sets a SECF factor per girder section
+Private dynMode As Boolean, askUser As Boolean
+Private jMer(7 To 12) As Double, jHam(7 To 12) As Double, jFac(7 To 12) As Double
+Private Const DYN_TAG As String = "@@GIRDER_SECF@@"
 ' asked values + geometry derived from them (owner 2026-11-03)
 Private stripDx As Double, linkLen As Double, kFix As Double
 Private dxAct As Double, endStripW As Double, endExtra As Double
-' Hambly grillage (owner 2026-11-03): diaphragm slab flange width, overhangs, edge-girder slab widths, torsion factors
-Private diaW As Double, ovL As Double, ovR As Double, essfJson As String
+' Hambly grillage (owner 2026-11-03): diaphragm slab flange width, overhangs, edge-girder slab widths
+Private diaW As Double, ovL As Double, ovR As Double
 Private visW As Double                      ' drawn width of the first/last strip (visual only, section 14)
 Private polyPts As String, polyPtsY As String    ' polygon as MCT text (x, y, ...)
 
@@ -140,19 +146,20 @@ Public Sub MIDAS_USTYAPI_OLUSTUR()
     RunBuild 0, "", "", False
 End Sub
 
-Public Sub MIDAS_USTYAPI_PAYLOAD(ByVal spanIndex As Long, ByVal path47 As String, ByVal outDir As String)
-    RunBuild spanIndex, path47, outDir, True
+Public Sub MIDAS_USTYAPI_PAYLOAD(ByVal spanIndex As Long, ByVal path47 As String, ByVal outDir As String, Optional ByVal dynamicModel As Boolean = False)
+    RunBuild spanIndex, path47, outDir, True, dynamicModel
 End Sub
 
 ' No dialogs: writes into the open model at once and saves it, report text to reportFile.
 ' For a scripted run; the key is passed in memory only (never stored).
 Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal path47 As String, ByVal reportFile As String, Optional ByVal apiKey As String = "", Optional ByVal saveModel As Boolean = True, _
-                              Optional ByVal stripSpacing As Double = DEF_STRIP_DX, Optional ByVal linkLength As Double = DEF_LINK_LEN, Optional ByVal fixedSpring As Double = DEF_K_FIX)
+                              Optional ByVal stripSpacing As Double = DEF_STRIP_DX, Optional ByVal linkLength As Double = DEF_LINK_LEN, Optional ByVal fixedSpring As Double = DEF_K_FIX, Optional ByVal dynamicModel As Boolean = False)
     Dim rep As String
     On Error GoTo Fail
     If apiKey <> "" Then mKey = apiKey
     warnText = ""
     stripDx = stripSpacing: linkLen = linkLength: kFix = fixedSpring
+    dynMode = dynamicModel: askUser = False
     spanNo = spanIndex
     Dim wb47 As Workbook, opened47 As Boolean
     Set wb47 = OpenWb(path47, opened47)
@@ -172,12 +179,23 @@ Fail:
     WriteText reportFile, "FAIL: " & d
 End Sub
 
-Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outDir As String, ByVal dry As Boolean)
+Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outDir As String, ByVal dry As Boolean, Optional ByVal dynamicModel As Boolean = False)
     Dim wb12 As Workbook, wb47 As Workbook, opened47 As Boolean, msg As String, rep As String
     On Error GoTo Fail
     warnText = ""
     stripDx = DEF_STRIP_DX: linkLen = DEF_LINK_LEN: kFix = DEF_K_FIX
     Set wb12 = ThisWorkbook
+    dynMode = dynamicModel: askUser = Not dry
+    If Not dry Then
+        Select Case MsgBox("Which model do you want to build?" & vbCrLf & vbCrLf & _
+                "YES = STAGED model (design: construction stages, tendons, combinations)." & vbCrLf & _
+                "NO = DYNAMIC model (modes: no stages, no tendons, moving load kept)." & vbCrLf & vbCrLf & _
+                "Open the matching .mcb in Civil NX first: the macro wipes the open file.", vbYesNoCancel + vbQuestion, MSG_TITLE)
+            Case vbYes: dynMode = False
+            Case vbNo: dynMode = True
+            Case Else: Exit Sub
+        End Select
+    End If
 
     If spanIndex = 0 Then spanIndex = AskSpan(wb12)
     If spanIndex = 0 Then Exit Sub
@@ -209,7 +227,7 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outD
     End If
 
     msg = FitBox(Summary(), "summary", 160) & vbCrLf & vbCrLf & _
-          "YES = WIPE the open Civil NX model, rebuild it and SAVE it." & vbCrLf & _
+          "YES = WIPE the open Civil NX model, rebuild it as the " & IIf(dynMode, "DYNAMIC", "STAGED") & " model and SAVE it." & IIf(dynMode, " The J measurement overwrites the open file during the build.", "") & vbCrLf & _
           "NO = only write the JSON payloads (MIDAS\payload)."
     Select Case MsgBox(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
         Case vbNo
@@ -253,10 +271,11 @@ Private Function AskModelValues() As Boolean
     If v <= 0 Then MsgBox "Strip spacing must be > 0.", vbExclamation, MSG_TITLE: Exit Function
     stripDx = CDbl(v)
     v = Application.InputBox("Elastic link length below the bearing node (m)." & vbCrLf & _
-        "(Only the drawing changes; the springs do not depend on it.)", MSG_TITLE & " - bearing link", DEF_LINK_LEN, Type:=1)
+        IIf(dynMode, "(Dynamic model: no links, this only sets the outer end beam depth.)", "(Only the drawing changes; the springs do not depend on it.)"), MSG_TITLE & " - bearing link", DEF_LINK_LEN, Type:=1)
     If VarType(v) = vbBoolean Then Exit Function
     If v <= 0 Then MsgBox "Link length must be > 0.", vbExclamation, MSG_TITLE: Exit Function
     linkLen = CDbl(v)
+    If dynMode Then AskModelValues = True: Exit Function   ' no springs in the dynamic model
     v = Application.InputBox("Fixed bearing spring stiffness (kN/m)." & vbCrLf & _
         "Used transversely at both bearing lines and longitudinally at the fixed end.", MSG_TITLE & " - fixed spring", DEF_K_FIX, Type:=1)
     If VarType(v) = vbBoolean Then Exit Function
@@ -349,6 +368,14 @@ Private Sub ReadInputs(wb12 As Workbook, wb47 As Workbook)
     tuPos = Num(NmRange(wb12, "G_SICAKLIK_MAKS").Cells(1).Value, "G_SICAKLIK_MAKS")
     tuNeg = Num(NmRange(wb12, "G_SICAKLIK_MIN").Cells(1).Value, "G_SICAKLIK_MIN")
     If tuPos <= 0 Or tuNeg >= 0 Then warnText = warnText & "- Temperature: G_SICAKLIK_MAKS = " & tuPos & ", G_SICAKLIK_MIN = " & tuNeg & " (expected > 0 and < 0)." & vbCrLf
+    ' the model is always built square (owner 2026-11-05: warn, do not stop)
+    Dim skewV As Variant
+    On Error Resume Next
+    skewV = wb12.Names("G_VEREVLIK").RefersToRange.Cells(1).Value
+    On Error GoTo 0
+    If IsNumeric(skewV) Then
+        If CDbl(skewV) <> 0 Then warnText = warnText & "- Skew G_VEREVLIK = " & skewV & ": this macro ignores skew, the model is built SQUARE." & vbCrLf
+    End If
 
     ReadCombTables wb12.Worksheets("1_GIRIS")
 
@@ -573,7 +600,7 @@ Private Sub BuildModel()
     ' half way to the diaphragm line; diaphragm line (X = sark) -> from there to half way to the first strip.
     endStripW = sark / 2: If endStripW < 0.01 Then endStripW = 0.01
     diaW = sark / 2 + dx / 2
-    ' visual only: first / last strip drawn wide enough to reach the diaphragm web (no drawn gap); ESSF scales
+    ' visual only: first / last strip drawn wide enough to reach the diaphragm web (no drawn gap); SECF scales
     ' every property back to the true width dx, so the structure is unchanged (owner 2026-11-03)
     visW = 2 * dx - IIf(DiaFlange() > enlB, DiaFlange(), enlB)
     If visW < dx + 0.001 Then visW = 0
@@ -666,6 +693,11 @@ Private Sub BuildModel()
         kLong = IIf(Abs(x - sark) < 0.0001, kFix, kyB)
         For j = 0 To nG - 1
             top = AddNode(x, j * sG, 0)
+            If dynMode Then
+                ' dynamic model (owner 2026-11-05): no rigid or elastic links; start line X Y Z, end line Y Z, rotations free
+                consJson = consJson & IIf(consJson = "", "", ",") & QS(CStr(top)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":""BG_MESNET"",""CONSTRAINT"":" & QS(IIf(Abs(x - sark) < 0.0001, "1110000", "0110000")) & "}]}"
+                GoTo NextGirder
+            End If
             mid = AddNode(x, j * sG, zMid)
             bot = AddNode(x, j * sG, zMid - linkLen)
             girdN(mid) = 1: girdN(bot) = 1
@@ -678,6 +710,7 @@ Private Sub BuildModel()
             ' per end (link rotations free) and could roll about its axis; RX of the girder node is held in CS1 only
             ' (temporary bracing), released in CS2 when the deck ties the girders together
             consJson = consJson & "," & QS(CStr(top)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":""BG_GECICI"",""CONSTRAINT"":""0001000""}]}"
+NextGirder:
         Next j
     Next e
 
@@ -881,7 +914,7 @@ Private Sub BuildPayloads()
     Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":true,""bSELFWEIGHT"":true,""SMASS"":3}}}"
     ' PJCF: Civil NX rejects longer than 80 characters and (not always) Turkish letters -> ASCII, 80 max
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
-        ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj("Hesap Acikligi - " & spanNo & " = " & Lc & " m; " & SCRIPT_ID & " " & SCRIPT_VERSION)) & "}}}"
+        ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj("Hesap Acikligi - " & spanNo & " = " & Lc & " m; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(dynMode, " DYNAMIC", ""))) & "}}}"
     Add "db/MATL", "{""Assign"":{" & _
         """1"":{""TYPE"":""CONC"",""NAME"":" & QS(clsG) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(clsG)) & "}]}," & _
         """2"":{""TYPE"":""CONC"",""NAME"":" & QS(clsS) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(clsS)) & "}]}," & _
@@ -890,10 +923,12 @@ Private Sub BuildPayloads()
     ' time-dependent concrete (owner 2026-11-03): AASHTO creep/shrinkage (AASHTO 2020 5.4.2.3), strength gain
     ' ACI 209 t / (A + B t) (MIDAS has no AASHTO strength curve), linked to materials 1 (girder) and 2 (slab).
     ' V/S (m): girder = total precast surface (AASHTO 5.4.2.3.2), slab = both faces (t / 2)
-    Add "db/TDMT", "{""Assign"":{""1"":" & TdmtJson("AASHTO_KIRIS", fckG, ageG, VsG()) & ",""2"":" & TdmtJson("AASHTO_TABLIYE", fckS, AGE_SLAB, tc / 2) & "}}"
-    Add "db/TDME", "{""Assign"":{""1"":{""NAME"":""ACI_KIRIS"",""TYPE"":""CODE"",""CODENAME"":""ACI"",""STRENGTH"":" & JN(fckG * 1000#) & ",""A"":" & JN(ACI_A_G) & ",""B"":" & JN(ACI_B_G) & "}," & _
-        """2"":{""NAME"":""ACI_TABLIYE"",""TYPE"":""CODE"",""CODENAME"":""ACI"",""STRENGTH"":" & JN(fckS * 1000#) & ",""A"":" & JN(ACI_A_S) & ",""B"":" & JN(ACI_B_S) & "}}}"
-    Add "db/TMAT", "{""Assign"":{""1"":{""TDMT_NAME"":""AASHTO_KIRIS"",""TDME_NAME"":""ACI_KIRIS""},""2"":{""TDMT_NAME"":""AASHTO_TABLIYE"",""TDME_NAME"":""ACI_TABLIYE""}}}"
+    If Not dynMode Then
+        Add "db/TDMT", "{""Assign"":{""1"":" & TdmtJson("AASHTO_KIRIS", fckG, ageG, VsG()) & ",""2"":" & TdmtJson("AASHTO_TABLIYE", fckS, AGE_SLAB, tc / 2) & "}}"
+        Add "db/TDME", "{""Assign"":{""1"":{""NAME"":""ACI_KIRIS"",""TYPE"":""CODE"",""CODENAME"":""ACI"",""STRENGTH"":" & JN(fckG * 1000#) & ",""A"":" & JN(ACI_A_G) & ",""B"":" & JN(ACI_B_G) & "}," & _
+            """2"":{""NAME"":""ACI_TABLIYE"",""TYPE"":""CODE"",""CODENAME"":""ACI"",""STRENGTH"":" & JN(fckS * 1000#) & ",""A"":" & JN(ACI_A_S) & ",""B"":" & JN(ACI_B_S) & "}}}"
+        Add "db/TMAT", "{""Assign"":{""1"":{""TDMT_NAME"":""AASHTO_KIRIS"",""TDME_NAME"":""ACI_KIRIS""},""2"":{""TDMT_NAME"":""AASHTO_TABLIYE"",""TDME_NAME"":""ACI_TABLIYE""}}}"
+    End If
     ' Hambly: slab members use the slab thickness tc of the composite girder; diaphragm = T (web + slab flange)
     ' diaphragm flange (Hambly 4.4.3): to midway (diaW), but shear lag -> at most 0.3 x girder spacing;
     ' not wider than the web -> plain rectangle (support diaphragm, slab flange ignored as in Hambly 4.5.1)
@@ -917,21 +952,23 @@ Private Sub BuildPayloads()
     Add "db/GRUP", "{""Assign"":{""1"":{""NAME"":""CROSS_BEAM"",""P_TYPE"":0,""N_LIST"":[" & s & "],""E_LIST"":[" & crossE & "]}," & _
         """2"":{""NAME"":""SG_KIRIS"",""P_TYPE"":0,""N_LIST"":[" & JoinKeys(girdN) & "],""E_LIST"":[" & girdE & "]}," & _
         """3"":{""NAME"":""SG_TABLIYE"",""P_TYPE"":0,""N_LIST"":[" & JoinKeys(deckN) & "],""E_LIST"":[" & deckE & "]}}}"
-    Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0},""2"":{""NAME"":""BG_GECICI"",""AUTOTYPE"":0}}}"
+    If dynMode Then
+        Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0}}}"
+    Else
+        Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0},""2"":{""NAME"":""BG_GECICI"",""AUTOTYPE"":0},""3"":{""NAME"":""BG_SF"",""AUTOTYPE"":0}}}"
+    End If
     Add "db/CONS", "{""Assign"":{" & consJson & "}}"
-    Add "db/RIGD", "{""Assign"":{" & rigdJson & "}}"
-    Add "db/ELNK", "{""Assign"":{" & elnkJson & "}}"
-    ' Hambly torsion of the slab members (sections 3, 5, 13): element stiffness factor on Ixx
-    s = ""
-    For i = 1 To eCnt
-        If eSec(i) = 14 Then
-            s = s & IIf(s = "", "", ",") & QS(CStr(i)) & ":{""ITEMS"":[" & VisEssf() & "]}"
-        ElseIf eSec(i) = 3 Or eSec(i) = 5 Or eSec(i) = 13 Then
-            s = s & IIf(s = "", "", ",") & QS(CStr(i)) & ":{""ITEMS"":[{""ID"":1,""AREA_SF"":1,""ASY_SF"":1,""ASZ_SF"":1,""IXX_SF"":" & JN(HamblyJ(SlabW(eSec(i)), tc)) & _
-                ",""IYY_SF"":1,""IZZ_SF"":1,""WGT_SF"":1,""GROUP_NAME"":"""",""iPart"":""Before""}]}"
-        End If
-    Next i
-    If s <> "" Then Add "db/ESSF", "{""Assign"":{" & s & "}}"
+    If Not dynMode Then
+        Add "db/RIGD", "{""Assign"":{" & rigdJson & "}}"
+        Add "db/ELNK", "{""Assign"":{" & elnkJson & "}}"
+    End If
+    ' Hambly torsion of the slab members (sections 3, 5, 13) and true strip of the drawn section 14: section
+    ' stiffness factors. Staged analysis ignores ESSF and any ungrouped factor; db/SECF works in a boundary group
+    ' activated in a stage (BG_SF, CS2 with the deck), measured 2026-11-05. IPART 1 = plain section.
+    s = SlabSecf(3) & "," & SlabSecf(5) & "," & SlabSecf(13)
+    If visW > 0 Then s = s & "," & VisSecf()
+    If dynMode Then s = s & DYN_TAG   ' girder factors: known after the measurement in SendAll
+    Add "db/SECF", "{""Assign"":{" & s & "}}"
     Add "db/STLD", "{""Assign"":{" & StldJson() & "}}"
     ' TU+ / TU-: uniform temperature change on the whole model (system temperature; STYP initial temperature 0)
     Add "db/STMP", "{""Assign"":{""1"":{""TEMPER"":" & JN(tuPos) & ",""LCNAME"":""TU+"",""GROUP_NAME"":""""},""2"":{""TEMPER"":" & JN(tuNeg) & ",""LCNAME"":""TU-"",""GROUP_NAME"":""""}}}"
@@ -961,7 +998,7 @@ Private Sub BuildPayloads()
     Add "db/MVLDeu", "{""Assign"":{" & MvCase(1, "LM71 - S", "Load Model 71", False) & "," & MvCase(2, "HSLM-A 8 - S", "HSLM A1 ~ HSLM A10", False) & "," & _
         MvCase(3, "LM71", "Load Model 71", True) & "," & MvCase(4, "HSLM-A 8", "HSLM A1 ~ HSLM A10", True) & "," & MvCase(5, "LM71 - a=1", "Load Model 71 - a=1", False) & "}}"
     Add "db/DYFG", "{""Assign"":{""1"":{""INPUT_TYPE"":0,""LENGTH"":" & JN(Lc) & ",""MAINTAIN_TYPE"":1,""OPT_REDUCE_EFF"":false,""HEIGHT_COVER"":0,""DYN_FACTOR"":" & JN(Phi3(Lc)) & "}}}"
-    BuildStages
+    If Not dynMode Then BuildStages
     AddCombs "db/LCOM-GEN", False
     AddCombs "db/LCOM-CONC", True
 End Sub
@@ -973,7 +1010,7 @@ Private Sub BuildStages()
     Dim s As String
     s = """1"":" & Stage("CS1", DUR_CS1, """ACT_ELEM"":[{""GRUP_NAME"":""SG_KIRIS"",""AGE"":" & JN(ageG) & "}],""ACT_BNGR"":[{""BNGR_NAME"":""BG_MESNET"",""POS"":""ORIGINAL""},{""BNGR_NAME"":""BG_GECICI"",""POS"":""ORIGINAL""}]," & _
         """ACT_LOAD"":[{""LOAD_NAME"":""LG_ZATI"",""DAY"":""FIRST""},{""LOAD_NAME"":""LG_ONGERME"",""DAY"":""FIRST""}]") & "," & _
-        """2"":" & Stage("CS2", DUR_CS2, """ACT_ELEM"":[{""GRUP_NAME"":""SG_TABLIYE"",""AGE"":" & JN(AGE_SLAB) & "}],""DACT_BNGR"":[""BG_GECICI""]") & "," & _
+        """2"":" & Stage("CS2", DUR_CS2, """ACT_ELEM"":[{""GRUP_NAME"":""SG_TABLIYE"",""AGE"":" & JN(AGE_SLAB) & "}],""DACT_BNGR"":[""BG_GECICI""],""ACT_BNGR"":[{""BNGR_NAME"":""BG_SF"",""POS"":""ORIGINAL""}]") & "," & _
         """3"":" & Stage("CS3", DUR_CS3, """ACT_LOAD"":[{""LOAD_NAME"":""LG_DW"",""DAY"":""FIRST""}]") & "," & _
         """4"":" & Stage("CS4", DUR_CS4, "")
     Add "db/STAG", "{""Assign"":{" & s & "}}"
@@ -1119,16 +1156,25 @@ End Function
 
 ' Hambly: torsion of a slab strip of width b and depth t is b t^3 / 6 (half of the solid-bar value);
 ' factor on the rectangle torsion constant that MIDAS computes (RectJ, Analysis Reference Eq. 2)
-' ESSF of the visual strip (section 14, drawn visW x tc): every property back to the true strip dxAct x tc.
+' Section factors of the visual strip (section 14, drawn visW x tc): every property back to the true strip dxAct x tc.
 ' Rectangle B x t: A, Asy, Asz, Iyy (vertical bending, b t^3/12) ~ B; Izz (in plane) ~ B^3; torsion = Hambly dx t^3/6
-' over the rectangle J of the drawn section (same Roark formula as HamblyJ).
-Private Function VisEssf() As String
+' over the rectangle J of the drawn section (same formula as HamblyJ).
+Private Function VisSecf() As String
     Dim r As Double, jx As Double, a As Double, c As Double
     r = dxAct / visW
     a = IIf(visW >= tc, visW, tc): c = IIf(visW >= tc, tc, visW)
     jx = (dxAct * tc ^ 3 / 6#) / RectJ(a, c)
-    VisEssf = "{""ID"":1,""AREA_SF"":" & JN(r) & ",""ASY_SF"":" & JN(r) & ",""ASZ_SF"":" & JN(r) & ",""IXX_SF"":" & JN(jx) & _
-        ",""IYY_SF"":" & JN(r) & ",""IZZ_SF"":" & JN(r ^ 3) & ",""WGT_SF"":" & JN(r) & ",""GROUP_NAME"":"""",""iPart"":""Before""}"
+    VisSecf = SecfJson(14, r, jx, r, r ^ 3, r, 1)
+End Function
+
+' Hambly torsion factor on a slab member section (only Ixx changes)
+Private Function SlabSecf(ByVal sec As Long) As String
+    SlabSecf = SecfJson(sec, 1, HamblyJ(SlabW(sec), tc), 1, 1, 1, 1)
+End Function
+
+Private Function SecfJson(ByVal sec As Long, ByVal aF As Double, ByVal jF As Double, ByVal iyF As Double, ByVal izF As Double, ByVal wF As Double, ByVal part As Long) As String
+    SecfJson = QS(CStr(sec)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":" & QS(IIf(dynMode, "", "BG_SF")) & ",""AREA_SF"":" & JN(aF) & ",""ASY_SF"":" & JN(aF) & ",""ASZ_SF"":" & JN(aF) & _
+        ",""IXX_SF"":" & JN(jF) & ",""IYY_SF"":" & JN(iyF) & ",""IZZ_SF"":" & JN(izF) & ",""WGT_SF"":" & JN(wF) & ",""W_SF"":1,""IPART"":" & part & ",""bDiffIJ"":false}]}"
 End Function
 
 ' width of a slab member section
@@ -1332,6 +1378,8 @@ End Function
 ' strength = dead x gamma + SECONDARY tendon / creep / shrinkage effects x 1.0 (AASHTO Table 3.4.1-3)
 Private Function CsItems(ByVal fDC As Double, ByVal fDW As Double, ByVal service As Boolean) As String
     Dim s As String
+    ' dynamic model: no stage results, the static cases carry the dead loads; no prestress in this model
+    If dynMode Then CsItems = It("ST", "DC", fDC) & It("ST", "DW_1", fDC) & It("ST", "DW_2", fDW): Exit Function
     s = It("CS", "Dead Load", fDC) & It("CS", "CS_DW_1", fDC) & It("CS", "CS_DW_2", fDW)
     If service Then s = s & It("CS", "Tendon Primary", 1)
     CsItems = s & It("CS", "Tendon Secondary", 1) & It("CS", "Creep Secondary", 1) & It("CS", "Shrinkage Secondary", 1)
@@ -1376,7 +1424,7 @@ Private Sub WritePayloads(ByVal dirPath As String)
     MakeDir dirPath
     For i = 1 To payloads.Count
         p = payloads(i)
-        WriteText dirPath & "\" & Format(i, "00") & "_" & Replace(Replace(p(0), "db/", ""), "/", "_") & ".json", CStr(p(1))
+        WriteText dirPath & "\" & Format(i, "00") & "_" & Replace(Replace(p(0), "db/", ""), "/", "_") & ".json", Replace(CStr(p(1)), DYN_TAG, "")
     Next i
     WriteText dirPath & "\00_SECT_composite_7-12.mct", SectMct()
     WriteText dirPath & "\summary.txt", Summary()
@@ -1388,13 +1436,15 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     If Not GetKey() Then SendAll = "FAIL: no MAPI key.": Exit Function
     Set http = Nothing
     ' writes into the model open in Civil NX (no doc/NEW) and saves that file (doc/SAVE).
-    ' Only into an EMPTY model: a PUT adds beam-load items (and keeps old items) in a filled model.
     If Not Api("GET", "db/NODE", "", resp) Then SendAll = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300): Exit Function
+    ' two models per bridge (owner 2026-11-05): do not wipe the other model by mistake
+    If Not ModelTypeOk(rep) Then SendAll = rep: Exit Function
+    rep = ""
     ' Clean pass first (like the culvert build): a PUT into a filled model ADDS beam-load
     ' items and keeps old records, so every table this macro writes is deleted and then
     ' read back empty. Anything left -> stop before the first write.
     Dim cleanRep As String
-    ProgReset 2 * (UBound(CleanTables()) + 1) + 1 + payloads.Count + 4
+    ProgReset 2 * (UBound(CleanTables()) + 1) + 1 + payloads.Count + 4 + IIf(dynMode, 3, 0)
     cleanRep = CleanModel()
     If Left$(cleanRep, 7) = "STOPPED" Then
         SendAll = cleanRep & vbCrLf & "Nothing was written."
@@ -1402,7 +1452,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     End If
     ' composite girder sections 7-12 by MCT import (Hambly torsion option; no JSON key). NOTE: doc/IMPORTMXT
     ' REPLACES the whole model content (tested 2026-11-03), so it runs here, after the clean pass and
-    ' before every JSON table; the open file name is kept. The JSON SECT table then sends only 2-6 and 13.
+    ' before every JSON table; the open file name is kept. The JSON SECT table sends the other sections.
     Dim mctPath As String
     mctPath = Environ$("TEMP") & "\midas_ustyapi_sect.mct"
     WriteText mctPath, SectMct()
@@ -1417,11 +1467,19 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
         Exit Function
     End If
     cleanRep = cleanRep & vbCrLf & "Composite sections 7-12 imported by MCT (Hambly torsion option on)."
+    If dynMode Then
+        Dim jRep As String
+        If Not MeasureGirderJ(mctPath, jRep) Then
+            SendAll = cleanRep & vbCrLf & "FAIL: girder J measurement: " & jRep & vbCrLf & "The open file now holds test cantilevers (doc/ANAL writes the open file): rebuild it."
+            Exit Function
+        End If
+        cleanRep = cleanRep & vbCrLf & jRep
+    End If
     For i = 1 To payloads.Count
         p = payloads(i)
         Prog "table " & i & "/" & payloads.Count & "  " & p(0)
-        If Not Api("PUT", CStr(p(0)), CStr(p(1)), resp) Then
-            SendAll = "FAIL at step " & i & " (" & p(0) & "):" & vbCrLf & Left$(resp, 600) & vbCrLf & vbCrLf & "Model is incomplete; nothing saved."
+        If Not Api("PUT", CStr(p(0)), Replace(CStr(p(1)), DYN_TAG, GirderSecf()), resp) Then
+            SendAll = cleanRep & vbCrLf & "FAIL at step " & i & " (" & p(0) & "):" & vbCrLf & Left$(resp, 600) & vbCrLf & vbCrLf & "Model is incomplete; nothing saved."
             Exit Function
         End If
     Next i
@@ -1441,24 +1499,153 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
         rep = rep & "  end-zone area (section 8) MIDAS " & Format(area, "0.000000") & " / polygon " & Format(polyAreaY, "0.000000") & _
               IIf(Abs(area - polyAreaY) < 0.0001, "  OK", "  FAIL") & vbCrLf
     End If
+    rep = rep & SecfCheck()
     Prog "save"
-    If Not saveModel Then
-        rep = rep & "Not saved (saveModel = False)." & vbCrLf
+    If InStr(rep, "FAIL") > 0 Then
+        rep = rep & "NOT SAVED: the read-back failed." & vbCrLf
+    ElseIf Not saveModel Then
+        rep = rep & "Not saved (saveModel = False)." & IIf(dynMode, " Note: the J analysis already wrote the test cantilevers to the open file.", "") & vbCrLf
     ElseIf Api("POST", "doc/SAVE", "{""Argument"":{}}", resp) Then
         rep = rep & "Saved (open model file)." & vbCrLf
     Else
         rep = rep & "FAIL save: " & Left$(resp, 300) & vbCrLf
     End If
+    If warnText <> "" Then rep = rep & "WARNINGS:" & vbCrLf & warnText
     SendAll = cleanRep & vbCrLf & "All " & payloads.Count & " tables sent (" & Format(Timer - t0, "0") & " s)." & vbCrLf & rep & vbCrLf & SCRIPT_ID & " " & SCRIPT_VERSION & ", " & bridgeName & ", span " & spanNo & " = " & Lc & " m"
+End Function
+
+' The project comment of a model built by this macro says which type it is (ends DYNAMIC or not).
+Private Function ModelTypeOk(ByRef msg As String) As Boolean
+    Dim pj As String, wasDyn As Boolean, txt As String
+    ModelTypeOk = True
+    If Not Api("GET", "db/PJCF", "", pj) Then Exit Function
+    If InStr(pj, SCRIPT_ID) = 0 Then Exit Function
+    wasDyn = (InStr(pj, " DYNAMIC") > 0)
+    If wasDyn = dynMode Then Exit Function
+    txt = "The model open in Civil NX is a " & IIf(wasDyn, "DYNAMIC", "STAGED") & " model, but you are building the " & IIf(dynMode, "DYNAMIC", "STAGED") & " model."
+    If askUser Then
+        If MsgBox(txt & vbCrLf & vbCrLf & "WIPE it anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) = vbYes Then Exit Function
+    End If
+    msg = "STOPPED: " & txt & " Nothing was changed. Open the right .mcb, or use an empty file."
+    ModelTypeOk = False
+End Function
+
+' ---- girder J of the dynamic model ----
+' Without construction stages MIDAS ignores the Hambly option of the composite sections and uses the J of
+' the merged section, which the API does not return (measured 2026-11-05). So: six cantilevers, one per
+' section, tip torque, J = T L / (G theta). Target = bare girder J (db/SECT RXX) + b t^3 / 6 / (Eg / Es)
+' (Section Properties - Composite page; same Poisson's ratio). The MCT import then wipes the cantilevers.
+Private Function MeasureGirderJ(ByVal mctPath As String, ByRef msg As String) As Boolean
+    Const TL As Double = 10#, TE As Double = 30000000#, TN As Double = 0.2, TQ As Double = 100#
+    Dim no As Long, a As Long, sN As String, sE As String, sC As String, sL As String, keys As String
+    Dim resp As String, bare(7 To 12) As Double, rows As Variant, f As Variant, r As Long, sec As Long, th As Double, n As Long
+    Erase jMer: Erase jHam: Erase jFac
+    Prog "girder J: test cantilevers"
+    If Not Api("GET", "db/SECT", "", resp) Then msg = "db/SECT: " & Left$(resp, 200): Exit Function
+    For no = 7 To 12
+        bare(no) = SectField(resp, CStr(no), "RXX")
+        If bare(no) <= 0 Then msg = "no bare girder J (RXX) for section " & no: Exit Function
+        a = 2 * (no - 6) - 1
+        sN = sN & IIf(sN = "", "", ",") & QS(CStr(a)) & ":{""X"":0,""Y"":" & 5 * (no - 6) & ",""Z"":0}," & QS(CStr(a + 1)) & ":{""X"":" & JN(TL) & ",""Y"":" & 5 * (no - 6) & ",""Z"":0}"
+        sE = sE & IIf(sE = "", "", ",") & QS(CStr(no - 6)) & ":{""TYPE"":""BEAM"",""MATL"":1,""SECT"":" & no & ",""NODE"":[" & a & "," & a + 1 & ",0,0,0,0,0,0],""ANGLE"":0,""STYPE"":0}"
+        sC = sC & IIf(sC = "", "", ",") & QS(CStr(a)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":"""",""CONSTRAINT"":""1111111""}]}"
+        sL = sL & IIf(sL = "", "", ",") & QS(CStr(a + 1)) & ":{""ITEMS"":[{""ID"":1,""LCNAME"":""JT"",""GROUP_NAME"":"""",""FX"":0,""FY"":0,""FZ"":0,""MX"":" & JN(TQ) & ",""MY"":0,""MZ"":0}]}"
+        keys = keys & IIf(keys = "", "", ",") & a + 1
+    Next no
+    If Not Put1("db/MATL", "{""Assign"":{""1"":{""TYPE"":""USER"",""NAME"":""JTEST"",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":2,""ELAST"":" & JN(TE) & ",""POISN"":" & JN(TN) & ",""THERMAL"":0.00001,""DEN"":25,""MASS"":0}]}}}", msg) Then Exit Function
+    If Not Put1("db/NODE", "{""Assign"":{" & sN & "}}", msg) Then Exit Function
+    If Not Put1("db/ELEM", "{""Assign"":{" & sE & "}}", msg) Then Exit Function
+    If Not Put1("db/CONS", "{""Assign"":{" & sC & "}}", msg) Then Exit Function
+    If Not Put1("db/STLD", "{""Assign"":{""1"":{""NAME"":""JT"",""TYPE"":""D"",""DESC"":""""}}}", msg) Then Exit Function
+    If Not Put1("db/CNLD", "{""Assign"":{" & sL & "}}", msg) Then Exit Function
+    Prog "girder J: analysis"
+    If Not Api("POST", "doc/ANAL", "{}", resp) Then msg = "doc/ANAL: " & Left$(resp, 300): Exit Function
+    If Not Api("POST", "post/TABLE", "{""Argument"":{""TABLE_NAME"":""D"",""TABLE_TYPE"":""DISPLACEMENTG"",""UNIT"":{""FORCE"":""KN"",""DIST"":""M""},""STYLES"":{""FORMAT"":""Scientific"",""PLACE"":8},""NODE_ELEMS"":{""KEYS"":[" & keys & "]},""LOAD_CASE_NAMES"":[""JT(ST)""]}}", resp) Then
+        msg = "post/TABLE: " & Left$(resp, 300): Exit Function
+    End If
+    ' rows: ["1","2","JT","DX","DY","DZ","RX","RY","RZ"]
+    rows = Split(resp, "[""")
+    For r = 1 To UBound(rows)
+        f = Split(Replace(Replace(rows(r), """,""", "|"), """", ""), "|")
+        If UBound(f) >= 6 Then
+            If IsNumeric(f(1)) And f(2) = "JT" Then
+                sec = 6 + Val(f(1)) / 2
+                th = Abs(Val(f(6)))
+                If sec >= 7 And sec <= 12 And th > 0 Then
+                    jMer(sec) = TQ * TL / (TE / (2# * (1# + TN)) * th)
+                    n = n + 1
+                End If
+            End If
+        End If
+    Next r
+    If n <> 6 Then msg = "twist read for " & n & " of 6 sections: " & Left$(resp, 300): Exit Function
+    msg = "Girder J (merged -> Hambly, factor):"
+    For no = 7 To 12
+        If jMer(no) <= 0 Then msg = "no twist read for section " & no: Exit Function
+        jHam(no) = bare(no) + SlabB(no) * tc ^ 3 / 6# / (eG / eS)
+        jFac(no) = jHam(no) / jMer(no)
+        If jFac(no) < 0.1 Or jFac(no) > 1.2 Then msg = "section " & no & " factor " & jFac(no) & " is not credible (merged " & jMer(no) & ", Hambly " & jHam(no) & ")": Exit Function
+        msg = msg & vbCrLf & "  section " & no & ": " & Format(jMer(no), "0.00000") & " -> " & Format(jHam(no), "0.00000") & ", " & Format(jFac(no), "0.0000")
+    Next no
+    ' doc/IMPORTMXT replaces the whole model: removes the cantilevers, leaves sections 7-12
+    Prog "girder J: remove test cantilevers"
+    If Not Api("POST", "doc/IMPORTMXT", "{""Argument"":" & QS(mctPath) & "}", resp) Then msg = "MCT import after the measurement: " & Left$(resp, 300): Exit Function
+    If Not Api("GET", "db/NODE", "", resp) Then msg = "db/NODE after the MCT import: " & Left$(resp, 200): Exit Function
+    If InStr(resp, """X"":") > 0 Then msg = "test cantilevers still in the model after the MCT import": Exit Function
+    If Not Api("GET", "db/SECT", "", resp) Then msg = "db/SECT after the MCT import: " & Left$(resp, 200): Exit Function
+    If CountOf(resp, """SECTTYPE"":""COMPOSITE""") <> 6 Then msg = "composite sections missing after the second MCT import": Exit Function
+    MeasureGirderJ = True
+End Function
+
+Private Function Put1(ByVal ep As String, ByVal body As String, ByRef msg As String) As Boolean
+    Dim resp As String
+    Put1 = Api("PUT", ep, body, resp)
+    If Not Put1 Then msg = ep & ": " & Left$(resp, 300)
+End Function
+
+' Read-back of the stiffness factors: this API can accept a write without applying it, and a missing factor
+' changes the modes without any message.
+Private Function SecfCheck() As String
+    Dim resp As String, n As Long, want As Long, no As Long, s As String, v As Double
+    want = 3 + IIf(visW > 0, 1, 0) + IIf(dynMode, 6, 0)
+    If Not Api("GET", "db/SECF", "", resp) Then SecfCheck = "  FAIL stiffness factors: " & Left$(resp, 200) & vbCrLf: Exit Function
+    n = CountOf(resp, """IXX_SF"":")
+    s = "  stiffness factors " & n & " / " & want & IIf(n = want, "  OK", "  FAIL") & vbCrLf
+    If dynMode Then
+        For no = 7 To 12
+            v = SectField(resp, CStr(no), "IXX_SF")
+            If Abs(v - jFac(no)) > 0.000001 Then s = s & "  FAIL section " & no & " factor " & v & " (sent " & jFac(no) & ")" & vbCrLf
+        Next no
+    Else
+        If Not Api("GET", "db/STAG", "", resp) Then resp = ""
+        If InStr(resp, "BG_SF") = 0 Then s = s & "  FAIL boundary group BG_SF is not activated in the stages." & vbCrLf
+    End If
+    SecfCheck = s
+End Function
+
+' IPART 2 = after composite; measured: IPART 1 has no effect on a composite section
+Private Function GirderSecf() As String
+    Dim no As Long, s As String
+    If Not dynMode Then Exit Function
+    For no = 7 To 12: s = s & "," & SecfJson(no, 1, jFac(no), 1, 1, 1, 2): Next no
+    GirderSecf = s
+End Function
+
+' slab width of a composite section (as in SectMct)
+Private Function SlabB(ByVal no As Long) As Double
+    SlabB = sG
+    If no = 9 Or no = 10 Then SlabB = sG / 2 + ovL
+    If no = 11 Or no = 12 Then SlabB = sG / 2 + ovR
 End Function
 
 ' ---- clean pass ----
 ' Every table the build writes, in REVERSE build order (combinations, stages and loads before
 ' the cases, groups, elements and nodes they reference; sections/materials last). UNIT, STYP and
-' PJCF are single records (key 1) that the build overwrites, so they are not deleted.
+' PJCF are single records (key 1) that the build overwrites, so they are not deleted. ESSF is no longer
+' written; it stays in the list to clean models from older versions.
 Private Function CleanTables() As Variant
     CleanTables = Array("LCOM-CONC", "LCOM-GEN", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
-        "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", _
+        "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", "SECF", _
         "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
 End Function
 
@@ -1646,6 +1833,15 @@ Private Function SectArea(ByVal resp As String, ByVal key As String) As Double
     SectArea = Val(Mid$(resp, q, 30))
 End Function
 
+Private Function SectField(ByVal resp As String, ByVal key As String, ByVal fld As String) As Double
+    Dim p As Long
+    p = InStr(1, resp, """" & key & """:{")
+    If p = 0 Then Exit Function
+    p = InStr(p, resp, """" & fld & """:")
+    If p = 0 Then Exit Function
+    SectField = Val(Mid$(resp, p + Len(fld) + 3, 30))
+End Function
+
 Private Function CountOf(ByVal s As String, ByVal what As String) As Long
     CountOf = (Len(s) - Len(Replace(s, what, ""))) / Len(what)
 End Function
@@ -1664,6 +1860,10 @@ Private Function Summary() As String
         "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
         "Wind Wg " & wG & ", Wv " & wV & "; TU " & tuPos & "/" & tuNeg & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
         "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; transfer " & Format(ageG, "0.00") & " d (f'ci " & Format(fciRatio, "0.00") & " f'c); CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
+    If dynMode Then
+        s = "DYNAMIC MODEL" & vbCrLf & Left$(s, InStr(s, "Strands ") - 1) & "No stages, no tendons; girder J factors are measured during the build" & vbCrLf
+        s = Left$(s, InStr(s, "Bearings: ") - 1) & "Supports on the girder nodes: start X Y Z, end Y Z (no links)" & Mid$(s, InStr(InStr(s, "Bearings: "), s, vbCrLf))
+    End If
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
 End Function
