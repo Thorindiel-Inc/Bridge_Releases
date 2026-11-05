@@ -22,13 +22,18 @@ Option Explicit
 '  Levels: deck node Z 0 (section offset CT), bearing top -(H + tc), bearing bottom = cap
 '  top node level, pier top = cap top - G_KOLON_BAGLANTI, pier base = pier top - height.
 '  X: A1 bearing axis = 0; pier bearings G_AKS_MESNET from the pier axis.
+'  Plan (owner 2026-11-05): G_GUZERGAH filled = axes on the alignment (km from G_KM_A1), each
+'  span a straight chord between its axes, caps on the bisector of the two chords, piers and
+'  bearing links turned with them; model X = chord A1 to A2. Empty table = straight. Level deck.
+'  G_AKS_XY (axis X / Y from the DXF centerline, DXF_OKU 2026-11-05b) comes first: filled =
+'  those points (A1 first, span count + 1 rows, chords checked against the span list).
 '  Numbers stay below 10500 so the rail layer (RTI) can be added later.
 '  MAPI key: INPUT!T3, else MIDAS_MAPI_KEY, else asked (memory only).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-05e"
-Private Const SCRIPT_CHANGELOG As String = "Self-weight mass in X, Y and Z (was Z only), as ALTYAPI; deck types per span (Yatay Gabari + Kiris), box and solid piers; whole-section J, Asy, Asz of the deck solved in the macro; deck section with calculated properties (Civil NX refuses zero stiffness); clean pass skipped on an empty model; first version, step A: whole-bridge geometry (deck stick, bearings, caps, piers, fixed bases)"
+Private Const SCRIPT_VERSION As String = "2026-11-05h"
+Private Const SCRIPT_CHANGELOG As String = "Plan from G_AKS_XY (axis points of the DXF centerline) before G_GUZERGAH, STYP bMASSOFFSET true (consider mass at centroid); horizontal alignment from G_GUZERGAH: axes on the curve, chord spans, radial caps, piers and links turned; pier elements: at least 5 equal, none over 3 m; self-weight mass in X, Y and Z (was Z only), as ALTYAPI; deck types per span (Yatay Gabari + Kiris), box and solid piers; whole-section J, Asy, Asz of the deck solved in the macro; deck section with calculated properties (Civil NX refuses zero stiffness); clean pass skipped on an empty model; first version, step A: whole-bridge geometry (deck stick, bearings, caps, piers, fixed bases)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -37,13 +42,16 @@ Private Const KEY_CELL As String = "T3"
 Private Const DEF_MESH As Double = 1.5          ' deck element length (m)
 Private Const DEF_LINK_LEN As Double = 0.35     ' bearing link length (m)
 Private Const DEF_K_FIX As Double = 100000#     ' fixed horizontal bearing stiffness kh (kN/m)
-Private Const N_PIER_EL As Long = 5             ' elements per pier (reference model)
+Private Const N_PIER_EL As Long = 5             ' at least this many equal elements per pier
+Private Const MAX_PIER_EL As Double = 3#        ' and no element longer than this (m) (owner 2026-11-05)
 Private Const GRAV_STYP As Double = 9.806
 Private Const SEC_CAP As Long = 3
 Private Const SEC_DECK0 As Long = 20          ' deck type d: section 1 for d = 1, else SEC_DECK0 + d
 Private Const SEC_SLAB0 As Long = 40          ' slab of deck type d: section 2 for d = 1, else SEC_SLAB0 + d
 Private Const SEC_PIER0 As Long = 60
 Private Const MAX_TYPES As Long = 20
+Private Const PI As Double = 3.14159265358979
+Private Const ALIGN_DS As Double = 0.25        ' integration step along the alignment (m)
 Private Const NUM_LIMIT As Long = 10500         ' rail layer numbers start here
 Private Const SOLVE_H As Double = 0.05          ' deck section solver: coarse cell size (m); fine = half
 
@@ -72,6 +80,9 @@ Private eMat() As Long, eSec() As Long, eN1() As Long, eN2() As Long, eCnt As Lo
 Private grpDeck As String, grpCap As String, grpPier As String
 Private rigdJson As String, elnkJson As String, consJson As String, nLink As Long
 Private capSlaves As Object, polyArea As Double, deckArea As Double
+' plan: axis points, cap direction (unit), span chord direction (unit), chord length, heading (deg)
+Private pxA() As Double, pyA() As Double, rxA() As Double, ryA() As Double, cxS() As Double, cyS() As Double, lenS() As Double, phiS() As Double, phiA() As Double
+Private pierAng As Object, nAlign As Long, maxOff As Double, nAxXY As Long
 Private gCz As Double, gIy As Double, gIz As Double, gPer As Double
 Private dkLog As String
 
@@ -335,6 +346,146 @@ Private Sub CheckBearing(ByVal v As Variant, ByVal where As String)
     If Val(Mid$(Trim$(CStr(v)), InStrRev(Trim$(CStr(v)), "-") + 1)) <> 1 Then Err.Raise vbObjectError + 38, , where & ": '" & v & "'. 4-7 reports kv and ky for Mesnet - 1 only for now."
 End Sub
 
+' plan of the axes. Curvature along the alignment: R < 0 = left, heading counter-clockwise in the model
+' (checked against the V2 drawing); transition = straight line between the curvatures of its neighbours.
+Private Sub BuildPlan()
+    Dim t As Range, n As Long, r As Long, s0 As Double, i As Long
+    Dim sA() As Double, sB() As Double, kA() As Double, kB() As Double, tp As String
+    ReDim pxA(0 To nSp): ReDim pyA(0 To nSp): ReDim rxA(0 To nSp): ReDim ryA(0 To nSp)
+    ReDim cxS(1 To nSp): ReDim cyS(1 To nSp): ReDim lenS(1 To nSp): ReDim phiS(1 To nSp): ReDim phiA(0 To nSp)
+    Set t = NmRange(ThisWorkbook, "G_GUZERGAH")
+    For r = 1 To t.Rows.Count
+        If IsEmpty(t.Cells(r, 1).Value) Then Exit For
+        n = n + 1
+    Next r
+    nAlign = n
+    nAxXY = ReadAxisXY()
+    If nAxXY > 0 Then nAlign = 0
+    If nAxXY > 0 Then
+        ' axis points read from G_AKS_XY (A1 at the origin)
+    ElseIf n = 0 Then
+        For i = 1 To nSp: pxA(i) = pxA(i - 1) + spL(i): Next i
+    Else
+        s0 = Num(NmRange(ThisWorkbook, "G_KM_A1").Cells(1).Value, "G_KM_A1")
+        ReDim sA(1 To n): ReDim sB(1 To n): ReDim kA(1 To n): ReDim kB(1 To n)
+        For r = 1 To n
+            sA(r) = Num(t.Cells(r, 1).Value, "G_GUZERGAH row " & r) - s0
+            sB(r) = Num(t.Cells(r, 2).Value, "G_GUZERGAH row " & r) - s0
+            tp = UCase$(Trim$(CStr(t.Cells(r, 3).Value)))
+            If tp = "KURP" Then
+                kA(r) = -1 / Num(t.Cells(r, 4).Value, "G_GUZERGAH R row " & r): kB(r) = kA(r)
+            ElseIf tp <> "DOGRU" And tp <> "GECIS" Then
+                Err.Raise vbObjectError + 41, , "G_GUZERGAH row " & r & ": Tip must be KURP, GECIS or DOGRU."
+            End If
+        Next r
+        For r = 1 To n
+            If UCase$(Trim$(CStr(t.Cells(r, 3).Value))) = "GECIS" Then
+                If r = 1 Or r = n Then Err.Raise vbObjectError + 42, , "G_GUZERGAH: a transition at the start or end of the bridge is not supported yet."
+                kA(r) = kB(r - 1): kB(r) = kA(r + 1)
+            End If
+        Next r
+        ' walk along the alignment, store the point at each axis
+        Dim x As Double, y As Double, th As Double, sNow As Double, ds As Double, ax As Long, sNext As Double, cum As Double, e As Long, km As Double, sM As Double
+        ax = 0: cum = 0: e = 1
+        Do While ax <= nSp
+            sNext = sNow + ALIGN_DS
+            If sNext > cum Then sNext = cum
+            ds = sNext - sNow
+            If ds > 0 Then
+                sM = sNow + ds / 2
+                Do While e < n And sM > sB(e): e = e + 1: Loop
+                km = kA(e) + (kB(e) - kA(e)) * (sM - sA(e)) / (sB(e) - sA(e))
+                x = x + ds * Cos(th + km * ds / 2)
+                y = y + ds * Sin(th + km * ds / 2)
+                th = th + km * ds
+                sNow = sNext
+            End If
+            If sNow >= cum - 0.0000001 Then
+                pxA(ax) = x: pyA(ax) = y
+                ax = ax + 1
+                If ax <= nSp Then cum = cum + spL(ax)
+            End If
+        Loop
+    End If
+    If nAxXY > 0 Or nAlign > 0 Then
+        ' model X = chord A1 to A2
+        Dim a As Double, c As Double, sn As Double, xx As Double
+        a = Atn2(pyA(nSp) - pyA(0), pxA(nSp) - pxA(0))
+        c = Cos(-a): sn = Sin(-a)
+        For i = 0 To nSp
+            xx = pxA(i) * c - pyA(i) * sn
+            pyA(i) = pxA(i) * sn + pyA(i) * c
+            pxA(i) = xx
+            If Abs(pyA(i)) > maxOff Then maxOff = Abs(pyA(i))
+        Next i
+    End If
+    For i = 1 To nSp
+        lenS(i) = Sqr((pxA(i) - pxA(i - 1)) ^ 2 + (pyA(i) - pyA(i - 1)) ^ 2)
+        cxS(i) = (pxA(i) - pxA(i - 1)) / lenS(i): cyS(i) = (pyA(i) - pyA(i - 1)) / lenS(i)
+        phiS(i) = Atn2(cyS(i), cxS(i)) * 180 / PI
+    Next i
+    ' cap direction at an axis = bisector of the normals of its two chords
+    Dim nx As Double, ny As Double, q As Double
+    For i = 0 To nSp
+        If i = 0 Then
+            nx = -cyS(1): ny = cxS(1)
+        ElseIf i = nSp Then
+            nx = -cyS(nSp): ny = cxS(nSp)
+        Else
+            nx = -cyS(i) - cyS(i + 1): ny = cxS(i) + cxS(i + 1)
+        End If
+        q = Sqr(nx ^ 2 + ny ^ 2)
+        rxA(i) = nx / q: ryA(i) = ny / q
+        phiA(i) = Atn2(ryA(i), rxA(i)) * 180 / PI - 90
+    Next i
+End Sub
+
+' G_AKS_XY (DXF_OKU): axis X / Y in drawing coordinates, A1 first. Returns the number of points
+' (0 = name missing or table empty); fills pxA / pyA relative to A1. Each chord must match its span.
+Private Function ReadAxisXY() As Long
+    Dim t As Range, r As Long, n As Long, i As Long, x0 As Double, y0 As Double, ch As Double
+    On Error Resume Next
+    Set t = ThisWorkbook.Names("G_AKS_XY").RefersToRange
+    On Error GoTo 0
+    If t Is Nothing Then Exit Function
+    For r = 1 To t.Rows.Count
+        If IsEmpty(t.Cells(r, 1).Value) Then Exit For
+        n = n + 1
+    Next r
+    If n = 0 Then Exit Function
+    If n <> nSp + 1 Then Err.Raise vbObjectError + 43, , "G_AKS_XY holds " & n & " axis points, the span list needs " & nSp + 1 & ". Run DXF OKU again."
+    x0 = Num(t.Cells(1, 1).Value, "G_AKS_XY X row 1"): y0 = Num(t.Cells(1, 2).Value, "G_AKS_XY Y row 1")
+    For i = 0 To nSp
+        pxA(i) = Num(t.Cells(i + 1, 1).Value, "G_AKS_XY X row " & i + 1) - x0
+        pyA(i) = Num(t.Cells(i + 1, 2).Value, "G_AKS_XY Y row " & i + 1) - y0
+        If i > 0 Then
+            ch = Sqr((pxA(i) - pxA(i - 1)) ^ 2 + (pyA(i) - pyA(i - 1)) ^ 2)
+            If Abs(ch - spL(i)) > 0.05 Then Err.Raise vbObjectError + 44, , "G_AKS_XY: span " & i & " chord " & Format(ch, "0.000") & " m, span list " & Format(spL(i), "0.000") & " m. Run DXF OKU again."
+        End If
+    Next i
+    ReadAxisXY = n
+End Function
+
+Private Function Atn2(ByVal yy As Double, ByVal xx As Double) As Double
+    If Abs(xx) < 0.000000000001 Then
+        Atn2 = IIf(yy >= 0, PI / 2, -PI / 2)
+    ElseIf xx > 0 Then
+        Atn2 = Atn(yy / xx)
+    Else
+        Atn2 = Atn(yy / xx) + IIf(yy >= 0, PI, -PI)
+    End If
+End Function
+
+' node of span i at u along the chord from its left axis, v to the left of it
+Private Function SpN(ByVal i As Long, ByVal u As Double, ByVal v As Double, ByVal z As Double) As Long
+    SpN = AddNode(pxA(i - 1) + u * cxS(i) - v * cyS(i), pyA(i - 1) + u * cyS(i) + v * cxS(i), z)
+End Function
+
+' node on the cap line of axis a at distance v from the axis
+Private Function CapN(ByVal a As Long, ByVal v As Double, ByVal z As Double) As Long
+    CapN = AddNode(pxA(a) + v * rxA(a), pyA(a) + v * ryA(a), z)
+End Function
+
 ' INPUT column type -> MIDAS DB user shape
 Private Function PierShape(ByVal s As String) As String
     Dim t As String: t = UCase$(Trim$(s))
@@ -353,15 +504,17 @@ End Function
 
 Private Sub BuildModel()
     Dim i As Long, j As Long, m As Long, k As Long, a As Long, b As Long, xL As Double, xR As Double, ext As Double
-    Dim ax() As Double, zLs() As Double, y() As Double, dx As Double, zCap() As Double
+    Dim zLs() As Double, y() As Double, dx As Double, zCap() As Double
     Set nodeKey = CreateObject("Scripting.Dictionary")
     Set capSlaves = CreateObject("Scripting.Dictionary")
     nCnt = 0: eCnt = 0: nLink = 0
     grpDeck = "": grpCap = "": grpPier = "": rigdJson = "": elnkJson = "": consJson = ""
     ReDim nX(1 To 2000): ReDim nY(1 To 2000): ReDim nZ(1 To 2000)
     ReDim eMat(1 To 2000): ReDim eSec(1 To 2000): ReDim eN1(1 To 2000): ReDim eN2(1 To 2000)
-    ReDim ax(0 To nSp): ReDim zLs(1 To nSp): ReDim zCap(0 To nSp)
-    For i = 1 To nSp: ax(i) = ax(i - 1) + spL(i): Next i
+    ReDim zLs(1 To nSp): ReDim zCap(0 To nSp)
+    Set pierAng = CreateObject("Scripting.Dictionary")
+    maxOff = 0
+    BuildPlan
     For i = 1 To nSp: zLs(i) = -(tHg(spType(i)) + tc) - linkLen: Next i
     ' cap level at a pier = the lower bearing bottom of its two spans
     For i = 1 To nSp - 1
@@ -370,33 +523,33 @@ Private Sub BuildModel()
 
     For i = 1 To nSp
         UseType spType(i)
-        xL = ax(i - 1) + IIf(i = 1, 0, eAx)
-        xR = ax(i) - IIf(i = nSp, 0, eAx)
-        If Abs(xR - xL - Lc) > 0.001 Then warnText = warnText & "- Span " & i & ": bearing to bearing " & Format(xR - xL, "0.000") & " m, Hesap Acikligi " & Lc & " m." & vbCrLf
+        xL = IIf(i = 1, 0, eAx)
+        xR = lenS(i) - IIf(i = nSp, 0, eAx)
+        If Abs(xR - xL - Lc) > 0.01 Then warnText = warnText & "- Span " & i & ": bearing to bearing " & Format(xR - xL, "0.000") & " m, Hesap Acikligi " & Lc & " m." & vbCrLf
         ext = (jointL - Lc) / 2
         m = CLng((xR - xL) / meshDx): If m < 1 Then m = 1
         dx = (xR - xL) / m
-        If i > 1 And ext > sark + 0.0005 Then Member grpDeck, 2, SlabSec(spType(i)), AddNode(xL - ext, 0, 0), AddNode(xL - sark, 0, 0)
-        Member grpDeck, 1, DeckSec(spType(i)), AddNode(xL - sark, 0, 0), AddNode(xL, 0, 0)
+        If i > 1 And ext > sark + 0.0005 Then Member grpDeck, 2, SlabSec(spType(i)), SpN(i, xL - ext, 0, 0), SpN(i, xL - sark, 0, 0)
+        Member grpDeck, 1, DeckSec(spType(i)), SpN(i, xL - sark, 0, 0), SpN(i, xL, 0, 0)
         For k = 1 To m
-            Member grpDeck, 1, DeckSec(spType(i)), AddNode(xL + (k - 1) * dx, 0, 0), AddNode(IIf(k = m, xR, xL + k * dx), 0, 0)
+            Member grpDeck, 1, DeckSec(spType(i)), SpN(i, xL + (k - 1) * dx, 0, 0), SpN(i, IIf(k = m, xR, xL + k * dx), 0, 0)
         Next k
-        Member grpDeck, 1, DeckSec(spType(i)), AddNode(xR, 0, 0), AddNode(xR + sark, 0, 0)
-        If i < nSp And ext > sark + 0.0005 Then Member grpDeck, 2, SlabSec(spType(i)), AddNode(xR + sark, 0, 0), AddNode(xR + ext, 0, 0)
+        Member grpDeck, 1, DeckSec(spType(i)), SpN(i, xR, 0, 0), SpN(i, xR + sark, 0, 0)
+        If i < nSp And ext > sark + 0.0005 Then Member grpDeck, 2, SlabSec(spType(i)), SpN(i, xR + sark, 0, 0), SpN(i, xR + ext, 0, 0)
     Next i
 
     For i = 1 To nSp
         UseType spType(i)
         ReDim y(0 To nG - 1)
         For j = 0 To nG - 1: y(j) = (j - (nG - 1) / 2#) * sG: Next j
-        xL = ax(i - 1) + IIf(i = 1, 0, eAx)
-        xR = ax(i) - IIf(i = nSp, 0, eAx)
-        BearingLine xL, ax(i - 1), (i = 1), fixLeft(i), y, zLs(i) + linkLen, zLs(i), zCap(i - 1)
-        BearingLine xR, ax(i), (i = nSp), Not fixLeft(i), y, zLs(i) + linkLen, zLs(i), zCap(i)
+        xL = IIf(i = 1, 0, eAx)
+        xR = lenS(i) - IIf(i = nSp, 0, eAx)
+        BearingLine i, xL, i - 1, (i = 1), fixLeft(i), y, zLs(i) + linkLen, zLs(i), zCap(i - 1)
+        BearingLine i, xR, i, (i = nSp), Not fixLeft(i), y, zLs(i) + linkLen, zLs(i), zCap(i)
     Next i
 
     ' caps and piers
-    Dim ys As Object, yk As Variant, top As Long, q As Variant, sp As Variant
+    Dim ys As Object, yk As Variant, top As Long, q As Variant, sp As Variant, nEl As Long
     For i = 1 To nSp - 1
         Set ys = CreateObject("Scripting.Dictionary")
         AddX ys, -capL / 2: AddX ys, capL / 2: AddX ys, 0
@@ -405,14 +558,17 @@ Private Sub BuildModel()
         Next sp
         yk = SortedKeys(ys)
         For k = UBound(yk) To 2 Step -1
-            Member grpCap, 3, SEC_CAP, AddNode(ax(i), yk(k), zCap(i)), AddNode(ax(i), yk(k - 1), zCap(i))
+            Member grpCap, 3, SEC_CAP, CapN(i, yk(k), zCap(i)), CapN(i, yk(k - 1), zCap(i))
         Next k
-        top = AddNode(ax(i), 0, zCap(i) - capDrop)
-        Rigid AddNode(ax(i), 0, zCap(i)), CStr(top)
+        top = CapN(i, 0, zCap(i) - capDrop)
+        Rigid CapN(i, 0, zCap(i)), CStr(top)
         a = top
-        For k = 1 To N_PIER_EL
-            b = AddNode(ax(i), 0, zCap(i) - capDrop - pH(i) * k / N_PIER_EL)
+        nEl = -Int(-pH(i) / MAX_PIER_EL + 0.000000001)
+        If nEl < N_PIER_EL Then nEl = N_PIER_EL
+        For k = 1 To nEl
+            b = CapN(i, 0, zCap(i) - capDrop - pH(i) * k / nEl)
             Member grpPier, 3, pSec(i), a, b
+            pierAng(CStr(eCnt)) = -phiA(i)
             a = b
         Next k
         Fix1 a
@@ -426,20 +582,20 @@ End Sub
 
 ' one bearing line: deck node -> rigid -> bearing top nodes -> elastic links -> bottom nodes
 ' -> rigid to the cap (pier) or fixed (abutment)
-Private Sub BearingLine(ByVal x As Double, ByVal axisX As Double, ByVal abut As Boolean, ByVal fixedEnd As Boolean, y() As Double, ByVal zU As Double, ByVal zL As Double, ByVal zC As Double)
+Private Sub BearingLine(ByVal sp As Long, ByVal u As Double, ByVal axisNo As Long, ByVal abut As Boolean, ByVal fixedEnd As Boolean, y() As Double, ByVal zU As Double, ByVal zL As Double, ByVal zC As Double)
     Dim j As Long, up As Long, lo As Long, sl As String, cn As Long, kLong As Double
     kLong = IIf(fixedEnd, kFix, kyB)
     For j = 0 To nG - 1
-        up = AddNode(x, y(j), zU)
-        lo = AddNode(x, y(j), zL)
+        up = SpN(sp, u, y(j), zU)
+        lo = SpN(sp, u, y(j), zL)
         sl = sl & IIf(sl = "", "", ",") & up
         nLink = nLink + 1
-        elnkJson = elnkJson & IIf(elnkJson = "", "", ",") & QS(CStr(nLink)) & ":{""NODE"":[" & up & "," & lo & "],""ANGLE"":0,""LINK"":""GEN""," & _
+        elnkJson = elnkJson & IIf(elnkJson = "", "", ",") & QS(CStr(nLink)) & ":{""NODE"":[" & up & "," & lo & "],""ANGLE"":" & JN(-phiS(sp)) & ",""LINK"":""GEN""," & _
             """R_S"":[false,false,false,false,false,false],""SDR"":[" & JN(kEB) & "," & JN(kFix) & "," & JN(kLong) & ",0,0,0],""bSHEAR"":false,""DR"":[0.5,0.5],""BNGR_NAME"":""BG_MESNET""}"
         If abut Then
             Fix1 lo
         Else
-            cn = AddNode(axisX, y(j), zC)
+            cn = CapN(axisNo, y(j), zC)
             If capSlaves.Exists(CStr(cn)) Then
                 capSlaves(CStr(cn)) = capSlaves(CStr(cn)) & "," & lo
             Else
@@ -447,7 +603,7 @@ Private Sub BearingLine(ByVal x As Double, ByVal axisX As Double, ByVal abut As 
             End If
         End If
     Next j
-    Rigid AddNode(x, 0, 0), sl
+    Rigid SpN(sp, u, 0, 0), sl
 End Sub
 
 Private Sub Rigid(ByVal master As Long, ByVal slaves As String)
@@ -778,7 +934,7 @@ Private Sub BuildPayloads()
     Dim s As String, i As Long, sz As String
     Set payloads = New Collection
     Add "db/UNIT", "{""Assign"":{""1"":{""FORCE"":""KN"",""DIST"":""M"",""HEAT"":""J"",""TEMPER"":""C""}}}"
-    Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":false,""bSELFWEIGHT"":true,""SMASS"":1}}}"
+    Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":true,""bSELFWEIGHT"":true,""SMASS"":1}}}"
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
         ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION)) & "}}}"
     Add "db/MATL", "{""Assign"":{" & MatJson(1, clsG) & "," & MatJson(2, clsS) & "," & MatJson(3, clsO) & "}}"
@@ -806,7 +962,7 @@ Private Sub BuildPayloads()
     s = ""
     For i = 1 To eCnt
         s = s & IIf(i = 1, "", ",") & QS(CStr(i)) & ":{""TYPE"":""BEAM"",""MATL"":" & eMat(i) & ",""SECT"":" & eSec(i) & _
-            ",""NODE"":[" & eN1(i) & "," & eN2(i) & ",0,0,0,0,0,0],""ANGLE"":0,""STYPE"":0}"
+            ",""NODE"":[" & eN1(i) & "," & eN2(i) & ",0,0,0,0,0,0],""ANGLE"":" & JN(IIf(pierAng.Exists(CStr(i)), pierAng(CStr(i)), 0)) & ",""STYPE"":0}"
     Next i
     Add "db/ELEM", "{""Assign"":{" & s & "}}"
     Add "db/GRUP", "{""Assign"":{""1"":{""NAME"":""SG_TABLIYE"",""P_TYPE"":0,""E_LIST"":[" & grpDeck & "]}," & _
@@ -922,6 +1078,7 @@ Private Function Summary() As String
         "Bearings: kv " & Format(kEB, "0") & ", free ky " & Format(kyB, "0.0") & ", kh " & Format(kFix, "0") & ", link " & linkLen & " m; " & f & " spans fixed left, " & nSp - f & " right" & vbCrLf & _
         "Cap " & capL & " m, pier top " & capDrop & " m below cap top; " & nPS & " pier section(s)" & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
+        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF centerline), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", IIf(nAlign > 0, "Plan: " & nAlign & " alignment elements, largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight (G_AKS_XY and G_GUZERGAH empty)")) & vbCrLf & _
         "Geometry only: no loads, no spectra, no combinations."
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
