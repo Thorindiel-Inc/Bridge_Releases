@@ -22,8 +22,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "mak-ll"
-Private Const SCRIPT_VERSION As String = "2026-11-06d"
-Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
+Private Const SCRIPT_VERSION As String = "2026-11-06e"
+Private Const SCRIPT_CHANGELOG As String = "Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MAK_LL"
@@ -34,6 +34,7 @@ Private Const OUT_ROW As Long = 75          ' first station row of X (M) / Y (V)
 Private Const COL_M As Long = 15           ' X
 Private Const COL_V As Long = 16           ' Y
 Private Const TOL As Double = 0.001        ' node position tolerance (m)
+Private Const DEF_CASE As String = "LM71"  ' preselected moving-load case
 
 Private mKey As String
 Private http As Object
@@ -230,7 +231,7 @@ Private Sub WriteSheet(ws As Worksheet, ByVal caseName As String, ByVal nGird As
     Next i
     r = OUT_ROW + nSt + 1
     ws.Cells(r, 2).Value = "M = max(|My(MV:max)|, |My(MV:min)|), V = max(|Vz(MV:max)|, |Vz(MV:min)|) at the station nodes of every girder, both element ends, both halves (x and L - x)."
-    ws.Cells(r + 1, 2).Value = "O" \& OUT_ROW \& ":P" \& (OUT_ROW + nSt - 1) \& " are read by the report Tablo 27. Stations = 1_RAPOR Tablo 27 column K (m from the bearing)."
+    ws.Cells(r + 1, 2).Value = "O" & OUT_ROW & ":P" & (OUT_ROW + nSt - 1) & " are read by the report Tablo 27. Stations = 1_RAPOR Tablo 27 column K (m from the bearing)."
     Application.Calculation = xlCalculationAutomatic
 End Sub
 
@@ -273,23 +274,17 @@ Private Function MovingCases() As Collection
 End Function
 
 Private Function PickCase(wb As Workbook, cases As Collection) As String
-    Dim s As String, i As Long, v As Variant, last As String, def As Long
-    On Error Resume Next
-    last = CStr(wb.CustomDocumentProperties("MAK_LL_CASE").Value)
-    On Error GoTo 0
-    def = 1
+    ' drop-down of the moving-load cases found in the open model; default LM71 (owner 2026-11-06),
+    ' else the third case, else the first
+    Dim items() As String, i As Long, v As Long, def As Long
+    ReDim items(0 To cases.Count - 1)
+    def = IIf(cases.Count >= 3, 3, 1)
     For i = 1 To cases.Count
-        s = s & i & " = " & cases(i) & vbCrLf
-        If cases(i) = last Then def = i
+        items(i - 1) = cases(i)
+        If cases(i) = DEF_CASE Then def = i
     Next i
-    v = UiInput("Moving-load case for the girder live-load envelope:" & vbCrLf & vbCrLf & s, MSG_TITLE, def, True)
-    If VarType(v) = vbBoolean Then Exit Function
-    If v < 1 Or v > cases.Count Then UiMsg "No case " & v & ".", vbExclamation, MSG_TITLE: Exit Function
-    PickCase = cases(CLng(v))
-    On Error Resume Next
-    wb.CustomDocumentProperties("MAK_LL_CASE").Delete
-    wb.CustomDocumentProperties.Add Name:="MAK_LL_CASE", LinkToContent:=False, Type:=msoPropertyTypeString, Value:=PickCase
-    On Error GoTo 0
+    v = UiChoice("Moving-load case for the girder live-load envelope:", items, MSG_TITLE, def)
+    If v > 0 Then PickCase = cases(v)
 End Function
 
 ' ---- beam forces: rows (Elem, Load, Part, Axial-unused, Shear-z, Moment-y) ----

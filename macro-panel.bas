@@ -36,8 +36,8 @@ Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPt
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-06f"
-Private Const SCRIPT_CHANGELOG As String = "RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons; new pop-up design: coloured header, aligned rows with tick / warning / error marks, question box, styled buttons, Kopyala; Enter follows the default button of the call"
+Private Const SCRIPT_VERSION As String = "2026-11-06g"
+Private Const SCRIPT_CHANGELOG As String = "UiChoice can preselect an item; RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons; new pop-up design: coloured header, aligned rows with tick / warning / error marks, question box, styled buttons, Kopyala; Enter follows the default button of the call"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -82,7 +82,7 @@ Private toolList As Variant, rowTool() As Long, curTool As Long, curRow As Long
 Private inLayout As Boolean, closed As Boolean, barPct As Double, zoomNow As Double, logW As Double
 Private fKey() As String, fTyp() As String, fCnt As Long
 Private vals As Object
-Private uiBtn As Long, uiText As String, uiPick As Long, running As Boolean
+Private uiBtn As Long, uiText As String, uiPick As Long, pickDef As Long, running As Boolean
 
 Private Function Tools() As Variant
     Tools = Array( _
@@ -596,7 +596,8 @@ Public Function UiInputS(ByVal prompt As String, Optional ByVal title As String 
 End Function
 
 ' list of choices, position counted from 1, 0 on Cancel
-Public Function UiChoice(ByVal prompt As String, items As Variant, Optional ByVal title As String = "") As Long
+Public Function UiChoice(ByVal prompt As String, items As Variant, Optional ByVal title As String = "", Optional ByVal def As Long = 1) As Long
+    pickDef = def
     AskDialog prompt, IIf(title = "", "Makro", title), vbOKCancel, vbQuestion, False, "", items
     If uiBtn = 1 Then UiChoice = uiPick
 End Function
@@ -668,7 +669,7 @@ Private Sub AskDialog(ByVal prompt As String, ByVal title As String, ByVal kind 
     If withList Then
         lb.Clear
         For i = LBound(items) To UBound(items): lb.AddItem CStr(items(i)): Next i
-        lb.ListIndex = 0
+        lb.ListIndex = IIf(pickDef >= 1 And pickDef <= lb.ListCount, pickDef - 1, 0)
         lb.top = tp
         tp = tp + 36
     End If

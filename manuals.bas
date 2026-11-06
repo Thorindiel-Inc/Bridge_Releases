@@ -8,7 +8,7 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-06e"
+Private Const SCRIPT_VERSION As String = "2026-11-06f"
 Private Const SCRIPT_CHANGELOG As String = "Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
@@ -965,7 +965,7 @@ Private Function P2_1() As String
     s = s & "</nav>" & vbLf
     s = s & "<main>" & vbLf
     s = s & "<h1 id=""midas_ustyapi-reference-manual"">MIDAS_USTYAPI - reference manual</h1>" & vbLf
-    s = s & "<p>Macro <code>scripts/midas/MIDAS_USTYAPI.bas</code>, version <strong>2026-11-05c</strong> (SCRIPT_ID <code>midas-ustyapi-build</code>)." & vbLf
+    s = s & "<p>Macro <code>scripts/midas/MIDAS_USTYAPI.bas</code>, version <strong>2026-11-06e</strong> (SCRIPT_ID <code>midas-ustyapi-build</code>)." & vbLf
     s = s & "It builds the superstructure grillage model of one span in <strong>MIDAS Civil NX</strong> through the MAPI" & vbLf
     s = s & "REST API. You run it from the 1-2 workbook (<code>global/1-7_YHT_XXXXX_INT-LDS-DYN-RTI-KDME.xlsm</code>).</p>" & vbLf
     s = s & "<p>This page explains what the macro builds and how each value is calculated. When this page and" & vbLf
@@ -1493,6 +1493,11 @@ Private Function P2_4() As String
     s = s & "<td>100 kN &#183; &#945; spread over about 3 m around midspan</td>" & vbLf
     s = s & "<td>girder under track 1, lateral, lever 1.1 m</td>" & vbLf
     s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
+    s = s & "<td>CF</td>" & vbLf
+    s = s & "<td>largest Qtk of 2_YUKLER Tablo 17, kN/m per track (needs INPUT B19 = R and B20 = Lf; Lf = Hesap A&#231;&#305;kl&#305;&#287;&#305;). No Qtk: empty case + warning</td>" & vbLf
+    s = s & "<td>girder under each track, whole girder length, lateral +Y (same as WL), lever = rail level + 1.8 m above the node (balast + koruma + 0.16 + 1.8 = 2.61 m)</td>" & vbLf
+    s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
     s = s & "<p>Why &#183;nG/2 and &#183;nG/nR: the workbook values are per girder (the total load shared by all girders)." & vbLf
@@ -1591,8 +1596,8 @@ Private Function P2_4() As String
     s = s & "    leaves them out. Changed in 2026-11-03h.</li>" & vbLf
     s = s & "<li>The other cases follow their Tablo 14 column: FR (WA column), WS-X/Y/Z (WS), WL, TU+ (TU)," & vbLf
     s = s & "  PL/BR/CF/MOVE/LM71 (LL).</li>" & vbLf
-    s = s & "<li>Static load cases (15): DC, DW_1, DW_2, Prestress, WS-Y, WL, MOVE, TU+ and TU- carry load. FR, WS-X," & vbLf
-    s = s & "  WS-Z, PL, BR and CF are still empty placeholders.</li>" & vbLf
+    s = s & "<li>Static load cases (15): DC, DW_1, DW_2, Prestress, WS-Y, WL, MOVE, CF, TU+ and TU- carry load. FR, WS-X," & vbLf
+    s = s & "  WS-Z, PL and BR are still empty placeholders.</li>" & vbLf
     s = s & "<li>TU- carries load but is in no combination; only TU+ is combined (owner 2026-11-03, to keep the number of" & vbLf
     s = s & "  combinations down).</li>" & vbLf
     s = s & "<li>Removed 2026-11-03k (owner): load cases WA-1, EH, EV, ES, LS, S, IC (water, earth, surcharge, snow" & vbLf
@@ -1628,16 +1633,16 @@ Private Function P2_4() As String
     s = s & "<li>the stage-result names used in the combinations (""Dead Load"", ""Tendon Secondary"", ...): no analysis has been run;</li>" & vbLf
     s = s & "<li>the losses compared with 4-7 (the 03q model with CEB-FIP: 321 MPa vs 284.85; 03r with AASHTO not run yet);</li>" & vbLf
     s = s & "<li>how MIDAS's AASHTO creep model uses STR (28-day f'c or f'ci) and AGE (the API page does not say);</li>" & vbLf
-    s = s & "<li>the composite-girder J is not readable through the API, but MIDAS writes it to the solver deck" & vbLf
-    s = s & "    (<code>&lt;model&gt;_Eigenvalue.mec</code>, cards PBAR / PBARC, factors on BARSF); section 7 staged J = 0.02665 was measured;</li>" & vbLf
-    s = s & "<li>spans 2-6 (1-2 holds span 1 only).</li>" & vbLf
-    s = s & "</ul>" & vbLf
-    s = s & "<h2 id=""11a-limits-of-the-model-and-its-results-hambly-review-2026-11-05"">11a. Limits of the model and its results (Hambly review 2026-11-05)</h2>" & vbLf
     P2_4 = s
 End Function
 
 Private Function P2_5() As String
     Dim s As String
+    s = s & "<li>the composite-girder J is not readable through the API, but MIDAS writes it to the solver deck" & vbLf
+    s = s & "    (<code>&lt;model&gt;_Eigenvalue.mec</code>, cards PBAR / PBARC, factors on BARSF); section 7 staged J = 0.02665 was measured;</li>" & vbLf
+    s = s & "<li>spans 2-6 (1-2 holds span 1 only).</li>" & vbLf
+    s = s & "</ul>" & vbLf
+    s = s & "<h2 id=""11a-limits-of-the-model-and-its-results-hambly-review-2026-11-05"">11a. Limits of the model and its results (Hambly review 2026-11-05)</h2>" & vbLf
     s = s & "<ul>" & vbLf
     s = s & "<li><strong>Slab stresses and shear</strong>: a grillage does not represent slab membrane action, so do not use slab" & vbLf
     s = s & "  stresses or slab shear from this model directly (Hambly 4.10, 7.6). Girder soffit results are fine.</li>" & vbLf

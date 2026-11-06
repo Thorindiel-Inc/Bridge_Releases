@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-06d"
-Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-06e"
+Private Const SCRIPT_CHANGELOG As String = "CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -58,6 +58,8 @@ Private Const WL_ECC As Double = 3.5            ' lever of the train wind above 
 Private Const NOSING_Q As Double = 100#         ' EN 1991-2 6.5.2 Qsk (kN)
 Private Const NOSING_LEN As Double = 3#         ' nosing spread length (m)
 Private Const NOSING_ECC As Double = 1.1        ' nosing lever above the girder node (m)
+Private Const RAIL_OVER_BALLAST As Double = 0.16 ' rail level above ballast + protection concrete (as MIDAS_KOPRU)
+Private Const CF_HEIGHT As Double = 1.8         ' centrifugal force above rail level (2_YUKLER C160)
 Private Const RAIL_HALF_GAUGE As Double = 0.7175
 Private Const GRAV As Double = 9.806          ' load-to-mass conversion (LTOM, reference model)
 Private Const GRAV_STYP As Double = 9.807     ' structure type gravity (STYP, reference model)
@@ -91,7 +93,7 @@ Private disB As Double, disL As Double   ' outer end beam (dis enleme) beyond th
 Private eG As Double, eS As Double, clsG As String, clsS As String
 Private qBal As Double, qKor As Double, qBor As Double, qKork As Double, qCep As Double, qRay As Double
 Private sark As Double, kyB As Double, kEB As Double
-Private wG As Double, wV As Double, alphaLM As Double, tuPos As Double, tuNeg As Double
+Private wG As Double, wV As Double, alphaLM As Double, tuPos As Double, tuNeg As Double, qtk As Double, railH As Double
 Private kb(1 To 12) As Double   ' b2..b7, h2..h7 (m)
 Private kbY(1 To 12) As Double  ' end-zone girder "<type> - Y" (section over the support)
 Private zoneL As Double         ' end-zone length from each girder end (1-2 INPUT, cell right of Sarkiklik, cm)
@@ -327,6 +329,11 @@ Private Sub ReadInputs(wb12 As Workbook)
     wG = Num(BelowHeader(wb12.Worksheets("2_YUKLER"), "Wg").Value, "2_YUKLER Wg (wind on structure)")
     wV = Num(BelowHeader(wb12.Worksheets("2_YUKLER"), "Wv").Value, "2_YUKLER Wv (wind on train)")
     alphaLM = Num(BelowHeader(wb12.Worksheets("2_YUKLER"), ChrW(945)).Value, "2_YUKLER alpha")
+    ' centrifugal force (owner 2026-11-06): largest Qtk of Tablo 17, so the model carries the value of the report
+    qtk = MaxQtk(wb12.Worksheets("2_YUKLER"))
+    railH = Num(NmRange(wb12, "G_BALAST_YUKSEKLIGI").Cells(1).Value, "G_BALAST_YUKSEKLIGI") + _
+            Num(NmRange(wb12, "G_KORUMA_BETONU_YUKSEKLIGI").Cells(1).Value, "G_KORUMA_BETONU_YUKSEKLIGI") + RAIL_OVER_BALLAST
+    If qtk <= 0 Then warnText = warnText & "- Tablo 17 (2_YUKLER) shows no Qtk: fill INPUT B19 (R) and B20 (Lf). The CF case stays empty." & vbCrLf
 
     ' uniform temperature (owner 2026-11-03, option A): dT = the 1-2 INPUT values, reference temperature 0
     tuPos = Num(NmRange(wb12, "G_SICAKLIK_MAKS").Cells(1).Value, "G_SICAKLIK_MAKS")
@@ -810,6 +817,15 @@ Private Sub BuildLoads()
         xm = (st(i) + st(i + 1)) / 2
         If Abs(xm - Lg / 2) <= NOSING_LEN / 2 + 0.000001 Then AddLoad gEl(trG(1), i), "MOVE", "LY", 1, "LZ", NOSING_ECC, NOSING_Q * alphaLM / ltot
     Next i
+    ' centrifugal force: Qtk per track on the girder under each track, whole girder length, same direction as
+    ' WL (the grillage is straight, so the two add up), lever from the slab-top node to rail level + 1.8 m
+    If qtk > 0 Then
+        For k = 1 To nTr
+            For i = 1 To nSt - 1
+                AddLoad gEl(trG(k), i), "CF", "LY", 1, "LZ", railH + CF_HEIGHT, qtk
+            Next i
+        Next k
+    End If
 End Sub
 
 Private Function NearestGirder(ByVal y As Double) As Long
@@ -1228,7 +1244,7 @@ End Function
 Private Function StldJson() As String
     Dim a As Variant, i As Long, p As Variant, s As String
     ' owner 2026-11-03: water, earth, surcharge, snow and ice cases removed (no such loads on this superstructure);
-    ' FR, PL, TU+/TU-, BR, CF, WS-X, WS-Z stay as (still empty) placeholders
+    ' FR, PL, BR, WS-X, WS-Z stay as (still empty) placeholders
     a = Array("DC|D|Self Wieght", "DW_1|DC|Barrier + Pavement", "DW_2|DW|Wearing Surface", "Prestress|PS|", _
         "FR|FR|Friction Force", "WS-X|W|Horizontal Wind Load (Long.)", "WS-Y|W|Horizontal Wind Load (Trans.)", "WS-Z|W|Vertical Wind Load", _
         "WL|WL|Wind Load on Live Load", "TU+|T|Temperature Effect (+)", "TU-|T|Temperature Effect (-)", _
@@ -1826,6 +1842,7 @@ Private Function Summary() As String
         ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _
         "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
         "Wind Wg " & wG & ", Wv " & wV & "; TU " & tuPos & "/" & tuNeg & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
+        IIf(qtk > 0, "Centrifugal Qtk " & Format(qtk, "0.000") & " kN/m on " & nTr & " track(s), lever " & Format(railH + CF_HEIGHT, "0.00") & " m", "Centrifugal: none") & vbCrLf & _
         "Strands " & nTdnGroup & " in " & nTdn & " tendons, " & nRow & " rows, fpi " & fpi & " MPa; transfer " & Format(ageG, "0.00") & " d (f'ci " & Format(fciRatio, "0.00") & " f'c); CS " & DUR_CS1 & "/" & DUR_CS2 & "/" & DUR_CS3 & "/" & DUR_CS4 & " d, RH " & humid & " %"
     If dynMode Then
         s = "DYNAMIC MODEL" & vbCrLf & Left$(s, InStr(s, "Strands ") - 1) & "No stages, no tendons; girder J factors are measured during the build" & vbCrLf
@@ -1886,6 +1903,25 @@ End Function
 
 Private Function LabelValue(ws As Worksheet, ByVal col As Long, ByVal startText As String, ByVal valCol As Long) As Variant
     LabelValue = ws.Cells(FindLabel(ws, col, startText).Row, valCol).Value
+End Function
+
+Private Function MaxQtk(ws As Worksheet) As Double
+    ' largest number in the rows under the Qtk header of Tablo 17; an empty table shows "-" -> 0
+    Dim c As Range, first As String, r As Long, v As Variant
+    Set c = ws.UsedRange.Find(What:="Qtk", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=True)
+    If c Is Nothing Then Err.Raise vbObjectError + 24, , ws.Name & ": Tablo 17 header 'Qtk' not found."
+    first = c.Address
+    Do
+        For r = 1 To 3
+            v = c.Offset(r, 0).Value
+            If Not IsError(v) Then
+                If Not IsEmpty(v) And IsNumeric(v) Then
+                    If CDbl(v) > MaxQtk Then MaxQtk = CDbl(v)
+                End If
+            End If
+        Next r
+        Set c = ws.UsedRange.FindNext(c)
+    Loop While Not c Is Nothing And c.Address <> first
 End Function
 
 Private Function BelowHeader(ws As Worksheet, ByVal header As String) As Range
