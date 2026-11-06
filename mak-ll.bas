@@ -22,17 +22,17 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "mak-ll"
-Private Const SCRIPT_VERSION As String = "2026-11-03a"
-Private Const SCRIPT_CHANGELOG As String = "Reads the live-load envelope directly from the MIDAS model (moving-load case picked in a pop-up), both signs, all girders, both halves, at the Tablo 27 station nodes; new LL sheet layout; Option Explicit, error handler"
+Private Const SCRIPT_VERSION As String = "2026-11-06d"
+Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MAK_LL"
-Private Const LL_SHEET As String = "LL"
 Private Const KEY_SHEET As String = "INPUT"
 Private Const KEY_CELL As String = "T3"
-Private Const OUT_ROW As Long = 4          ' first station row of X (M) / Y (V), read by 1_RAPOR
-Private Const COL_M As Long = 24           ' X
-Private Const COL_V As Long = 25           ' Y
+Private Const LL_TOP As Long = 72          ' title row of the table on the 4<letter>_KILIF sheet
+Private Const OUT_ROW As Long = 75          ' first station row of X (M) / Y (V), read by 1_RAPOR
+Private Const COL_M As Long = 15           ' X
+Private Const COL_V As Long = 16           ' Y
 Private Const TOL As Double = 0.001        ' node position tolerance (m)
 
 Private mKey As String
@@ -48,25 +48,26 @@ Public Sub MAK_LL()
     Dim ws As Worksheet, wb As Workbook, calcWas As Long, msg As String
     On Error GoTo Fail
     Set wb = ThisWorkbook
-    Set ws = wb.Worksheets(LL_SHEET)
+    Set ws = ActiveSheet
+    If UCase$(Right$(ws.Name, 6)) <> "_KILIF" Then Err.Raise vbObjectError + 9, , "Run MAK_LL from a span sheet such as 4A_KILIF."
     calcWas = Application.Calculation
     msg = RunEnvelope(wb, ws, "", "")
     Application.StatusBar = False
     Application.Calculation = xlCalculationAutomatic
-    If msg <> "" Then MsgBox msg, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
+    If msg <> "" Then UiMsg msg, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
     Exit Sub
 Fail:
     Application.StatusBar = False
     Application.Calculation = xlCalculationAutomatic
-    MsgBox "Stopped: " & Err.Description & vbCrLf & "LL!X:Y were not changed.", vbCritical, MSG_TITLE
+    UiMsg "Stopped: " & Err.Description & vbCrLf & "The LL table was not changed.", vbCritical, MSG_TITLE
 End Sub
 
 ' Scripted entry (tests): no dialogs; caseName given; report written to reportFile.
-Public Sub MAK_LL_RUN(ByVal caseName As String, ByVal reportFile As String, Optional ByVal apiKey As String = "")
+Public Sub MAK_LL_RUN(ByVal caseName As String, ByVal reportFile As String, Optional ByVal apiKey As String = "", Optional ByVal llSheet As String = "4A_KILIF")
     Dim msg As String
     On Error GoTo Fail
     If apiKey <> "" Then mKey = apiKey
-    msg = RunEnvelope(ThisWorkbook, ThisWorkbook.Worksheets(LL_SHEET), caseName, reportFile)
+    msg = RunEnvelope(ThisWorkbook, ThisWorkbook.Worksheets(llSheet), caseName, reportFile)
     Application.StatusBar = False
     Application.Calculation = xlCalculationAutomatic
     WriteText reportFile, msg
@@ -91,7 +92,7 @@ Private Function RunEnvelope(wb As Workbook, ws As Worksheet, ByVal caseName As 
     Dim cases As Collection, keys As String, rowsMax As Variant, rowsMin As Variant
 
     scripted = (reportFile <> "")
-    ReadStations wb
+    ReadStations wb, ws
     sark = Num(NmRange(wb, "G_SARKIKLIK").Cells(1).Value, "4-7 G_SARKIKLIK") / 100#
     If sark <= 0 Or sark > 2 Then Err.Raise vbObjectError + 1, , "4-7 G_SARKIKLIK = " & sark * 100 & " cm is out of range."
 
@@ -172,7 +173,7 @@ Private Function RunEnvelope(wb As Workbook, ws As Worksheet, ByVal caseName As 
         End If
     Next i
     If missTxt <> "" Then
-        RunEnvelope = "Stopped - LL!X:Y not changed. Stations without a girder node / result:" & vbCrLf & missTxt & _
+        RunEnvelope = "Stopped - LL table not changed. Stations without a girder node / result:" & vbCrLf & missTxt & _
             "Rebuild the model with MIDAS_USTYAPI 2026-11-03s or later (it adds nodes at the Tablo 27 stations) and run the analysis."
         Exit Function
     End If
@@ -203,42 +204,40 @@ Private Sub WriteSheet(ws As Worksheet, ByVal caseName As String, ByVal nGird As
     Dim i As Long, r As Long, wasProt As Boolean
     Application.Calculation = xlCalculationManual
     ' clean layout (owner 2026-11-03): clear everything except the button; X/Y rewritten below
-    ws.UsedRange.ClearContents
-    ws.UsedRange.ClearFormats
-    ws.Range("A1").Value = "MAK_LL - live-load envelope of the girders (read from MIDAS)"
-    ws.Range("A1").Font.Bold = True
-    ws.Range("A2").Value = "Case: " & caseName & "   |   " & nGird & " girders, " & nEl & " girder elements, girder " & Format(Lg, "0.000") & " m, bearing at " & Format(sark, "0.000") & " m   |   " & Format(Now, "yyyy-mm-dd hh:nn") & "   |   " & SCRIPT_ID & " " & SCRIPT_VERSION
+    ws.Range(ws.Cells(LL_TOP, 2), ws.Cells(LL_TOP + 36, COL_V)).ClearContents
+    ws.Cells(LL_TOP, 2).Value = "MAK_LL - live-load envelope of the girders (read from MIDAS)"
+    ws.Cells(LL_TOP, 2).Font.Bold = True
+    ws.Cells(LL_TOP + 1, 2).Value = "Case: " & caseName & "   |   " & nGird & " girders, " & nEl & " girder elements, girder " & Format(Lg, "0.000") & " m, bearing at " & Format(sark, "0.000") & " m   |   " & Format(Now, "yyyy-mm-dd hh:nn") & "   |   " & SCRIPT_ID & " " & SCRIPT_VERSION
     r = OUT_ROW - 1
-    ws.Cells(r, 1).Resize(1, 7).Value = Array("Station", "x from bearing (m)", "Model x (m)", "Model x mirror (m)", "|M| max (kNm)", "|V| max (kN)", "")
-    ws.Cells(r, 8).Value = "Governing M"
-    ws.Cells(r, 13).Value = "Governing V"
+    ws.Cells(r, 2).Resize(1, 7).Value = Array("Station", "x from bearing (m)", "Model x (m)", "Model x mirror (m)", "|M| max (kNm)", "|V| max (kN)", "")
+    ws.Cells(r, 9).Value = "Governing M"
+    ws.Cells(r, 14).Value = "Governing V"
     ws.Cells(r, COL_M).Value = "M"
     ws.Cells(r, COL_V).Value = "V"
-    ws.Rows(r).Font.Bold = True
+    ws.Range(ws.Cells(r, 2), ws.Cells(r, COL_V)).Font.Bold = True
     For i = 1 To nSt
         r = OUT_ROW + i - 1
-        ws.Cells(r, 1).Value = stName(i)
-        ws.Cells(r, 2).Value = stK(i)
-        ws.Cells(r, 3).Value = Round(stX1(i), 4)
-        ws.Cells(r, 4).Value = Round(stX2(i), 4)
-        ws.Cells(r, 5).Value = Round(resM(i), 2)
-        ws.Cells(r, 6).Value = Round(resV(i), 2)
-        ws.Cells(r, 8).Value = govM(i)
-        ws.Cells(r, 13).Value = govV(i)
+        ws.Cells(r, 2).Value = stName(i)
+        ws.Cells(r, 3).Value = stK(i)
+        ws.Cells(r, 4).Value = Round(stX1(i), 4)
+        ws.Cells(r, 5).Value = Round(stX2(i), 4)
+        ws.Cells(r, 6).Value = Round(resM(i), 2)
+        ws.Cells(r, 7).Value = Round(resV(i), 2)
+        ws.Cells(r, 9).Value = govM(i)
+        ws.Cells(r, 14).Value = govV(i)
         ws.Cells(r, COL_M).Value = Round(resM(i), 2)
         ws.Cells(r, COL_V).Value = Round(resV(i), 2)
     Next i
     r = OUT_ROW + nSt + 1
-    ws.Cells(r, 1).Value = "M = max(|My(MV:max)|, |My(MV:min)|), V = max(|Vz(MV:max)|, |Vz(MV:min)|) at the station nodes of every girder, both element ends, both halves (x and L - x)."
-    ws.Cells(r + 1, 1).Value = "X" & OUT_ROW & ":Y" & (OUT_ROW + nSt - 1) & " are read by 1_RAPOR Tablo 27. Stations = 1_RAPOR Tablo 27 column K (m from the bearing)."
-    ws.Columns("A:F").AutoFit
+    ws.Cells(r, 2).Value = "M = max(|My(MV:max)|, |My(MV:min)|), V = max(|Vz(MV:max)|, |Vz(MV:min)|) at the station nodes of every girder, both element ends, both halves (x and L - x)."
+    ws.Cells(r + 1, 2).Value = "O" \& OUT_ROW \& ":P" \& (OUT_ROW + nSt - 1) \& " are read by the report Tablo 27. Stations = 1_RAPOR Tablo 27 column K (m from the bearing)."
     Application.Calculation = xlCalculationAutomatic
 End Sub
 
 ' ---- 4-7 1_RAPOR Tablo 27 stations: header 'Yeri' (H) + 'V (kN)' (N); rows below until D is empty ----
-Private Sub ReadStations(wb As Workbook)
+Private Sub ReadStations(wb As Workbook, ll As Worksheet)
     Dim ws As Worksheet, r As Long, hdr As Long, last As Long
-    Set ws = wb.Worksheets("1_RAPOR")
+    Set ws = wb.Worksheets(Left$(ll.Name, Len(ll.Name) - 6) & "_KDME")
     last = ws.Cells(ws.Rows.Count, 8).End(xlUp).Row
     For r = 1 To last
         If Left$(Txt(ws.Cells(r, 8).Value), 4) = "Yeri" And Left$(Txt(ws.Cells(r, 14).Value), 6) = "V (kN)" Then hdr = r: Exit For
@@ -283,9 +282,9 @@ Private Function PickCase(wb As Workbook, cases As Collection) As String
         s = s & i & " = " & cases(i) & vbCrLf
         If cases(i) = last Then def = i
     Next i
-    v = Application.InputBox("Moving-load case for the girder live-load envelope:" & vbCrLf & vbCrLf & s, MSG_TITLE, def, Type:=1)
+    v = UiInput("Moving-load case for the girder live-load envelope:" & vbCrLf & vbCrLf & s, MSG_TITLE, def, True)
     If VarType(v) = vbBoolean Then Exit Function
-    If v < 1 Or v > cases.Count Then MsgBox "No case " & v & ".", vbExclamation, MSG_TITLE: Exit Function
+    If v < 1 Or v > cases.Count Then UiMsg "No case " & v & ".", vbExclamation, MSG_TITLE: Exit Function
     PickCase = cases(CLng(v))
     On Error Resume Next
     wb.CustomDocumentProperties("MAK_LL_CASE").Delete
@@ -358,7 +357,7 @@ Private Function GetKey(wb As Workbook) As Boolean
     On Error GoTo 0
     If cellKey <> "" Then mKey = cellKey
     If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then mKey = InputBox("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
+    If mKey = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
     GetKey = (mKey <> "")
 End Function
 

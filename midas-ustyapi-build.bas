@@ -8,7 +8,7 @@ Option Explicit
 '  Button macro: MIDAS_USTYAPI_OLUSTUR
 '    0. asks STAGED or DYNAMIC (dynamic = no stages, no tendons, static-based combinations)
 '    1. asks for the span (Hesap Acikligi 1..6 of G_HESAP_ACIKLIK)
-'    2. asks for the 4-7 workbook (opened read-only): sarkiklik (G_SARKIKLIK)
+'    2. reads the span sheets of this workbook (4<letter>_KDME, 4<letter>_KILIF): sarkiklik (G_SARKIKLIK)
 '       and the elastomer stiffnesses (1_RAPOR, column C labels
 '       "Elastomer Yanal Kesme Rijitligi" / "Elastomer Eksenel Rijitligi",
 '       value in column S)
@@ -19,11 +19,11 @@ Option Explicit
 '       -> stop, nothing written), then writes every table into that model,
 '       reads back counts + the girder area and saves it (doc/SAVE)
 '  Clean only: MIDAS_USTYAPI_TEMIZLE (asks first).
-'  Dry run (no dialogs, no HTTP): MIDAS_USTYAPI_PAYLOAD span, path47, outDir [, dynamicModel]
+'  Dry run (no dialogs, no HTTP): MIDAS_USTYAPI_PAYLOAD span, outDir [, dynamicModel]
 '    writes NN_<TABLE>.json files + summary.txt.
 '
 '  Construction stages (owner 2026-11-02): CS1 girders + bearings + self-weight +
-'  pretensioned strands (4-7 KILIFLAMA, fpi from 4-7 1_RAPOR), CS2 deck, CS3 DW_1 +
+'  pretensioned strands (4<letter>_KILIF, fpi from 4<letter>_KDME), CS2 deck, CS3 DW_1 +
 '  DW_2, CS4 long term; AASHTO creep/shrinkage, ACI 209 strength gain, Magura relaxation
 '  (KL 45); girder age at transfer = day f'c(t) reaches the 4-7 f'ci; combinations use the stage
 '  results. End zones: girder "<type> - Y" over the length in the 1-2 INPUT cell right
@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-06a"
-Private Const SCRIPT_CHANGELOG As String = "Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only); Staged or Dynamic model pop-up; dynamic = no stages, no tendons, no links (girder nodes: X Y start, Y end, vertical springs kv from 4-7), static-based combinations, girder J brought to Hambly with measured SECF factors. Slab strips use db/SECF; warning if skew is not 0."
+Private Const SCRIPT_VERSION As String = "2026-11-06d"
+Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -95,7 +95,7 @@ Private wG As Double, wV As Double, alphaLM As Double, tuPos As Double, tuNeg As
 Private kb(1 To 12) As Double   ' b2..b7, h2..h7 (m)
 Private kbY(1 To 12) As Double  ' end-zone girder "<type> - Y" (section over the support)
 Private zoneL As Double         ' end-zone length from each girder end (1-2 INPUT, cell right of Sarkiklik, cm)
-' strands (4-7 KILIFLAMA + 1_RAPOR + INPUT)
+' strands (4<letter>_KILIF + 4<letter>_KDME)
 Private nRow As Long, rowZ() As Double, rowN() As Long
 Private nDb As Long, dbX() As Double, dbN() As Long          ' debond stations (m from girder end), debonded strands per row
 Private ageG As Double, fciRatio As Double   ' girder age at transfer (d), 4-7 f'ci / f'c
@@ -143,16 +143,16 @@ Private Const PROG_BAR_WIDTH As Long = 24
 
 ' ============================================================================
 Public Sub MIDAS_USTYAPI_OLUSTUR()
-    RunBuild 0, "", "", False
+    RunBuild 0, "", False
 End Sub
 
-Public Sub MIDAS_USTYAPI_PAYLOAD(ByVal spanIndex As Long, ByVal path47 As String, ByVal outDir As String, Optional ByVal dynamicModel As Boolean = False)
-    RunBuild spanIndex, path47, outDir, True, dynamicModel
+Public Sub MIDAS_USTYAPI_PAYLOAD(ByVal spanIndex As Long, ByVal outDir As String, Optional ByVal dynamicModel As Boolean = False)
+    RunBuild spanIndex, outDir, True, dynamicModel
 End Sub
 
 ' No dialogs: writes into the open model at once and saves it, report text to reportFile.
 ' For a scripted run; the key is passed in memory only (never stored).
-Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal path47 As String, ByVal reportFile As String, Optional ByVal apiKey As String = "", Optional ByVal saveModel As Boolean = True, _
+Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal reportFile As String, Optional ByVal apiKey As String = "", Optional ByVal saveModel As Boolean = True, _
                               Optional ByVal stripSpacing As Double = DEF_STRIP_DX, Optional ByVal linkLength As Double = DEF_LINK_LEN, Optional ByVal fixedSpring As Double = DEF_K_FIX, Optional ByVal dynamicModel As Boolean = False)
     Dim rep As String
     On Error GoTo Fail
@@ -161,10 +161,7 @@ Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal path47 As String, 
     stripDx = stripSpacing: linkLen = linkLength: kFix = fixedSpring
     dynMode = dynamicModel: askUser = False
     spanNo = spanIndex
-    Dim wb47 As Workbook, opened47 As Boolean
-    Set wb47 = OpenWb(path47, opened47)
-    ReadInputs ThisWorkbook, wb47
-    If opened47 Then wb47.Close SaveChanges:=False
+    ReadInputs ThisWorkbook
     BuildModel
     BuildPayloads
     rep = SendAll(saveModel)
@@ -174,48 +171,30 @@ Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal path47 As String, 
 Fail:
     Dim d As String: d = Err.Description
     On Error Resume Next
-    If opened47 Then wb47.Close SaveChanges:=False
     Application.StatusBar = False
     WriteText reportFile, "FAIL: " & d
 End Sub
 
-Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outDir As String, ByVal dry As Boolean, Optional ByVal dynamicModel As Boolean = False)
-    Dim wb12 As Workbook, wb47 As Workbook, opened47 As Boolean, msg As String, rep As String
+Private Sub RunBuild(ByVal spanIndex As Long, ByVal outDir As String, ByVal dry As Boolean, Optional ByVal dynamicModel As Boolean = False)
+    Dim wb12 As Workbook, msg As String, rep As String
     On Error GoTo Fail
     warnText = ""
     stripDx = DEF_STRIP_DX: linkLen = DEF_LINK_LEN: kFix = DEF_K_FIX
     Set wb12 = ThisWorkbook
     dynMode = dynamicModel: askUser = Not dry
-    If Not dry Then
-        Select Case MsgBox("Which model do you want to build?" & vbCrLf & vbCrLf & _
-                "YES = STAGED model (design: construction stages, tendons, combinations)." & vbCrLf & _
-                "NO = DYNAMIC model (modes: no stages, no tendons, moving load kept)." & vbCrLf & vbCrLf & _
-                "Open the matching .mcb in Civil NX first: the macro wipes the open file.", vbYesNoCancel + vbQuestion, MSG_TITLE)
-            Case vbYes: dynMode = False
-            Case vbNo: dynMode = True
-            Case Else: Exit Sub
-        End Select
-    End If
+    If Not dry Then dynMode = (UiIdx("model", 1) = 2)
 
+    If spanIndex = 0 Then spanIndex = UiIdx("span", 0)
     If spanIndex = 0 Then spanIndex = AskSpan(wb12)
     If spanIndex = 0 Then Exit Sub
     spanNo = spanIndex
 
-    If path47 = "" Then
-        Dim v As Variant
-        v = Application.GetOpenFilename("Excel (*.xlsm;*.xlsx),*.xlsm;*.xlsx", , "4-7 (KDME) workbook: sarkiklik + bearing stiffness")
-        If VarType(v) = vbBoolean Then Exit Sub
-        path47 = CStr(v)
-    End If
     If Not dry Then
         If Not AskModelValues() Then Exit Sub
     End If
 
     Application.StatusBar = "MIDAS_USTYAPI: reading inputs..."
-    Set wb47 = OpenWb(path47, opened47)
-    ReadInputs wb12, wb47
-    If opened47 Then wb47.Close SaveChanges:=False
-    Set wb47 = Nothing: opened47 = False
+    ReadInputs wb12
 
     BuildModel
     BuildPayloads
@@ -229,10 +208,10 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outD
     msg = FitBox(Summary(), "summary", 160) & vbCrLf & vbCrLf & _
           "YES = WIPE the open Civil NX model, rebuild it as the " & IIf(dynMode, "DYNAMIC", "STAGED") & " model and SAVE it." & IIf(dynMode, " The J measurement overwrites the open file during the build.", "") & vbCrLf & _
           "NO = only write the JSON payloads (MIDAS\payload)."
-    Select Case MsgBox(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
+    Select Case UiMsg(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
         Case vbNo
             WritePayloads ThisWorkbook.Path & "\MIDAS\payload"
-            MsgBox "Payloads written to " & ThisWorkbook.Path & "\MIDAS\payload", vbInformation, MSG_TITLE
+            UiMsg "Payloads written to " & ThisWorkbook.Path & "\MIDAS\payload", vbInformation, MSG_TITLE
             Application.StatusBar = False
             Exit Sub
         Case vbCancel
@@ -242,19 +221,18 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal path47 As String, ByVal outD
 
     rep = SendAll()
     Application.StatusBar = False
-    MsgBox FitBox(rep, "report", 0), IIf(InStr(rep, "FAIL") > 0, vbExclamation, vbInformation), MSG_TITLE
+    UiMsg FitBox(rep, "report", 0), IIf(InStr(rep, "FAIL") > 0, vbExclamation, vbInformation), MSG_TITLE
     Exit Sub
 Fail:
     Dim d As String: d = Err.Description
     On Error Resume Next
-    If opened47 Then wb47.Close SaveChanges:=False
     Application.StatusBar = False
     Application.ScreenUpdating = True
     If dry Then
         MakeDir outDir
         WriteText outDir & "\ERROR.txt", d
     Else
-        MsgBox "Stopped: " & d, vbCritical, MSG_TITLE
+        UiMsg "Stopped: " & d, vbCritical, MSG_TITLE
     End If
 End Sub
 
@@ -264,23 +242,9 @@ End Sub
 ' pop-ups (owner 2026-11-03): strip spacing, elastic link length, fixed-spring stiffness.
 ' Application.InputBox Type 1 = number in the Excel locale (decimal comma is fine); Cancel stops.
 Private Function AskModelValues() As Boolean
-    Dim v As Variant
-    v = Application.InputBox("Transverse slab strip spacing (m)." & vbCrLf & _
-        "The macro uses the nearest spacing that divides the span exactly.", MSG_TITLE & " - strips", DEF_STRIP_DX, Type:=1)
-    If VarType(v) = vbBoolean Then Exit Function
-    If v <= 0 Then MsgBox "Strip spacing must be > 0.", vbExclamation, MSG_TITLE: Exit Function
-    stripDx = CDbl(v)
-    v = Application.InputBox("Elastic link length below the bearing node (m)." & vbCrLf & _
-        IIf(dynMode, "(Dynamic model: no links, this only sets the outer end beam depth.)", "(Only the drawing changes; the springs do not depend on it.)"), MSG_TITLE & " - bearing link", DEF_LINK_LEN, Type:=1)
-    If VarType(v) = vbBoolean Then Exit Function
-    If v <= 0 Then MsgBox "Link length must be > 0.", vbExclamation, MSG_TITLE: Exit Function
-    linkLen = CDbl(v)
-    If dynMode Then AskModelValues = True: Exit Function   ' no springs in the dynamic model
-    v = Application.InputBox("Fixed bearing spring stiffness (kN/m)." & vbCrLf & _
-        "Used transversely at both bearing lines and longitudinally at the fixed end.", MSG_TITLE & " - fixed spring", DEF_K_FIX, Type:=1)
-    If VarType(v) = vbBoolean Then Exit Function
-    If v <= 0 Then MsgBox "Fixed spring stiffness must be > 0.", vbExclamation, MSG_TITLE: Exit Function
-    kFix = CDbl(v)
+    stripDx = UiNum("strip", DEF_STRIP_DX)
+    linkLen = UiNum("link", DEF_LINK_LEN)
+    kFix = UiNum("kfix", DEF_K_FIX)
     AskModelValues = True
 End Function
 
@@ -292,7 +256,7 @@ Private Function AskSpan(wb As Workbook) As Long
             t = t & "  " & i & " :  " & r.Cells(i).Value & " m" & vbCrLf
         End If
     Next i
-    v = Application.InputBox("Which span (Hesap Acikligi)?" & vbCrLf & t, MSG_TITLE, 1, Type:=1)
+    v = UiInput("Which span (Hesap Acikligi)?" & vbCrLf & t, MSG_TITLE, 1, True)
     If VarType(v) = vbBoolean Then Exit Function
     i = CLng(v)
     If i < 1 Or i > r.Cells.Count Then Err.Raise vbObjectError + 1, , "Span number " & i & " does not exist."
@@ -311,7 +275,7 @@ Private Function OpenWb(ByVal p As String, ByRef opened As Boolean) As Workbook
     opened = True
 End Function
 
-Private Sub ReadInputs(wb12 As Workbook, wb47 As Workbook)
+Private Sub ReadInputs(wb12 As Workbook)
     Dim k As Long, gcol As Long, r As Range, s As Double, c As Range
     k = spanNo
     projName = CStr(NmRange(wb12, "G_PROJE_ADI").Cells(1).Value)
@@ -380,25 +344,12 @@ Private Sub ReadInputs(wb12 As Workbook, wb47 As Workbook)
     ReadCombTables wb12.Worksheets("1_GIRIS")
 
     ' ---- 4-7 ----
-    sark = Num(NmRange(wb47, "G_SARKIKLIK").Cells(1).Value, "4-7 G_SARKIKLIK") / 100#
-    kyB = Num(LabelValue(wb47.Worksheets("1_RAPOR"), 3, "Elastomer Yanal Kesme Rijitli", 19), "4-7 Elastomer Yanal Kesme Rijitligi")
-    kEB = Num(LabelValue(wb47.Worksheets("1_RAPOR"), 3, "Elastomer Eksenel Rijitli", 19), "4-7 Elastomer Eksenel Rijitligi")
-    Set c = Nothing
-    On Error Resume Next
-    Set c = FindLabel(wb47.Worksheets("INPUT"), 1, "Hesap A")
-    On Error GoTo 0
-    If Not c Is Nothing Then
-        If IsNumeric(c.Offset(0, 1).Value) Then
-            If Abs(CDbl(c.Offset(0, 1).Value) - Lc) > 0.001 Then
-                warnText = warnText & "- 4-7 is set to span " & c.Offset(0, 1).Value & " m, 1-2 span is " & Lc & " m: bearing stiffness belongs to the 4-7 span." & vbCrLf
-            End If
-        End If
-    End If
-    s = NumOr0(NmRange(wb12, "G_SARKIKLIK").Cells(1).Value) / 100#
-    If s > 0 And Abs(s - sark) > 0.0005 Then warnText = warnText & "- Sarkiklik 1-2 = " & s & " m, 4-7 = " & sark & " m (4-7 used)." & vbCrLf
+    sark = Num(NmRange(wb12, "G_SARKIKLIK").Cells(1).Value, "G_SARKIKLIK") / 100#
+    kyB = Num(LabelValue(ChapterSheet(wb12, "KDME"), 3, "Elastomer Yanal Kesme Rijitli", 19), "Elastomer Yanal Kesme Rijitligi")
+    kEB = Num(LabelValue(ChapterSheet(wb12, "KDME"), 3, "Elastomer Eksenel Rijitli", 19), "Elastomer Eksenel Rijitligi")
     If kyB <= 0 Or kEB <= 0 Or sark <= 0 Then Err.Raise vbObjectError + 3, , "4-7 bearing values must be > 0."
     If zoneL <= sark Or zoneL >= (Lc + 2 * sark) / 2 Then Err.Raise vbObjectError + 13, , "End-zone length " & zoneL & " m must lie between the bearing (" & sark & " m) and midspan."
-    ReadStrands wb47
+    ReadStrands wb12
 End Sub
 
 ' "C45" or "C45/55" -> 45 (MPa)
@@ -413,9 +364,19 @@ End Function
 
 ' 4-7 1_RAPOR Tablo 27 (live-load stations): header row with 'Yeri' in column H and 'V (kN)' in column N;
 ' the rows below it hold the station x (m from the bearing) in column K until column D is empty
+' span sheet of the 4A chapter, e.g. 4A_KDME
+Private Function ChapterSheet(wb As Workbook, ByVal sfx As String) As Worksheet
+    Dim nm As String
+    nm = "4" & Chr$(64 + spanNo) & "_" & sfx
+    On Error Resume Next
+    Set ChapterSheet = wb.Worksheets(nm)
+    On Error GoTo 0
+    If ChapterSheet Is Nothing Then Err.Raise vbObjectError + 21, , "Sheet " & nm & " not found: fill the span in INPUT and press the chapter button."
+End Function
+
 Private Sub ReadLLStations(wb As Workbook)
     Dim ws As Worksheet, r As Long, hdr As Long, last As Long
-    Set ws = wb.Worksheets("1_RAPOR")
+    Set ws = ChapterSheet(wb, "KDME")
     last = ws.Cells(ws.Rows.Count, 8).End(xlUp).Row
     For r = 1 To last
         If Left$(Trim$(CStr(IIf(IsError(ws.Cells(r, 8).Value), "", ws.Cells(r, 8).Value))), 4) = "Yeri" And _
@@ -436,7 +397,7 @@ End Sub
 ' at each station), fpi / strand area / humidity from 1_RAPOR, fpu / Ep / diameter from INPUT
 Private Sub ReadStrands(wb As Workbook)
     Dim ws As Worksheet, r As Long, j As Long, n As Long, d As Double
-    Set ws = wb.Worksheets("KILIFLAMA")
+    Set ws = ChapterSheet(wb, "KILIF")
     If UCase$(Trim$(CStr(ws.Range("B3").Value))) <> "SIRA" Or LCase$(Trim$(CStr(ws.Range("O3").Value))) <> "halatlar" Then _
         Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: layout changed (B3 'SIRA' / O3 'Halatlar' expected)."
     nDb = 0
@@ -465,16 +426,16 @@ Private Sub ReadStrands(wb As Workbook)
         End If
     Next r
     If nRow = 0 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: no strands in O5:O14."
-    fpi = Num(LabelValue(wb.Worksheets("1_RAPOR"), 3, "1 Halattaki ilk gerilme", 15), "4-7 1_RAPOR fpi (1 Halattaki ilk gerilme)")
-    humid = Num(LabelValue(wb.Worksheets("1_RAPOR"), 3, "Ortalama ba", 15), "4-7 1_RAPOR Ortalama bagil nem")
+    fpi = Num(LabelValue(ChapterSheet(wb, "KDME"), 3, "1 Halattaki ilk gerilme", 15), "4-7 1_RAPOR fpi (1 Halattaki ilk gerilme)")
+    humid = Num(LabelValue(ChapterSheet(wb, "KDME"), 3, "Ortalama ba", 15), "4-7 1_RAPOR Ortalama bagil nem")
     ' f'ci / f'c: 1_RAPOR row labelled '(Ongerme Aninda)' in column Q; f'c in J, f'ci in N (J40 / N40 today)
     Dim rFci As Long
-    rFci = FindLabel(wb.Worksheets("1_RAPOR"), 17, "(" & ChrW(214) & "ngerme An").Row
-    fciRatio = Num(wb.Worksheets("1_RAPOR").Cells(rFci, 14).Value, "4-7 1_RAPOR f'ci (column N, row '(Ongerme Aninda)')") / _
-               Num(wb.Worksheets("1_RAPOR").Cells(rFci, 10).Value, "4-7 1_RAPOR f'c (column J, row '(Ongerme Aninda)')")
+    rFci = FindLabel(ChapterSheet(wb, "KDME"), 17, "(" & ChrW(214) & "ngerme An").Row
+    fciRatio = Num(ChapterSheet(wb, "KDME").Cells(rFci, 14).Value, "4-7 1_RAPOR f'ci (column N, row '(Ongerme Aninda)')") / _
+               Num(ChapterSheet(wb, "KDME").Cells(rFci, 10).Value, "4-7 1_RAPOR f'c (column J, row '(Ongerme Aninda)')")
     If fciRatio <= 0.2 Or fciRatio >= 1 Then Err.Raise vbObjectError + 15, , "4-7 f'ci / f'c = " & fciRatio & " is out of range (0.2-1)."
     ageG = ACI_A_G * fciRatio / (1 - ACI_B_G * fciRatio)   ' t from t / (A + B t) = f'ci / f'c
-    aStr = Num(LabelValue(wb.Worksheets("1_RAPOR"), 11, "Ahalat", 14), "4-7 1_RAPOR Ahalat") / 1000000#
+    aStr = Num(LabelValue(ChapterSheet(wb, "KDME"), 11, "Ahalat", 14), "4-7 1_RAPOR Ahalat") / 1000000#
     fpuS = Num(NmRange(wb, "G_HALAT_CEKME_DAYANIMI").Cells(1).Value, "4-7 G_HALAT_CEKME_DAYANIMI")
     epS = Num(NmRange(wb, "G_HALAT_ELASTISITE").Cells(1).Value, "4-7 G_HALAT_ELASTISITE")
     d = Num(NmRange(wb, "G_HALAT_CAPI").Cells(1).Value, "4-7 G_HALAT_CAPI")
@@ -1529,7 +1490,7 @@ Private Function ModelTypeOk(ByRef msg As String) As Boolean
     If wasDyn = dynMode Then Exit Function
     txt = "The model open in Civil NX is a " & IIf(wasDyn, "DYNAMIC", "STAGED") & " model, but you are building the " & IIf(dynMode, "DYNAMIC", "STAGED") & " model."
     If askUser Then
-        If MsgBox(txt & vbCrLf & vbCrLf & "WIPE it anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) = vbYes Then Exit Function
+        If UiMsg(txt & vbCrLf & vbCrLf & "WIPE it anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) = vbYes Then Exit Function
     End If
     msg = "STOPPED: " & txt & " Nothing was changed. Open the right .mcb, or use an empty file."
     ModelTypeOk = False
@@ -1719,6 +1680,7 @@ Private Sub Prog(ByVal stepName As String)
     If pct < 0 Then pct = 0
     If pct > 100 Then pct = 100
     filled = CLng(pct * PROG_BAR_WIDTH / 100)
+    UiProgress pct, stepName
     On Error Resume Next
     ' ChrW keeps this file ASCII: 9608 full block, 9617 light shade
     Application.StatusBar = "MIDAS_USTYAPI  [" & String(filled, ChrW(9608)) & String(PROG_BAR_WIDTH - filled, ChrW(9617)) & _
@@ -1774,7 +1736,7 @@ Public Sub MIDAS_USTYAPI_TEMIZLE(Optional ByVal reportFile As String = "", Optio
     On Error GoTo Fail
     If apiKey <> "" Then mKey = apiKey
     If reportFile = "" Then
-        If MsgBox("DELETE every table of the model open in Civil NX (nodes, elements, sections, loads, stages, combinations)?", _
+        If UiMsg("DELETE every table of the model open in Civil NX (nodes, elements, sections, loads, stages, combinations)?", _
                   vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then Exit Sub
     End If
     If Not GetKey() Then rep = "FAIL: no MAPI key."
@@ -1788,11 +1750,11 @@ Public Sub MIDAS_USTYAPI_TEMIZLE(Optional ByVal reportFile As String = "", Optio
         End If
     End If
     Application.StatusBar = False
-    If reportFile = "" Then MsgBox FitBox(rep, "clean", 0), IIf(Left$(rep, 2) = "Cl", vbInformation, vbExclamation), MSG_TITLE Else WriteText reportFile, rep
+    If reportFile = "" Then UiMsg FitBox(rep, "clean", 0), IIf(Left$(rep, 2) = "Cl", vbInformation, vbExclamation), MSG_TITLE Else WriteText reportFile, rep
     Exit Sub
 Fail:
     Application.StatusBar = False
-    If reportFile = "" Then MsgBox "Stopped: " & Err.Description, vbCritical, MSG_TITLE Else WriteText reportFile, "FAIL: " & Err.Description
+    If reportFile = "" Then UiMsg "Stopped: " & Err.Description, vbCritical, MSG_TITLE Else WriteText reportFile, "FAIL: " & Err.Description
 End Sub
 
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
@@ -1820,7 +1782,7 @@ Private Function GetKey() As Boolean
     On Error GoTo 0
     If cellKey <> "" Then mKey = cellKey
     If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then mKey = InputBox("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
+    If mKey = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
     GetKey = (mKey <> "")
 End Function
 
@@ -1876,6 +1838,8 @@ End Function
 ' MsgBox shows about 1024 characters: a longer text is written in full to <workbook>\MIDAS\<tag>.txt
 ' (or %TEMP%) and the box shows the start plus that path. reserve = characters the caller adds.
 Private Function FitBox(ByVal txt As String, ByVal tag As String, ByVal reserve As Long) As String
+    FitBox = txt
+    Exit Function
     Dim lim As Long, p As String
     lim = 1000 - reserve
     If Len(txt) <= lim Then FitBox = txt: Exit Function

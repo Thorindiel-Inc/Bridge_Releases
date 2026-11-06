@@ -17,6 +17,8 @@ Option Explicit
 '    - numbering chain: on every main sheet CG2 / CH2 / CI2 = last table / figure /
 '      page before it (formulas over the previous report sheets); INPUT M2:O2
 '      (G_SON_NUMARA) = the end of the last report sheet
+'    - whole-bridge chapters (WHOLE_SHEETS): one set of sheets, not per span: never copied or
+'      deleted, placed after the span chapters and chained like them; WHOLE_END = its last page cell
 '    - exports: e.g. Phi3 of span n -> INPUT row 92 column B+n-1 (G_PHI3)
 '    - then the ToC and figure lists (RAPOR_LISTE) are rebuilt
 '  Report sheet = name starts with a digit and does not end with _Y / _YATAY
@@ -24,13 +26,17 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "chapter-manager"
-Private Const SCRIPT_VERSION As String = "2026-11-03d"
-Private Const SCRIPT_CHANGELOG As String = "Copies named after their source sheet (fixes swapped names when _Y stood before the main sheet); removes broken #REF! names (no replicated junk names, no conflict prompts); landscape companion suffix _Y (owner rename; copies and deletions include it); no name-conflict prompts while copying; creates / deletes per-span chapter sheets (3A<n>_DYN + 3A<n>_DYN_YATAY) from the filled spans, orders them, chains table / figure / page numbers, Phi3 row, rebuilds ToC and figure lists"
+Private Const SCRIPT_VERSION As String = "2026-11-06g"
+Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
 
 Private Const MSG_TITLE As String = "BOLUM_YONETICI"
-' chapter types: code | suffixes (main first, ';') | heading code cell | export: cell>INPUT row (column B = span 1)
+' chapter types: code | suffixes (main first, ';') | heading code cells ('cell' or 'cell>code', ';') | export: cell>INPUT row (column B = span 1)
+' WHOLE = the place of the whole-bridge sheets (WHOLE_SHEETS) in the chapter order
+' a one-character code gets a letter per span (3A, 3B ...; 4A, 4B ...), see Tag
 ' order of the entries = order of the chapters in the workbook
-Private Const REGISTRY As String = "3A|DYN;DYN_Y|Z6|Q122>92"
+Private Const REGISTRY As String = "3|DYN;DYN_Y|Z6|Q122>92,WHOLE,4|KDME;KDME_Y;KILIF|Z6;Z904>5;Z1134>6;Z1318>7|"
+Private Const WHOLE_SHEETS As String = "3B_RTI;3B_RTI_Y"
+Private Const WHOLE_END As String = "3B_RTI>3B_RTI_Y!$AI$95"   ' last print piece of 3B_RTI is a placeholder row: its last page is on the landscape sheet
 Private Const SPAN_NAME As String = "G_HESAP_ACIKLIK"
 Private Const MAX_SPANS As Long = 6
 Private Const H_IDX As String = "CF2"      ' helper cells on every main chapter sheet
@@ -67,6 +73,7 @@ Private Sub RunSync(ByVal reportFile As String)
     ok = SyncChapters(wb, spans)
     If ok Then
         OrderSheets wb
+        WriteHeadingCodes wb, spans.Count
         Application.Calculation = xlCalculationAutomatic
         WriteChains wb
         WriteExports wb
@@ -93,7 +100,7 @@ Private Sub Done(ByVal reportFile As String, ByVal msg As String)
         Print #f, msg
         Close #f
     Else
-        MsgBox msg & vbCrLf & SCRIPT_ID & " " & SCRIPT_VERSION, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
+        UiMsg msg & vbCrLf & SCRIPT_ID & " " & SCRIPT_VERSION, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
     End If
 End Sub
 
@@ -120,9 +127,10 @@ Private Function SyncChapters(wb As Workbook, spans As Collection) As Boolean
     reg = Split(REGISTRY, ",")
     Set toDel = New Collection
     For k = LBound(reg) To UBound(reg)
+        If reg(k) = "WHOLE" Then GoTo NextChapter
         f = Split(reg(k), "|"): code = f(0): sfx = Split(f(1), ";")
         Set have = ExistingSpans(wb, code, sfx(0))
-        If have.Count = 0 Then Err.Raise vbObjectError + 2, , "Chapter " & code & ": no template sheet " & code & "1_" & sfx(0) & " in the workbook."
+        If have.Count = 0 Then Err.Raise vbObjectError + 2, , "Chapter " & code & ": no template sheet " & Tag(code, 1) & "_" & sfx(0) & " in the workbook."
         tmpl = have(1)
         For Each idx In spans
             If Not InColl(have, CLng(idx)) Then CopySet wb, code, sfx, tmpl, CLng(idx), f(2)
@@ -130,16 +138,17 @@ Private Function SyncChapters(wb As Workbook, spans As Collection) As Boolean
         For Each idx In have
             If Not InColl(spans, CLng(idx)) Then
                 For j = LBound(sfx) To UBound(sfx)
-                    If SheetExists(wb, code & idx & "_" & sfx(j)) Then toDel.Add code & idx & "_" & sfx(j)
+                    If SheetExists(wb, Tag(code, idx) & "_" & sfx(j)) Then toDel.Add Tag(code, idx) & "_" & sfx(j)
                 Next j
             End If
         Next idx
+NextChapter:
     Next k
     If toDel.Count > 0 Then
         For Each s In toDel: delList = delList & "  " & s & vbCrLf: Next s
         If Not scripted Then
             Application.ScreenUpdating = True
-            If MsgBox("These sheets belong to spans that are no longer filled and will be DELETED:" & vbCrLf & delList & vbCrLf & "Continue?", _
+            If UiMsg("These sheets belong to spans that are no longer filled and will be DELETED:" & vbCrLf & delList & vbCrLf & "Continue?", _
                       vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then
                 msgLog = msgLog & "Nothing deleted (cancelled)." & vbCrLf
                 SyncChapters = False
@@ -156,10 +165,10 @@ Private Function SyncChapters(wb As Workbook, spans As Collection) As Boolean
 End Function
 
 Private Sub CopySet(wb As Workbook, ByVal code As String, sfx() As String, ByVal tmpl As Long, ByVal idx As Long, ByVal codeCell As String)
-    Dim names() As Variant, j As Long, n As Long, before As Long, i As Long, ws As Worksheet
+    Dim names() As Variant, j As Long, n As Long, before As Long, i As Long, ws As Worksheet, part As Variant, q As Variant
     ReDim names(0 To UBound(sfx))
     For j = 0 To UBound(sfx)
-        If SheetExists(wb, code & tmpl & "_" & sfx(j)) Then names(n) = code & tmpl & "_" & sfx(j): n = n + 1
+        If SheetExists(wb, Tag(code, tmpl) & "_" & sfx(j)) Then names(n) = Tag(code, tmpl) & "_" & sfx(j): n = n + 1
     Next j
     ReDim Preserve names(0 To n - 1)
     before = wb.Worksheets.Count
@@ -180,10 +189,15 @@ Private Sub CopySet(wb As Workbook, ByVal code As String, sfx() As String, ByVal
             If StrComp(src, CStr(names(j)), vbTextCompare) = 0 Then Exit For
         Next j
         If j > n - 1 Then Err.Raise vbObjectError + 5, , "Copy of '" & ws.Name & "' does not match a template sheet."
-        ws.Name = Replace(CStr(names(j)), code & tmpl & "_", code & idx & "_", 1, 1)
+        ws.Name = Replace(CStr(names(j)), Tag(code, tmpl) & "_", Tag(code, idx) & "_", 1, 1)
         If j = 0 Then
             ws.Range(H_IDX).Value = idx
-            If codeCell <> "" Then ws.Range(codeCell).Value = code & idx
+            For Each part In Split(codeCell, ";")
+                If part <> "" Then
+                    q = Split(part, ">")
+                    ws.Range(q(0)).Value = Tag(IIf(UBound(q) > 0, q(UBound(q)), code), idx)
+                End If
+            Next part
         End If
     Next i
     msgLog = msgLog & "Created span " & idx & " of " & code & " (copy of span " & tmpl & ")." & vbCrLf
@@ -194,31 +208,75 @@ Private Function ExistingSpans(wb As Workbook, ByVal code As String, ByVal mainS
     Dim i As Long
     Set ExistingSpans = New Collection
     For i = 1 To MAX_SPANS
-        If SheetExists(wb, code & i & "_" & mainSfx) Then ExistingSpans.Add i
+        If SheetExists(wb, Tag(code, i) & "_" & mainSfx) Then ExistingSpans.Add i
     Next i
 End Function
 
 ' ---- tab order ----
 Private Sub OrderSheets(wb As Workbook)
     Dim reg As Variant, k As Long, f() As String, sfx() As String, i As Long, j As Long
-    Dim anchor As Worksheet, ws As Worksheet, nm As String
+    Dim anchor As Worksheet, ws As Worksheet, nm As String, side As Worksheet
+    If SheetExists(wb, "SPECTRUM") Then Set side = wb.Worksheets("SPECTRUM")
     ' anchor = last report sheet that is not managed
     For Each ws In wb.Worksheets
         If IsReportName(ws.Name) And ManagedCode(ws.Name) = "" Then Set anchor = ws
     Next ws
     If anchor Is Nothing Then Err.Raise vbObjectError + 3, , "No fixed report sheet (e.g. 2_YUKLER) to place the chapters after."
     reg = Split(REGISTRY, ",")
+    Dim w As Variant
     For k = LBound(reg) To UBound(reg)
+        If reg(k) = "WHOLE" Then
+            For Each w In Split(WHOLE_SHEETS, ";")
+                If SheetExists(wb, CStr(w)) Then
+                    If wb.Worksheets(CStr(w)).Index <> anchor.Index + 1 Then wb.Worksheets(CStr(w)).Move After:=anchor
+                    Set anchor = wb.Worksheets(CStr(w))
+                End If
+            Next w
+            GoTo NextChapter
+        End If
         f = Split(reg(k), "|"): sfx = Split(f(1), ";")
         For i = 1 To MAX_SPANS
             For j = 0 To UBound(sfx)
-                nm = f(0) & i & "_" & sfx(j)
+                nm = Tag(f(0), i) & "_" & sfx(j)
                 If SheetExists(wb, nm) Then
-                    If wb.Worksheets(nm).Index <> anchor.Index + 1 Then wb.Worksheets(nm).Move After:=anchor
-                    Set anchor = wb.Worksheets(nm)
+                    If IsSupportName(nm) Then
+                        ' calculation sheets stay beside SPECTRUM (owner 2026-11-06)
+                        If Not side Is Nothing Then
+                            If wb.Worksheets(nm).Index <> side.Index + 1 Then wb.Worksheets(nm).Move After:=side
+                            Set side = wb.Worksheets(nm)
+                        End If
+                    Else
+                        If wb.Worksheets(nm).Index <> anchor.Index + 1 Then wb.Worksheets(nm).Move After:=anchor
+                        Set anchor = wb.Worksheets(nm)
+                    End If
                 End If
             Next j
         Next i
+NextChapter:
+    Next k
+End Sub
+
+' heading codes: one filled span = plain chapter number (3, 4, 5 ...), more spans = letter per span
+' (3A, 3B ...; 4A, 4B ...; 5A, 5B ...) (owner 2026-11-06)
+Private Sub WriteHeadingCodes(wb As Workbook, ByVal nSpans As Long)
+    Dim reg As Variant, k As Long, f() As String, sfx() As String, i As Long, part As Variant, q As Variant, base As String, nm As String
+    reg = Split(REGISTRY, ",")
+    For k = LBound(reg) To UBound(reg)
+        If reg(k) = "WHOLE" Then GoTo NextChapter
+        f = Split(reg(k), "|"): sfx = Split(f(1), ";")
+        For i = 1 To MAX_SPANS
+            nm = Tag(f(0), i) & "_" & sfx(0)
+            If SheetExists(wb, nm) Then
+                For Each part In Split(f(2), ";")
+                    If part <> "" Then
+                        q = Split(part, ">")
+                        base = IIf(UBound(q) > 0, q(UBound(q)), f(0))
+                        wb.Worksheets(nm).Range(q(0)).Value = IIf(nSpans = 1, base, Tag(base, i))
+                    End If
+                Next part
+            End If
+        Next i
+NextChapter:
     Next k
 End Sub
 
@@ -258,13 +316,20 @@ End Function
 
 ' footer cell of the last print piece: column W, one row above the piece's bottom row
 Private Function LastFooter(ws As Worksheet) As String
-    Dim pa As String, r As Range, a As Range, bot As Long
+    Dim pa As String, p As Variant, v As Long, bot As Long, e() As String, c() As String
+    e = Split(WHOLE_END, ">")
+    If ws.Name = e(0) Then
+        c = Split(e(1), "!")
+        LastFooter = "'" & c(0) & "'!" & c(1)
+        Exit Function
+    End If
     pa = Replace(ws.PageSetup.PrintArea, ";", ",")
     If pa = "" Then Err.Raise vbObjectError + 4, , ws.Name & ": no print area."
-    Set r = ws.Range(pa)
-    For Each a In r.Areas
-        If a.Row + a.Rows.Count - 1 > bot Then bot = a.Row + a.Rows.Count - 1
-    Next a
+    ' piece by piece: Range() refuses a text over 255 characters (many print pieces)
+    For Each p In Split(pa, ",")
+        v = CLng(Val(Mid$(p, InStrRev(p, "$") + 1)))
+        If v > bot Then bot = v
+    Next p
     LastFooter = "'" & Replace(ws.Name, "'", "''") & "'!$W$" & (bot - 1)
 End Function
 
@@ -274,13 +339,14 @@ Private Sub WriteExports(wb As Workbook)
     Set inp = wb.Worksheets("INPUT")
     reg = Split(REGISTRY, ",")
     For k = LBound(reg) To UBound(reg)
+        If reg(k) = "WHOLE" Then GoTo NextChapter
         f = Split(reg(k), "|"): sfx = Split(f(1), ";")
         If UBound(f) >= 3 Then
             If f(3) <> "" Then
                 ex = Split(f(3), ">"): rowNo = CLng(ex(1))
                 If Trim$(CStr(inp.Cells(rowNo, 1).Value)) = "" Then inp.Cells(rowNo, 1).Value = ChrW(934) & "3"
                 For i = 1 To MAX_SPANS
-                    nm = f(0) & i & "_" & sfx(0)
+                    nm = Tag(f(0), i) & "_" & sfx(0)
                     If SheetExists(wb, nm) Then
                         inp.Cells(rowNo, 1 + i).Formula = "='" & nm & "'!$" & ColOf(ex(0)) & "$" & RowOf(ex(0))
                     Else
@@ -293,6 +359,7 @@ Private Sub WriteExports(wb As Workbook)
                 wb.Names.Add Name:="G_PHI3", RefersTo:="=INPUT!$B$" & rowNo & ":$G$" & rowNo
             End If
         End If
+NextChapter:
     Next k
 End Sub
 
@@ -338,7 +405,23 @@ Private Function IsReportName(ByVal nm As String) As Boolean
     If Len(nm) = 0 Then Exit Function
     If Not (Left$(nm, 1) Like "#") Then Exit Function
     If IsCompanionName(nm) Then Exit Function
+    If IsSupportName(nm) Then Exit Function
     IsReportName = True
+End Function
+
+' chapter tag of span idx: 3 -> 3A, 3B ...; 4 -> 4A, 4B ... (owner 2026-11-06)
+Private Function Tag(ByVal code As String, ByVal idx As Long) As String
+    If Len(code) = 1 Then
+        Tag = code & Chr$(64 + idx)
+    Else
+        Tag = code & idx
+    End If
+End Function
+
+' calculation sheets of a chapter: they carry no report headings or captions
+Private Function IsSupportName(ByVal nm As String) As Boolean
+    Dim u As String: u = UCase$(nm)
+    IsSupportName = (Right$(u, 6) = "_KILIF")
 End Function
 
 ' landscape companion sheets: name ends with _Y or _YATAY (owner 2026-11-03)
@@ -349,14 +432,17 @@ End Function
 ' chapter code if the sheet is a managed chapter sheet, else ""
 Private Function ManagedCode(ByVal nm As String) As String
     Dim reg As Variant, k As Long, f() As String, sfx() As String, i As Long, j As Long
+    If InStr(";" & WHOLE_SHEETS & ";", ";" & nm & ";") > 0 Then ManagedCode = "WHOLE": Exit Function
     reg = Split(REGISTRY, ",")
     For k = LBound(reg) To UBound(reg)
+        If reg(k) = "WHOLE" Then GoTo NextChapter
         f = Split(reg(k), "|"): sfx = Split(f(1), ";")
         For i = 1 To MAX_SPANS
             For j = 0 To UBound(sfx)
-                If nm = f(0) & i & "_" & sfx(j) Then ManagedCode = f(0): Exit Function
+                If nm = Tag(f(0), i) & "_" & sfx(j) Then ManagedCode = f(0): Exit Function
             Next j
         Next i
+NextChapter:
     Next k
 End Function
 

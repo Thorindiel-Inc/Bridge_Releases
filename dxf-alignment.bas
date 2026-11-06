@@ -19,8 +19,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "dxf-alignment"
-Private Const SCRIPT_VERSION As String = "2026-11-06c"
-Private Const SCRIPT_CHANGELOG As String = "Span radius in the column next to G_AKS_XY (centrifugal load of MIDAS_KOPRU); G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked; centerline mode: axis X / Y from the drawn centerline into G_AKS_XY, only its layer asked, A1 from the lines crossing it (else asked), label mode removed; first version: alignment labels and axis stations from a plan DXF into INPUT, layers asked"
+Private Const SCRIPT_VERSION As String = "2026-11-06d"
+Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; Span radius in the column next to G_AKS_XY (centrifugal load of MIDAS_KOPRU); G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked"
 Private Const R_STRAIGHT As Double = 50000#     ' a span flatter than this counts as straight (m)
 
 Private Const MSG_TITLE As String = "DXF_OKU"
@@ -65,9 +65,9 @@ Public Sub DXF_OKU_OLUSTUR()
     msg = Process(lay, "", True)
     Application.StatusBar = False
     If msg = "" Then GoTo Quit
-    If MsgBox(Left$(msg, 850) & vbCrLf & vbCrLf & "Write this to INPUT?", vbYesNo + vbQuestion, MSG_TITLE) = vbYes Then
+    If UiMsg(Left$(msg, 850) & vbCrLf & vbCrLf & "Write this to INPUT?", vbYesNo + vbQuestion, MSG_TITLE) = vbYes Then
         WriteTable
-        MsgBox "Written to INPUT (G_AKS_XY, " & nSp + 1 & " axes).", vbInformation, MSG_TITLE
+        UiMsg "Written to INPUT (G_AKS_XY, " & nSp + 1 & " axes).", vbInformation, MSG_TITLE
     End If
 Quit:
     Application.StatusBar = False
@@ -76,7 +76,7 @@ Quit:
 Fail:
     Application.StatusBar = False
     Erase dl
-    MsgBox "Stopped: " & Err.Description, vbCritical, MSG_TITLE
+    UiMsg "Stopped: " & Err.Description, vbCritical, MSG_TITLE
 End Sub
 
 Public Sub DXF_OKU_RUN(ByVal path As String, ByVal layer As String, ByVal reportFile As String, Optional ByVal a1Dist As String = "")
@@ -298,7 +298,7 @@ Private Function AskLayer() As String
         Next j
         s = s & "  " & Left$(nm(i), 40) & "  (" & layN(nm(i)) & ", longest " & Format(ln(i), "0") & " m)" & vbCrLf
     Next i
-    AskLayer = InputBox("Layer of the bridge centerline (the axis line of the deck)." & vbCrLf & "Layers:" & vbCrLf & s, MSG_TITLE, BestLayer())
+    AskLayer = UiInputS("Layer of the bridge centerline (the axis line of the deck)." & vbCrLf & "Layers:" & vbCrLf & s, MSG_TITLE, BestLayer())
 End Function
 
 ' ---- centerline ---------------------------------------------------------------
@@ -731,7 +731,7 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
                 why = nM & " different runs of crossing lines match the span list"
             End If
             If Not ask Then Err.Raise vbObjectError + 8, , "A1 not found: " & why & ". Give the distance from the first point of the line to A1 (a1Dist)."
-            v = InputBox("A1 could not be found: " & why & "." & vbCrLf & vbCrLf & "Centerline: " & Format(totLen, "0.000") & " m, first point " & Format(chX(1), "0.000") & " / " & Format(chY(1), "0.000") & "." & vbCrLf & _
+            v = UiInputS("A1 could not be found: " & why & "." & vbCrLf & vbCrLf & "Centerline: " & Format(totLen, "0.000") & " m, first point " & Format(chX(1), "0.000") & " / " & Format(chY(1), "0.000") & "." & vbCrLf & _
                 "Distance along the centerline from its first point to A1 (m)." & vbCrLf & "Negative = from its last point, against the drawing direction.", MSG_TITLE)
             If Trim$(v) = "" Then Exit Function
             SetA1 Val(Replace(v, ",", "."))

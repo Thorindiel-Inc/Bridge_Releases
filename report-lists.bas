@@ -19,8 +19,8 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-11-05a"
-Private Const SCRIPT_CHANGELOG As String = "Column Z error counted only on caption rows (T / S-cedilla in AE), helper calculations in Z ignored; Companion sheets also named *_Y; silent entry LISTELERI_AYARLA_SESSIZ (messages returned as text); report sheets = name starts with a digit (3A1_DYN ...), *_YATAY = landscape companion; Faster (arrays, no full recalc, rows touched only when the page count changes); print area set through PageSetup and repaired if broken; calculation always back to automatic"
+Private Const SCRIPT_VERSION As String = "2026-11-06d"
+Private Const SCRIPT_CHANGELOG As String = "PANEL (macro window) is now optional: without it messages use a plain box, so the module also runs in workbooks that have only buttons"
 
 Private Const COL_CODE As Long = 26      ' Z  caption code on the report sheets
 Private Const COL_HEAD As Long = 30      ' AD heading code
@@ -499,11 +499,12 @@ Private Function ListRow(i As Long, firstRow As Long, firstPage As Long) As Long
     ListRow = PageRow(firstPage + (i - 1) \ cap) + (firstRow - PAGE_TOP) + (i - 1) Mod cap
 End Function
 
-' 3A11 -> 3.A.1.1. (first four characters, as the old sheet formula)
+' 3A11 -> 3.A.1.1. (first four characters, as the old sheet formula); 4A111 -> 4.A.1.1.1. (span number in the code)
 Private Function Numbering(code As String) As String
-    Dim i As Long
+    Dim i As Long, lim As Long
+    lim = IIf(UCase$(Mid$(code, 2, 1)) Like "[A-Z]", 5, 4)
     For i = 1 To Len(code)
-        If i > 4 Then Exit For
+        If i > lim Then Exit For
         Numbering = Numbering & Mid$(code, i, 1) & "."
     Next i
 End Function
@@ -530,9 +531,19 @@ Private Sub Report(title As String, msg As String)
     If msg <> "" And silentMode Then
         silentLog = silentLog & title & ": " & msg & vbCrLf
     ElseIf msg <> "" Then
-        MsgBox msg, vbExclamation, title
+        ShowMsg msg, title
     Else
         Application.StatusBar = title & " updated " & Format$(Now, "hh:nn")
+    End If
+End Sub
+
+' The macro window (module PANEL) is optional: without it, a plain message box.
+Private Sub ShowMsg(msg As String, title As String)
+    On Error Resume Next
+    Application.Run "'" & Replace(ThisWorkbook.Name, "'", "''") & "'!PANEL.UiMsg", msg, vbExclamation, title
+    If Err.Number <> 0 Then
+        Err.Clear
+        MsgBox msg, vbExclamation, title
     End If
 End Sub
 
@@ -563,6 +574,7 @@ Private Function IsReportName(shName As String) As Boolean
     If InStr(shName, "_") < 2 Then Exit Function
     If Not (Left$(shName, 1) Like "#") Then Exit Function
     If UCase$(Right$(shName, 2)) = "_Y" Or UCase$(Right$(shName, 6)) = "_YATAY" Then Exit Function
+    If UCase$(Right$(shName, 6)) = "_KILIF" Then Exit Function
     IsReportName = True
 End Function
 
