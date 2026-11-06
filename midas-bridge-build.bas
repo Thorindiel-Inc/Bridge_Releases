@@ -3,11 +3,18 @@ Option Explicit
 ' ============================================================================
 '  MIDAS_KOPRU - builds the general whole-bridge model in MIDAS Civil NX through the MAPI
 '  REST API (reference models/ALTYAPI.mct). Runs from the 1-3A workbook.
-'  Step A (owner 2026-11-05): geometry only - deck stick per span, deck-end slabs, bearings
+'  Step A (owner 2026-11-05): geometry - deck stick per span, deck-end slabs, bearings
 '  on every girder, pier caps, piers, fixed bases and abutment bearing nodes.
-'  No loads, spectra, combinations, stiffness factors or rail layer yet.
+'  Step B (owner 2026-11-06): loads (values from 1-3A, not from ALTYAPI), LM71 lanes, spectra,
+'  TKDY stiffness factors, combinations of 1_GIRIS Tablo 14 / 15. No rail layer yet.
+'  Two models (owner 2026-11-06): STATIC = all loads, full stiffness, no mass / spectra.
+'  SEISMIC = only what the response spectrum needs: DC, DW_1, DW_2, LL_KUTLE (80 kN/m static
+'  train case), loads to masses, Ritz, spectra, EQ cases, TKDY / H-TKDY combinations; stiffness
+'  factors with no boundary group (a group + db/BCCT did not reach the modes), so EVERY case
+'  in that model runs at the reduced stiffness.
 ' ----------------------------------------------------------------------------
 '  Button macro: MIDAS_KOPRU_OLUSTUR
+'    0. asks STATIC or SEISMIC
 '    1. asks for the 4-7 workbook (read-only): sarkiklik, ky, kv (1_RAPOR labels)
 '    2. asks element length, bearing link length, fixed horizontal stiffness kh
 '    3. reads 1-3A: span list, G_AYAK_TABLOSU (one row per axis), span table right of
@@ -18,7 +25,7 @@ Option Explicit
 '    4. summary; Yes = clean pass on the model open in Civil NX, MCT import of the
 '       composite deck section (no JSON form; IMPORTMXT replaces the model, so it runs
 '       first), all tables, read-back, doc/SAVE
-'  Dry run (no dialogs, no HTTP): MIDAS_KOPRU_PAYLOAD path47, outDir
+'  Dry run (no dialogs, no HTTP): MIDAS_KOPRU_PAYLOAD path47, outDir [, seismicModel]
 '  Levels: deck node Z 0 (section offset CT), bearing top -(H + tc), bearing bottom = cap
 '  top node level, pier top = cap top - G_KOLON_BAGLANTI, pier base = pier top - height.
 '  X: A1 bearing axis = 0; pier bearings G_AKS_MESNET from the pier axis.
@@ -31,8 +38,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-06b"
-Private Const SCRIPT_CHANGELOG As String = "Warning when G_AKS_XY is empty (straight plan); mass at the centroid of section (STYP bMASSOFFSET false; the 05h feed copy had true); old G_GUZERGAH / G_KM_A1 route removed, plan from G_AKS_XY only; horizontal alignment from G_GUZERGAH: axes on the curve, chord spans, radial caps, piers and links turned; pier elements: at least 5 equal, none over 3 m; self-weight mass in X, Y and Z (was Z only), as ALTYAPI; deck types per span (Yatay Gabari + Kiris), box and solid piers; whole-section J, Asy, Asz of the deck solved in the macro; deck section with calculated properties (Civil NX refuses zero stiffness); clean pass skipped on an empty model; first version, step A: whole-bridge geometry (deck stick, bearings, caps, piers, fixed bases)"
+Private Const SCRIPT_VERSION As String = "2026-11-06g"
+Private Const SCRIPT_CHANGELOG As String = "Seismic branch: button asks STATIC / SEISMIC; seismic model = dead loads, 80 kN/m train case, mass, spectra, Ritz, TKDY combinations, stiffness factors without a boundary group; static model: loads to masses, eigenvalue, spectra, seismic stiffness and TKDY combinations off (separate seismic branch); braking in overlapping windows of at most 300 m, number from the bridge length; Step B: loads from 1-3A (dead, wind, temperature, braking, traction per span, nosing, centrifugal from the span radius next to G_AKS_XY), LM71 lanes, 4 spectra, EQ cases, Ritz, TKDY stiffness factors by boundary change, all Tablo 14 combinations; section colours; drawn axes; deck types; box and solid piers; whole-section deck properties solved in the macro; first version: whole-bridge geometry"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -48,10 +55,27 @@ Private Const SEC_CAP As Long = 3
 Private Const SEC_DECK0 As Long = 20          ' deck type d: section 1 for d = 1, else SEC_DECK0 + d
 Private Const SEC_SLAB0 As Long = 40          ' slab of deck type d: section 2 for d = 1, else SEC_SLAB0 + d
 Private Const SEC_PIER0 As Long = 60
+Private Const SECT_FILL_TINT As Double = 0.45  ' 3D fill = section colour moved this far toward white
+Private Const SECT_SHADE_STEP As Double = 0.18 ' each further deck or pier type this much darker
 Private Const MAX_TYPES As Long = 20
 Private Const PI As Double = 3.14159265358979
 Private Const NUM_LIMIT As Long = 10500         ' rail layer numbers start here
 Private Const SOLVE_H As Double = 0.05          ' deck section solver: coarse cell size (m); fine = half
+' Step B constants (code values; the workbooks hold them as report text only)
+Private Const RAIL_OVER_BALLAST As Double = 0.16 ' sleeper + rail above the ballast: 0.81 m rail level of RTI.mct with 0.60 + 0.05
+Private Const WL_HEIGHT As Double = 4#          ' train wind above rail level (2_YUKLER C252)
+Private Const CF_HEIGHT As Double = 1.8         ' centrifugal force above rail level (2_YUKLER C160)
+Private Const BRAKE_Q As Double = 20#           ' kN/m x alpha (EN 1991-2 6.5.3, 2_YUKLER C150)
+Private Const BRAKE_L As Double = 300#          ' m, longest braking length: windows of whole spans, see BrakeWindows
+Private Const TRAC_Q As Double = 33#            ' kN/m x alpha (2_YUKLER C144)
+Private Const TRAC_L As Double = 30#            ' m, traction length per span case
+Private Const EQ_FUNC As String = "DD2a"        ' KOS 1, KK level, elastic (owner 2026-11-06)
+Private Const EQ_STIFF As Double = 0.5          ' TKDY effective bending stiffness: deck, cap, pier
+Private Const EQ_STIFF_SLAB As Double = 0.25    ' TKDY: connection slab
+Private Const RITZ_X As Long = 35, RITZ_Y As Long = 35, RITZ_Z As Long = 30   ' for now (owner 2026-11-06)
+Private Const MASS_CASE As String = "LL_KUTLE"  ' uniform train load x Tablo 14 TKDY LL factor: mass and TKDY combinations (owner 2026-11-06)
+Private Const BMLD_CHUNK As Long = 60
+Private Const Q_BAL As Long = 1, Q_KERB As Long = 2, Q_RAIL As Long = 3, Q_PANEL As Long = 4, Q_PROT As Long = 5, Q_TRK As Long = 6, Q_ENL As Long = 7
 
 ' ---- inputs ----
 Private nG As Long, sG As Double, Hg As Double, Lc As Double, deckW As Double
@@ -69,7 +93,7 @@ Private tJ(1 To MAX_TYPES) As Double, tAsy(1 To MAX_TYPES) As Double, tAsz(1 To 
 Private meshDx As Double, linkLen As Double, kFix As Double
 Private kb(1 To 12) As Double, kbY(1 To 12) As Double
 Private projName As String, clientName As String, bridgeName As String
-Private warnText As String, askUser As Boolean
+Private warnText As String, askUser As Boolean, seisMode As Boolean
 
 ' ---- model ----
 Private nodeKey As Object
@@ -83,6 +107,15 @@ Private pxA() As Double, pyA() As Double, rxA() As Double, ryA() As Double, cxS(
 Private pierAng As Object, maxOff As Double, nAxXY As Long
 Private gCz As Double, gIy As Double, gIz As Double, gPer As Double
 Private dkLog As String
+' Step B
+Private tQ(1 To MAX_TYPES, 1 To 7) As Double, tKL(1 To MAX_TYPES) As Double, tKR(1 To MAX_TYPES) As Double, tH1(1 To MAX_TYPES) As Double, tH2(1 To MAX_TYPES) As Double, tPhi(1 To MAX_TYPES) As Double
+Private wG As Double, wV As Double, alphaLM As Double, qsk As Double, tuPos As Double, tuNeg As Double, vDes As Double, qvk As Double, railH As Double
+Private facRows As Object, dcMax As Double, dcMin As Double, dcMax4 As Double, dwMax As Double, dwMin As Double, eqMain As Double, eqOther As Double
+Private specNames As Collection, specJson As Collection, phiByElem As Boolean
+Private spR() As Double, dkA() As Long, dkB() As Long, mnA() As Long, mnB() As Long, dxS() As Double
+Private brgNode() As Long, brgSpan() As Long, nBrg As Long
+Private nFW As Long, fwA() As Long, fwB() As Long
+Private loadItems As Object, loadIds As Object, hasCF As Boolean, nCfSpans As Long, cfMax As Double, combNo As Long
 
 Private payloads As Collection
 Private mKey As String
@@ -91,18 +124,19 @@ Private progStep As Long, progTotal As Long
 Private Const PROG_BAR_WIDTH As Long = 24
 
 Public Sub MIDAS_KOPRU_OLUSTUR()
-    RunBuild "", "", False
+    RunBuild "", "", False, False
 End Sub
 
-Public Sub MIDAS_KOPRU_PAYLOAD(ByVal path47 As String, ByVal outDir As String)
-    RunBuild path47, outDir, True
+Public Sub MIDAS_KOPRU_PAYLOAD(ByVal path47 As String, ByVal outDir As String, Optional ByVal seismicModel As Boolean = False)
+    RunBuild path47, outDir, True, seismicModel
 End Sub
 
 ' scripted build, no dialogs (tests)
-Public Sub MIDAS_KOPRU_BUILD(ByVal path47 As String, ByVal reportFile As String, ByVal apiKey As String, Optional ByVal saveModel As Boolean = True)
+Public Sub MIDAS_KOPRU_BUILD(ByVal path47 As String, ByVal reportFile As String, ByVal apiKey As String, Optional ByVal saveModel As Boolean = True, Optional ByVal seismicModel As Boolean = False)
     Dim rep As String
     On Error GoTo Fail
     warnText = ""
+    seisMode = seismicModel
     meshDx = DEF_MESH: linkLen = DEF_LINK_LEN: kFix = DEF_K_FIX
     PrepareModel path47
     mKey = apiKey
@@ -123,15 +157,27 @@ Private Sub PrepareModel(ByVal path47 As String)
     ReadInputs ThisWorkbook, wb47
     If opened47 Then wb47.Close SaveChanges:=False
     BuildModel
+    BuildLoads
     BuildPayloads
 End Sub
 
-Private Sub RunBuild(ByVal path47 As String, ByVal outDir As String, ByVal dry As Boolean)
+Private Sub RunBuild(ByVal path47 As String, ByVal outDir As String, ByVal dry As Boolean, ByVal seismicModel As Boolean)
     Dim msg As String, rep As String, v As Variant
     On Error GoTo Fail
     warnText = ""
     meshDx = DEF_MESH: linkLen = DEF_LINK_LEN: kFix = DEF_K_FIX
     askUser = Not dry
+    seisMode = seismicModel
+    If Not dry Then
+        Select Case MsgBox("Which model do you want to build?" & vbCrLf & vbCrLf & _
+                "YES = STATIC model (all loads, full stiffness, no spectra)." & vbCrLf & _
+                "NO = SEISMIC model (dead loads, 80 kN/m train case, mass, spectra, reduced stiffness)." & vbCrLf & vbCrLf & _
+                "Open the matching .mcb in Civil NX first: the macro wipes the open file.", vbYesNoCancel + vbQuestion, MSG_TITLE)
+            Case vbYes: seisMode = False
+            Case vbNo: seisMode = True
+            Case Else: Exit Sub
+        End Select
+    End If
     If path47 = "" Then
         v = Application.GetOpenFilename("Excel (*.xlsm;*.xlsx),*.xlsm;*.xlsx", , "4-7 (KDME) workbook: sarkiklik + bearing stiffness")
         If VarType(v) = vbBoolean Then Exit Sub
@@ -147,7 +193,7 @@ Private Sub RunBuild(ByVal path47 As String, ByVal outDir As String, ByVal dry A
         Exit Sub
     End If
     msg = FitBox(Summary(), "kopru_summary", 170) & vbCrLf & vbCrLf & _
-          "YES = WIPE the open Civil NX model, rebuild it and SAVE it." & vbCrLf & _
+          "YES = WIPE the open Civil NX model, rebuild it as the " & IIf(seisMode, "SEISMIC", "STATIC") & " model and SAVE it." & vbCrLf & _
           "NO = only write the JSON payloads (MIDAS\payload_kopru)."
     Select Case MsgBox(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
         Case vbNo
@@ -282,6 +328,7 @@ SpansDone:
         End If
         pSec(i) = SEC_PIER0 + q - 1
     Next i
+    ReadLoadData wb
     Dim skewV As Variant
     skewV = NmRange(wb, "G_VEREVLIK").Cells(1).Value
     If NumOr0(skewV) <> 0 Then warnText = warnText & "- G_VEREVLIK = " & skewV & ": the model is built square." & vbCrLf
@@ -321,6 +368,12 @@ Private Function DeckType(wb As Workbook, r As Range, ByVal i As Long) As Long
     tJoint(d) = NumOr0(c.Offset(0, k - 1).Value)
     If tJoint(d) <= 0 Then tJoint(d) = Num(c.Value, "G_GENLESME_DERZ_ARALIGI")
     tName(d) = "Deck type " & d & " (Hesap Acikligi " & k & ", Gabari " & gab & ")"
+    tKL(d) = NmRange(wb, "G_GABARI_KALDIRIM_SOL").Cells(gab).Value: tKR(d) = NmRange(wb, "G_GABARI_KALDIRIM_SAG").Cells(gab).Value
+    tH1(d) = NmRange(wb, "G_GABARI_HAT_1").Cells(gab).Value: tH2(d) = NumOr0(NmRange(wb, "G_GABARI_HAT_2").Cells(gab).Value)
+    For p = 1 To 7
+        tQ(d, p) = Num(NmRange(wb, CStr(Array("G_YUK_BALAST", "G_YUK_BORDUR", "G_YUK_KORKULUK", "G_YUK_CEPHE_PANELI", "G_YUK_KORUMA_BETONU", "G_YUK_RAY", "G_YUK_ENLEME")(p - 1))).Cells(k).Value, "Yuk Bilgileri (G_YUK_*), Hesap Acikligi " & k)
+    Next p
+    tPhi(d) = Num(NmRange(wb, "G_PHI3").Cells(k).Value, "G_PHI3, Hesap Acikligi " & k)
     DeckType = d
 End Function
 
@@ -349,6 +402,7 @@ Private Sub BuildPlan()
     Dim i As Long
     ReDim pxA(0 To nSp): ReDim pyA(0 To nSp): ReDim rxA(0 To nSp): ReDim ryA(0 To nSp)
     ReDim cxS(1 To nSp): ReDim cyS(1 To nSp): ReDim lenS(1 To nSp): ReDim phiS(1 To nSp): ReDim phiA(0 To nSp)
+    ReDim spR(1 To nSp)
     nAxXY = ReadAxisXY()
     If nAxXY = 0 Then
         warnText = warnText & "- G_AKS_XY is empty: the bridge is built STRAIGHT. Check the name range or run DXF OKU." & vbCrLf
@@ -405,11 +459,16 @@ Private Function ReadAxisXY() As Long
         pxA(i) = Num(t.Cells(i + 1, 1).Value, "G_AKS_XY X row " & i + 1) - x0
         pyA(i) = Num(t.Cells(i + 1, 2).Value, "G_AKS_XY Y row " & i + 1) - y0
         If i > 0 Then
+            spR(i) = NumOr0(t.Cells(i, 3).Value)   ' span radius next to the table (DXF_OKU): < 0 left, > 0 right, empty = straight
             ch = Sqr((pxA(i) - pxA(i - 1)) ^ 2 + (pyA(i) - pyA(i - 1)) ^ 2)
             If Abs(ch - spL(i)) > 0.05 Then Err.Raise vbObjectError + 44, , "G_AKS_XY: span " & i & " chord " & Format(ch, "0.000") & " m, span list " & Format(spL(i), "0.000") & " m. Run DXF OKU again."
         End If
     Next i
     ReadAxisXY = n
+    For i = 1 To nSp
+        If spR(i) <> 0 Then Exit Function
+    Next i
+    warnText = warnText & "- No span radius next to G_AKS_XY: no centrifugal case. Run DXF OKU if the bridge is on a curve." & vbCrLf
 End Function
 
 Private Function Atn2(ByVal yy As Double, ByVal xx As Double) As Double
@@ -453,7 +512,9 @@ Private Sub BuildModel()
     Dim zLs() As Double, y() As Double, dx As Double, zCap() As Double
     Set nodeKey = CreateObject("Scripting.Dictionary")
     Set capSlaves = CreateObject("Scripting.Dictionary")
-    nCnt = 0: eCnt = 0: nLink = 0
+    nCnt = 0: eCnt = 0: nLink = 0: nBrg = 0
+    ReDim dkA(1 To nSp): ReDim dkB(1 To nSp): ReDim mnA(1 To nSp): ReDim mnB(1 To nSp): ReDim dxS(1 To nSp)
+    ReDim brgNode(1 To 2 * nSp): ReDim brgSpan(1 To 2 * nSp)
     grpDeck = "": grpCap = "": grpPier = "": rigdJson = "": elnkJson = "": consJson = ""
     ReDim nX(1 To 2000): ReDim nY(1 To 2000): ReDim nZ(1 To 2000)
     ReDim eMat(1 To 2000): ReDim eSec(1 To 2000): ReDim eN1(1 To 2000): ReDim eN2(1 To 2000)
@@ -475,13 +536,17 @@ Private Sub BuildModel()
         ext = (jointL - Lc) / 2
         m = CLng((xR - xL) / meshDx): If m < 1 Then m = 1
         dx = (xR - xL) / m
+        dxS(i) = dx: dkA(i) = eCnt + 1
         If i > 1 And ext > sark + 0.0005 Then Member grpDeck, 2, SlabSec(spType(i)), SpN(i, xL - ext, 0, 0), SpN(i, xL - sark, 0, 0)
         Member grpDeck, 1, DeckSec(spType(i)), SpN(i, xL - sark, 0, 0), SpN(i, xL, 0, 0)
+        mnA(i) = eCnt + 1
         For k = 1 To m
             Member grpDeck, 1, DeckSec(spType(i)), SpN(i, xL + (k - 1) * dx, 0, 0), SpN(i, IIf(k = m, xR, xL + k * dx), 0, 0)
         Next k
+        mnB(i) = eCnt
         Member grpDeck, 1, DeckSec(spType(i)), SpN(i, xR, 0, 0), SpN(i, xR + sark, 0, 0)
         If i < nSp And ext > sark + 0.0005 Then Member grpDeck, 2, SlabSec(spType(i)), SpN(i, xR + sark, 0, 0), SpN(i, xR + ext, 0, 0)
+        dkB(i) = eCnt
     Next i
 
     For i = 1 To nSp
@@ -550,6 +615,7 @@ Private Sub BearingLine(ByVal sp As Long, ByVal u As Double, ByVal axisNo As Lon
         End If
     Next j
     Rigid SpN(sp, u, 0, 0), sl
+    nBrg = nBrg + 1: brgNode(nBrg) = SpN(sp, u, 0, 0): brgSpan(nBrg) = sp
 End Sub
 
 Private Sub Rigid(ByVal master As Long, ByVal slaves As String)
@@ -882,7 +948,7 @@ Private Sub BuildPayloads()
     Add "db/UNIT", "{""Assign"":{""1"":{""FORCE"":""KN"",""DIST"":""M"",""HEAT"":""J"",""TEMPER"":""C""}}}"
     Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":false,""bSELFWEIGHT"":true,""SMASS"":1}}}"
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
-        ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION)) & "}}}"
+        ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(seisMode, " SEISMIC", ""))) & "}}}"
     Add "db/MATL", "{""Assign"":{" & MatJson(1, clsG) & "," & MatJson(2, clsS) & "," & MatJson(3, clsO) & "}}"
     s = ""
     For i = 1 To nDk
@@ -900,6 +966,7 @@ Private Sub BuildPayloads()
         s = s & "," & DbSect(SEC_PIER0 + i - 1, "KOLON_" & i, SectHead2("CC", 0, 0), psTyp(i), sz)
     Next i
     Add "db/SECT", "{""Assign"":{" & s & "}}"
+    Add "db/CO_S", SectColorJson()
     s = ""
     For i = 1 To nCnt
         s = s & IIf(i = 1, "", ",") & QS(CStr(i)) & ":{""X"":" & JN(nX(i)) & ",""Y"":" & JN(nY(i)) & ",""Z"":" & JN(nZ(i)) & "}"
@@ -913,10 +980,11 @@ Private Sub BuildPayloads()
     Add "db/ELEM", "{""Assign"":{" & s & "}}"
     Add "db/GRUP", "{""Assign"":{""1"":{""NAME"":""SG_TABLIYE"",""P_TYPE"":0,""E_LIST"":[" & grpDeck & "]}," & _
         """2"":{""NAME"":""SG_BASLIK"",""P_TYPE"":0,""E_LIST"":[" & grpCap & "]},""3"":{""NAME"":""SG_KOLON"",""P_TYPE"":0,""E_LIST"":[" & grpPier & "]}}}"
-    Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0}}}"
+    Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0}" & "}}"
     Add "db/CONS", "{""Assign"":{" & consJson & "}}"
     Add "db/RIGD", "{""Assign"":{" & rigdJson & "}}"
     Add "db/ELNK", "{""Assign"":{" & elnkJson & "}}"
+    AddLoadPayloads
 End Sub
 
 Private Sub WritePayloads(ByVal dirPath As String)
@@ -937,6 +1005,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Set http = Nothing
     If Not Api("GET", "db/NODE", "", resp) Then SendAll = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300): Exit Function
     If Not ModelOk(rep) Then SendAll = rep: Exit Function
+    If Not ModelTypeOk(rep) Then SendAll = rep: Exit Function
     rep = ""
     ' an empty model needs no clean pass (owner 2026-11-05)
     If ModelIsEmpty() Then
@@ -971,11 +1040,14 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Prog "read-back elements"
     If Api("GET", "db/ELEM", "", resp) Then rep = rep & "  elements " & CountOf(resp, """TYPE"":") & " / " & eCnt & IIf(CountOf(resp, """TYPE"":") = eCnt, "", "  FAIL") & vbCrLf
     Prog "read-back sections"
+    If Api("GET", "db/STLD", "", resp) Then rep = rep & "  load cases " & CountOf(resp, """NAME"":") & " / " & CaseList().Count & IIf(CountOf(resp, """NAME"":") = CaseList().Count, "", "  FAIL") & vbCrLf
+    If Api("GET", "db/LCOM-GEN", "", resp) Then rep = rep & "  combinations " & CountOf(resp, """iTYPE"":") & " / " & combNo & IIf(CountOf(resp, """iTYPE"":") = combNo, "", "  FAIL") & vbCrLf
     If Api("GET", "db/SECT", "", resp) Then
         UseType 1
         a = SectArea(resp, CStr(DeckSec(1)))
         rep = rep & "  deck section area read " & Format(a, "0.0000") & " m2 (girders " & Format(nG * polyArea, "0.0000") & ", transformed " & Format(deckArea, "0.0000") & ")" & IIf(a > 0, "", "  FAIL: no stiffness in the composite section") & vbCrLf
     End If
+    If seisMode Then rep = rep & SecfCheck()
     Prog "save"
     If InStr(rep, "FAIL") > 0 Then
         rep = rep & "NOT SAVED: the read-back failed." & vbCrLf
@@ -1025,10 +1097,517 @@ Private Function Summary() As String
         "Cap " & capL & " m, pier top " & capDrop & " m below cap top; " & nPS & " pier section(s)" & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
         IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & _
-        "Geometry only: no loads, no spectra, no combinations."
+        IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _
+        IIf(seisMode, "EQ " & EQ_FUNC & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z, IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
 End Function
+
+' ============================================================================
+'  STEP B: LOADS, SPECTRA, COMBINATIONS (owner 2026-11-06)
+' ============================================================================
+Private Sub ReadLoadData(wb As Workbook)
+    Dim y As Worksheet, k As Long
+    Set y = wb.Worksheets("2_YUKLER")
+    wG = Num(BelowHeader(y, "Wg").Value, "2_YUKLER Wg (wind on structure)")
+    wV = Num(BelowHeader(y, "Wv").Value, "2_YUKLER Wv (wind on train)")
+    alphaLM = Num(BelowHeader(y, ChrW(945)).Value, "2_YUKLER alpha")
+    qsk = Num(LabelValue(y, 7, "Qsk", 16), "2_YUKLER Qsk x alpha (nosing)")
+    tuPos = Num(NmRange(wb, "G_SICAKLIK_MAKS").Cells(1).Value, "G_SICAKLIK_MAKS")
+    tuNeg = Num(NmRange(wb, "G_SICAKLIK_MIN").Cells(1).Value, "G_SICAKLIK_MIN")
+    vDes = Num(NmRange(wb, "G_TASARIM_HIZI").Cells(1).Value, "G_TASARIM_HIZI")
+    qvk = Num(NmRange(wb, "G_HAT_DUSEY_YUKU").Cells(1).Value, "G_HAT_DUSEY_YUKU")
+    ' rail level above the slab top: no input cell (owner 2026-11-06), ballast + protection concrete + sleeper and rail
+    railH = Num(NmRange(wb, "G_BALAST_YUKSEKLIGI").Cells(1).Value, "G_BALAST_YUKSEKLIGI") + _
+            Num(NmRange(wb, "G_KORUMA_BETONU_YUKSEKLIGI").Cells(1).Value, "G_KORUMA_BETONU_YUKSEKLIGI") + RAIL_OVER_BALLAST
+    If NumOr0(NmRange(wb, "G_KOPRU_ONEM_SINIFI").Cells(1).Value) <> 1 Then warnText = warnText & "- KOS is not 1: EQ cases still use " & EQ_FUNC & "." & vbCrLf
+    ReadCombTables wb.Worksheets("1_GIRIS")
+    If seisMode Then ReadSpectra wb.Worksheets("SPECTRUM")
+    phiByElem = False
+    For k = 2 To nDk
+        If tPhi(k) <> tPhi(1) Then phiByElem = True
+    Next k
+End Sub
+
+' every curve of the SPECTRUM sheet: name above 'T', period column, Sae(T) column
+Private Sub ReadSpectra(ws As Worksheet)
+    Dim c As Range, hr As Long, col As Long, r As Long, s As String, prev As Double, t As Double, nP As Long
+    Set c = ws.UsedRange.Find(What:="Sae(T)", LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=True)
+    If c Is Nothing Then Err.Raise vbObjectError + 50, , "SPECTRUM: header Sae(T) not found."
+    hr = c.Row
+    Set specNames = New Collection: Set specJson = New Collection
+    For col = 1 To ws.UsedRange.Columns.Count + ws.UsedRange.Column
+        If Trim$(CStr(ws.Cells(hr, col).Value)) = "T" And Trim$(CStr(ws.Cells(hr, col + 1).Value)) = "Sae(T)" Then
+            s = "": prev = -1: nP = 0
+            r = hr + 1
+            Do While Not IsEmpty(ws.Cells(r, col).Value)
+                t = Num(ws.Cells(r, col).Value, "SPECTRUM period")
+                If t > prev Then
+                    s = s & IIf(s = "", "", ",") & "{""PERIOD"":" & JN(t) & ",""VALUE"":" & JN(Num(ws.Cells(r, col + 1).Value, "SPECTRUM value")) & "}"
+                    prev = t: nP = nP + 1
+                End If
+                r = r + 1
+            Loop
+            If nP < 5 Then Err.Raise vbObjectError + 51, , "SPECTRUM: curve at column " & col & " has " & nP & " points."
+            specNames.Add Trim$(CStr(ws.Cells(hr - 1, col).Value))
+            specJson.Add s
+        End If
+    Next col
+    For r = 1 To specNames.Count
+        If specNames(r) = EQ_FUNC Then Exit Sub
+    Next r
+    Err.Raise vbObjectError + 52, , "SPECTRUM: curve " & EQ_FUNC & " not found."
+End Sub
+
+Private Sub ReadCombTables(ws As Worksheet)
+    Dim hc As Range, hr As Long, c As Long, t As String, cDC As Long, cLL As Long, cWA As Long, cWS As Long, cWL As Long, cTU As Long, cEQ As Long
+    Dim r As Long, lab As String, g As Range, v As String
+    Set hc = FindLabel(ws, 3, "Y" & ChrW(252) & "k Komb")
+    hr = hc.Row
+    For c = 4 To 40
+        t = Trim$(CStr(ws.Cells(hr, c).Value))
+        If Left$(t, 2) = "DC" And cDC = 0 Then cDC = c
+        If Left$(t, 2) = "LL" And cLL = 0 Then cLL = c
+        If Left$(t, 2) = "WA" And cWA = 0 Then cWA = c
+        If t = "WS" Then cWS = c
+        If t = "WL" Then cWL = c
+        If t = "TU" Then cTU = c
+        If t = "EQ" Then cEQ = c
+    Next c
+    If cDC * cLL * cWA * cWS * cWL * cTU * cEQ = 0 Then Err.Raise vbObjectError + 8, , "Tablo 14 header columns (DC, LL, WA, WS, WL, TU, EQ) not all found."
+    Set facRows = CreateObject("Scripting.Dictionary")
+    facRows.CompareMode = vbBinaryCompare
+    For r = hr + 1 To hr + 20
+        lab = Replace(Trim$(CStr(ws.Cells(r, 3).Value)), " ", "")
+        If lab <> "" Then facRows(lab) = Array(Fac(ws.Cells(r, cDC).Value), Fac(ws.Cells(r, cLL).Value), Fac(ws.Cells(r, cWA).Value), _
+                                             Fac(ws.Cells(r, cWS).Value), Fac(ws.Cells(r, cWL).Value), Fac(ws.Cells(r, cTU).Value))
+        If lab = "TKDY" Then
+            v = Trim$(CStr(ws.Cells(r, cEQ).Value))
+            If InStr(v, "/") = 0 Then Err.Raise vbObjectError + 53, , "Tablo 14 TKDY row: EQ must read like 1.00 / 0.30."
+            eqMain = Val(Replace(Left$(v, InStr(v, "/") - 1), ",", "."))
+            eqOther = Val(Replace(Mid$(v, InStr(v, "/") + 1), ",", "."))
+        End If
+    Next r
+    If Not facRows.Exists("TKDY") Then Err.Raise vbObjectError + 10, , "Tablo 14 row 'TKDY' not found."
+    Set g = FindLabel(ws, 7, "DC", hr)
+    dcMax = Num(ws.Cells(g.Row, 14).Value, "Tablo 15 DC max"): dcMin = Num(ws.Cells(g.Row, 17).Value, "Tablo 15 DC min")
+    dcMax4 = Num(ws.Cells(g.Row + 1, 14).Value, "Tablo 15 DC max STR-4")
+    Set g = FindLabel(ws, 7, "DW", hr)
+    dwMax = Num(ws.Cells(g.Row, 14).Value, "Tablo 15 DW max"): dwMin = Num(ws.Cells(g.Row, 17).Value, "Tablo 15 DW min")
+End Sub
+
+Private Function Fac(ByVal v As Variant) As Double
+    Dim t As String
+    If IsNumeric(v) And Not IsEmpty(v) Then Fac = CDbl(v): Exit Function
+    t = LCase$(Trim$(CStr(v)))
+    If t = "" Or Left$(t, 2) = "--" Or t = "-" Then Fac = -1: Exit Function
+    If t = "gp" Or t = ChrW(947) & "p" Then Fac = -2: Exit Function
+    If InStr(t, "/") > 0 Then t = Trim$(Left$(t, InStr(t, "/") - 1))
+    Fac = Val(Replace(t, ",", "."))
+End Function
+
+Private Function BelowHeader(ws As Worksheet, ByVal header As String) As Range
+    ' first cell equal to header whose cell below holds a number
+    Dim c As Range, first As String
+    Set c = ws.UsedRange.Find(What:=header, LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=True)
+    If Not c Is Nothing Then
+        first = c.Address
+        Do
+            If Not IsError(c.Offset(1, 0).Value) Then
+                If IsNumeric(c.Offset(1, 0).Value) And Not IsEmpty(c.Offset(1, 0).Value) Then Set BelowHeader = c.Offset(1, 0): Exit Function
+            End If
+            Set c = ws.UsedRange.FindNext(c)
+            If c Is Nothing Then Exit Do
+        Loop While c.Address <> first
+    End If
+    Err.Raise vbObjectError + 54, , ws.Name & ": no number below the header '" & header & "'."
+End Function
+
+' axis name left of span i (the name of its IVME case)
+Private Function AxisName(ByVal i As Long) As String
+    AxisName = IIf(i = 1, "A1", "P" & (i - 1))
+End Function
+
+' centrifugal force per track and metre: same formula as 2_YUKLER Tablo 17 (L180, U180), r = span radius, Lf = span
+Private Function CentForce(ByVal r As Double, ByVal Lf As Double) As Double
+    Dim v As Double, f As Double, a As Double, b As Double, v2 As Double
+    v = IIf(vDes > 300, 300, vDes)
+    If vDes <= 120 Or Lf <= 2.88 Then
+        f = 1
+    Else
+        f = 1 - (v - 120) * (814 / v + 1.75) * (1 - Sqr(2.88 / Lf)) / 1000
+        If f < 0.35 Then f = 0.35
+    End If
+    v2 = IIf(vDes < 120, vDes, 120)
+    a = vDes ^ 2 / (127 * r) * f
+    b = v2 ^ 2 / (127 * r)
+    CentForce = IIf(a > b, a, b) * alphaLM * qvk
+End Function
+
+Private Sub BuildLoads()
+    Dim i As Long, e As Long, d As Long, n As Double, w As Double, qcf As Double, k As Long, m As Long
+    Dim pos As Double, ctr As Double, nW As Long, a As Long, b As Long, lenM As Double
+    Set loadItems = CreateObject("Scripting.Dictionary")
+    Set loadIds = CreateObject("Scripting.Dictionary")
+    hasCF = False: nCfSpans = 0: cfMax = 0
+    For i = 1 To nSp
+        d = spType(i): n = tNG(d): w = tW(d)
+        qcf = 0
+        If spR(i) <> 0 And Not seisMode Then
+            qcf = CentForce(Abs(spR(i)), tLc(d)) * NTracks(d) * Sgn(spR(i))   ' R > 0 = right turn, outward = +LY
+            hasCF = True: nCfSpans = nCfSpans + 1
+            If Abs(qcf) > cfMax Then cfMax = Abs(qcf)
+        End If
+        For e = dkA(i) To dkB(i)
+            AddLoad e, "DW_1", "GZ", -1, "LY", 0, -tQ(d, Q_BAL) * n
+            AddLoad e, "DW_1", "GZ", 1, "LY", w / 2 - tKL(d) / 2, -tQ(d, Q_KERB) * n / 2
+            AddLoad e, "DW_1", "GZ", 1, "LY", -(w / 2 - tKR(d) / 2), -tQ(d, Q_KERB) * n / 2
+            AddLoad e, "DW_1", "GZ", 1, "LY", w / 2, -(tQ(d, Q_RAIL) + tQ(d, Q_PANEL)) * n / 2
+            AddLoad e, "DW_1", "GZ", 1, "LY", -w / 2, -(tQ(d, Q_RAIL) + tQ(d, Q_PANEL)) * n / 2
+            AddLoad e, "DW_2", "GZ", -1, "LY", 0, -(tQ(d, Q_PROT) + tQ(d, Q_TRK)) * n
+            If seisMode Then
+                AddLoad e, MASS_CASE, "GZ", -1, "LY", 0, -qvk * NTracks(d)
+            Else
+                AddLoad e, "WS-Y", "LY", -1, "LY", 0, wG
+                AddLoad e, "WL", "LY", 1, "LZ", railH + WL_HEIGHT, wV
+            End If
+            If qcf <> 0 Then AddLoad e, "CF", "LY", 1, "LZ", railH + CF_HEIGHT, qcf
+        Next e
+        If seisMode Then GoTo NextSpan
+        ' traction: the bearing-to-bearing elements, at most TRAC_L centred on the span
+        m = mnB(i) - mnA(i) + 1
+        ctr = m * dxS(i) / 2: nW = 0
+        For k = 1 To m
+            pos = (k - 0.5) * dxS(i)
+            If Abs(pos - ctr) + dxS(i) / 2 <= TRAC_L / 2 + 0.05 Then
+                AddLoad mnA(i) + k - 1, "IVME " & AxisName(i), "LX", 1, "LZ", railH, TRAC_Q * alphaLM
+                nW = nW + 1
+            End If
+        Next k
+        If nW = 0 Then Err.Raise vbObjectError + 55, , "Span " & i & ": element longer than the " & TRAC_L & " m traction length."
+        ' nosing: spread over the middle element(s) of the span
+        If m Mod 2 = 0 Then
+            a = mnA(i) + m / 2 - 1: b = a + 1
+        Else
+            a = mnA(i) + (m - 1) / 2: b = a
+        End If
+        lenM = (b - a + 1) * dxS(i)
+        For e = a To b
+            AddLoad e, "MOVE", "LY", 1, "LZ", railH, qsk / lenM
+        Next e
+NextSpan:
+    Next i
+    If seisMode Then nFW = 0: Exit Sub
+    BrakeWindows
+    For k = 1 To nFW
+        For i = fwA(k) To fwB(k)
+            For e = dkA(i) To dkB(i)
+                AddLoad e, "FREN " & k, "LX", 1, "LZ", railH, BRAKE_Q * alphaLM
+            Next e
+        Next i
+    Next k
+End Sub
+
+' braking windows, number from the bridge length: whole spans up to BRAKE_L, each window overlaps the one before
+' by two spans, so every pier has both its spans and a neighbouring span loaded in one window: the most critical
+' placement for each pier with few cases (owner 2026-11-06). One span of overlap left the window-edge piers 2-4 %
+' low in the 33-span run, because the free bearings also drag on the next pier.
+Private Sub BrakeWindows()
+    Dim a As Long, b As Long, s As Double
+    nFW = 0
+    ReDim fwA(1 To nSp): ReDim fwB(1 To nSp)
+    a = 1
+    Do
+        s = spL(a): b = a
+        Do While b < nSp
+            If s + spL(b + 1) > BRAKE_L Then Exit Do
+            b = b + 1: s = s + spL(b)
+        Loop
+        If b = a And b < nSp Then
+            warnText = warnText & "- Spans " & a & " and " & a + 1 & " together exceed " & BRAKE_L & " m: braking windows hold one span, the pier between them is not fully covered." & vbCrLf
+            b = a + 1
+        End If
+        nFW = nFW + 1: fwA(nFW) = a: fwB(nFW) = b
+        If b >= nSp Then Exit Do
+        a = IIf(b - 1 > a, b - 1, b)
+    Loop
+End Sub
+
+Private Function NTracks(ByVal d As Long) As Long
+    NTracks = IIf(tH2(d) > 0, 2, 1)
+End Function
+
+Private Sub AddLoad(ByVal el As Long, ByVal lc As String, ByVal dirn As String, ByVal eccType As Long, ByVal eccDir As String, ByVal ecc As Double, ByVal q As Double)
+    Dim id As Long, s As String
+    id = loadIds(el) + 1: loadIds(el) = id
+    s = "{""ID"":" & id & ",""LCNAME"":" & QS(lc) & ",""GROUP_NAME"":"""",""CMD"":""BEAM"",""TYPE"":""UNILOAD"",""DIRECTION"":" & QS(dirn) & _
+        ",""USE_PROJECTION"":false,""USE_ECCEN"":" & IIf(eccType >= 0, "true", "false")
+    If eccType >= 0 Then s = s & ",""ECCEN_TYPE"":" & eccType & ",""ECCEN_DIR"":" & QS(eccDir) & ",""I_END"":" & JN(ecc) & ",""J_END"":" & JN(ecc) & ",""USE_J_END"":false"
+    s = s & ",""D"":[0,1,0,0],""P"":[" & JN(q) & "," & JN(q) & ",0,0],""USE_ADDITIONAL"":false,""ADDITIONAL_I_END"":0,""ADDITIONAL_J_END"":0,""USE_ADDITIONAL_J_END"":false}"
+    If loadItems.Exists(el) Then loadItems(el) = loadItems(el) & "," & s Else loadItems(el) = s
+End Sub
+
+Private Function CaseList() As Collection
+    Dim c As New Collection, i As Long, a As Variant, v As Variant
+    If seisMode Then
+        c.Add "DC|D|Self Weight"
+        c.Add "DW_1|DC|Ballast, kerb, railing, panel, cross beams"
+        c.Add "DW_2|DW|Protection concrete, rails"
+        c.Add MASS_CASE & "|L|Uniform train load: seismic mass and TKDY combinations"
+        Set CaseList = c
+        Exit Function
+    End If
+    a = Array("DC|D|Self Weight", "DW_1|DC|Ballast, kerb, railing, panel, cross beams", "DW_2|DW|Protection concrete, rails", "FR|FR|Friction Force", _
+        "WS-X|W|Horizontal Wind Load (Long.)", "WS-Y|W|Horizontal Wind Load (Trans.)", "WS-Z|W|Vertical Wind Load", "WL|WL|Wind Load on Live Load", _
+        "TU+|T|Temperature Effect (+)", "TU-|T|Temperature Effect (-)", "PL|L|Pedestrian Live Load", "MOVE|L|Nosing")
+    For Each v In a: c.Add v: Next v
+    For i = 1 To nFW
+        c.Add "FREN " & i & "|BRK|Train Braking - spans " & fwA(i) & " to " & fwB(i)
+    Next i
+    If hasCF Then c.Add "CF|CF|Centrifugal Force"
+    For i = 1 To nSp
+        c.Add "IVME " & AxisName(i) & "|BRK|Train Acceleration - " & AxisName(i)
+    Next i
+    Set CaseList = c
+End Function
+
+Private Function StldJson() As String
+    Dim c As Collection, i As Long, p As Variant, s As String
+    Set c = CaseList()
+    For i = 1 To c.Count
+        p = Split(c(i), "|")
+        s = s & IIf(i = 1, "", ",") & QS(CStr(i)) & ":{""NO"":" & i & ",""NAME"":" & QS(CStr(p(0))) & ",""TYPE"":" & QS(CStr(p(1))) & ",""DESC"":" & QS(CStr(p(2))) & "}"
+    Next i
+    StldJson = s
+End Function
+
+Private Function SortedLongKeys(d As Object) As Variant
+    Dim a() As Long, i As Long, j As Long, t As Long, k As Variant
+    ReDim a(1 To d.Count)
+    For Each k In d.Keys
+        i = i + 1: a(i) = CLng(k)
+    Next k
+    For i = 2 To UBound(a)
+        t = a(i): j = i - 1
+        Do While j >= 1
+            If a(j) <= t Then Exit Do
+            a(j + 1) = a(j): j = j - 1
+        Loop
+        a(j + 1) = t
+    Next i
+    SortedLongKeys = a
+End Function
+
+Private Sub AddLoadPayloads()
+    Dim s As String, i As Long, e As Long, k As Variant, cnt As Long, d As Long
+    Add "db/STLD", "{""Assign"":{" & StldJson() & "}}"
+    Add "db/BODF", "{""Assign"":{""1"":{""LCNAME"":""DC"",""GROUP_NAME"":"""",""FV"":[0,0,-1]}}}"
+    s = "": cnt = 0
+    For Each k In SortedLongKeys(loadItems)
+        s = s & IIf(s = "", "", ",") & QS(CStr(k)) & ":{""ITEMS"":[" & loadItems(CLng(k)) & "]}"
+        cnt = cnt + 1
+        If cnt = BMLD_CHUNK Then Add "db/BMLD", "{""Assign"":{" & s & "}}": s = "": cnt = 0
+    Next k
+    If s <> "" Then Add "db/BMLD", "{""Assign"":{" & s & "}}"
+    ' cross beams: their weight at the deck node of each bearing line
+    s = ""
+    For i = 1 To nBrg
+        d = spType(brgSpan(i))
+        s = s & IIf(s = "", "", ",") & QS(CStr(brgNode(i))) & ":{""ITEMS"":[{""ID"":1,""LCNAME"":""DW_1"",""GROUP_NAME"":"""",""FZ"":" & JN(-tQ(d, Q_ENL) * tNG(d)) & "}]}"
+    Next i
+    Add "db/CNLD", "{""Assign"":{" & s & "}}"
+    If seisMode Then
+        AddSeismicPayloads
+        Exit Sub
+    End If
+    ' temperature: deck only (owner 2026-11-06)
+    s = ""
+    For i = 1 To nSp
+        For e = dkA(i) To dkB(i)
+            s = s & IIf(s = "", "", ",") & QS(CStr(e)) & ":{""ITEMS"":[{""ID"":1,""LCNAME"":""TU+"",""GROUP_NAME"":"""",""TEMP"":" & JN(tuPos) & "},{""ID"":2,""LCNAME"":""TU-"",""GROUP_NAME"":"""",""TEMP"":" & JN(tuNeg) & "}]}"
+        Next e
+    Next i
+    Add "db/ETMP", "{""Assign"":{" & s & "}}"
+    Add "db/MVCD", "{""Assign"":{""1"":{""CODE"":""EUROCODE""}}}"
+    s = LaneJson("LANE1", 1)
+    If AnyTwoTracks() Then s = s & "," & LaneJson("LANE2", 2)
+    Add "db/LLAN", "{""Assign"":{" & s & "}}"
+    Add "db/MVHL", "{""Assign"":{""1"":{""MVLD_CODE"":11,""VEHICLE_LOAD_NAME"":""Load Model 71"",""VEHICLE_LOAD_NUM"":1,""VEHICLE_TYPE_NAME"":""Load Model 71"",""VEH_EUROCODE"":{""SUB_TYPE"":23,""W1"":80,""DD1"":0,""D1"":0.8,""W2"":80,""DD2"":0,""D2"":0.8,""V_LOAD_FACTOR"":" & JN(alphaLM) & ",""LONGI_DIST"":false,""ECCEN_VERT_LOAD"":false}}}}"
+    Add "db/MVLDeu", "{""Assign"":{""1"":{""LCNAME"":""LM71"",""OPT_AUTO_OPTIMIZE"":false,""TYPE_LOADMODEL"":5,""DESC"":"""",""OPT_COMB"":1,""SCALE_FACTOR1"":0.8,""SCALE_FACTOR2"":0.7,""SCALE_FACTOR3"":0.6," & _
+        """OPT_PSI_FACTOR"":true,""MULTI_FACTOR1"":1,""MULTI_FACTOR2"":1,""MULTI_FACTOR3"":0.75,""SUB_LOAD_LIST"":[{""TYPE"":2,""NAME"":""Load Model 71"",""SCALE_FACTOR"":1," & _
+        """MIN_LOAD_LANE_TYPE"":0,""MAX_LOAD_LANE_TYPE"":" & IIf(AnyTwoTracks(), 2, 1) & ",""SLN_LIST"":[""LANE1""" & IIf(AnyTwoTracks(), ",""LANE2""", "") & "]}]}}}"
+    If phiByElem Then
+        s = ""
+        For i = 1 To nSp
+            For e = dkA(i) To dkB(i)
+                s = s & IIf(s = "", "", ",") & QS(CStr(e)) & ":{""INPUT_TYPE"":1,""DYN_FACTOR"":" & JN(tPhi(spType(i))) & "}"
+            Next e
+        Next i
+        Add "db/DYNF", "{""Assign"":{" & s & "}}"
+    Else
+        Add "db/DYFG", "{""Assign"":{""1"":{""INPUT_TYPE"":0,""LENGTH"":" & JN(tLc(1)) & ",""MAINTAIN_TYPE"":1,""OPT_REDUCE_EFF"":false,""HEIGHT_COVER"":0,""DYN_FACTOR"":" & JN(tPhi(1)) & "}}}"
+    End If
+    AddCombs
+End Sub
+
+' seismic model: stiffness factors with no boundary group, so they reach the eigenvalue analysis too
+Private Sub AddSeismicPayloads()
+    Dim s As String, i As Long
+    ' TKDY effective stiffness: bending x EQ_STIFF (deck, cap, piers), EQ_STIFF_SLAB (connection slab)
+    For i = 1 To nDk
+        s = s & SecfSeis(DeckSec(i), EQ_STIFF, 3) & "," & SecfSeis(SlabSec(i), EQ_STIFF_SLAB, 1) & ","
+    Next i
+    s = s & SecfSeis(SEC_CAP, EQ_STIFF, 1)
+    For i = 1 To nPS
+        s = s & "," & SecfSeis(SEC_PIER0 + i - 1, EQ_STIFF, 1)
+    Next i
+    Add "db/SECF", "{""Assign"":{" & s & "}}"
+    Add "db/LTOM", "{""Assign"":{""1"":{""DIR"":""XYZ"",""bNODAL"":true,""bBEAM"":true,""bFLOOR"":true,""bPRES"":true,""GRAV"":" & JN(GRAV_STYP) & _
+        ",""vLC"":[{""LCNAME"":""DW_1"",""FACTOR"":1},{""LCNAME"":""DW_2"",""FACTOR"":1},{""LCNAME"":" & QS(MASS_CASE) & ",""FACTOR"":" & JN(facRows("TKDY")(1)) & "}]}}}"
+    Add "db/EIGV", "{""Assign"":{""1"":{""TYPE"":""RITZ"",""bINCNL"":false,""iGNUM"":0,""vRITZ"":[{""KIND"":""GROUND"",""GROUND"":""ACCX"",""iNOG"":" & RITZ_X & "},{""KIND"":""GROUND"",""GROUND"":""ACCY"",""iNOG"":" & RITZ_Y & "},{""KIND"":""GROUND"",""GROUND"":""ACCZ"",""iNOG"":" & RITZ_Z & "}]}}}"
+    s = ""
+    For i = 1 To specNames.Count
+        s = s & IIf(i = 1, "", ",") & QS(CStr(i)) & ":{""NAME"":" & QS(CStr(specNames(i))) & ",""iTYPE"":1,""iMETHOD"":0,""SCALE"":1,""GRAV"":" & JN(GRAV_STYP) & ",""DRATIO"":0.05,""DESC"":"""",""aFUNC"":[" & specJson(i) & "]}"
+    Next i
+    Add "db/SPFC", "{""Assign"":{" & s & "}}"
+    Add "db/SPLC", "{""Assign"":{" & RsCase(1, "EQ-X-(+)", 0) & "," & RsCase(2, "EQ-Y-(+)", 90) & "," & RsCase(3, "EQ-X-(-)", 180) & "," & RsCase(4, "EQ-Y-(-)", 270) & "}}"
+    AddSeisCombs
+End Sub
+
+Private Function AnyTwoTracks() As Boolean
+    Dim d As Long
+    For d = 1 To nDk
+        If tH2(d) > 0 Then AnyTwoTracks = True: Exit Function
+    Next d
+End Function
+
+Private Function SecfSeis(ByVal sec As Long, ByVal f As Double, ByVal part As Long) As String
+    SecfSeis = QS(CStr(sec)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":"""",""AREA_SF"":1,""ASY_SF"":1,""ASZ_SF"":1,""IXX_SF"":1,""IYY_SF"":" & JN(f) & ",""IZZ_SF"":" & JN(f) & _
+        ",""WGT_SF"":1,""W_SF"":1,""IPART"":" & part & ",""bDiffIJ"":false}]}"
+End Function
+
+Private Function RsCase(ByVal no As Long, ByVal nm As String, ByVal ang As Long) As String
+    RsCase = QS(CStr(no)) & ":{""NAME"":" & QS(nm) & ",""DIR"":""XY"",""ANGLE"":" & ang & ",""SCALE"":1,""PMFT"":1,""bDAMP"":false,""INTERP"":""LOG"",""DESC"":"""",""COMTYPE"":""CQC"",""bADDSIGN"":true,""iSIGNTYPE"":0,""bMODE"":false,""aFUNCNAME"":[" & QS(EQ_FUNC) & "]}"
+End Function
+
+' lane t on every deck element of the spans that have that track; ECC = minus the offset to the left
+Private Function LaneJson(ByVal nm As String, ByVal t As Long) As String
+    Dim i As Long, e As Long, s As String, d As Long, v As Double
+    For i = 1 To nSp
+        d = spType(i)
+        If t = 1 Or tH2(d) > 0 Then
+            If t = 1 Then
+                v = tW(d) / 2 - tKL(d) - tH1(d) / 2
+            Else
+                v = tW(d) / 2 - tKL(d) - tH1(d) - tH2(d) / 2
+            End If
+            For e = dkA(i) To dkB(i)
+                s = s & IIf(s = "", "", ",") & "{""ELEM"":" & e & ",""ECC"":" & JN(-v) & ",""FACT"":0,""SPAN_START"":false,""ECCEN_VERT_LOAD"":0,""CENT_F"":0.5}"
+            Next e
+        End If
+    Next i
+    LaneJson = QS(CStr(t)) & ":{""COMMON"":{""LL_NAME"":" & QS(nm) & ",""LOAD_DIST"":""LANE"",""GROUP_NAME"":"""",""SKEW_START"":0,""SKEW_END"":0,""MOVING"":""BOTH""," & _
+        """WHEEL_SPACE"":1.5,""WIDTH"":2,""OPT_AUTO_LANE"":false,""ALLOW_WIDTH"":3},""LANE_ITEMS"":[" & s & "]}"
+End Function
+
+' ---- combinations: Tablo 14 / 15 of 1_GIRIS ----
+Private Function It(ByVal an As String, ByVal lc As String, ByVal f As Double) As String
+    If f < 0 Then Exit Function
+    It = ";" & an & "|" & lc & "|" & JN(f)
+End Function
+
+Private Function Comb(ByVal nm As String, ByVal iType As Long, ByVal items As String) As String
+    Dim p As Variant, i As Long, s As String, q2 As Variant
+    If Left$(items, 1) = ";" Then items = Mid$(items, 2)
+    p = Split(items, ";")
+    For i = 0 To UBound(p)
+        q2 = Split(p(i), "|")
+        s = s & IIf(i = 0, "", ",") & "{""ANAL"":" & QS(CStr(q2(0))) & ",""LCNAME"":" & QS(CStr(q2(1))) & ",""FACTOR"":" & q2(2) & "}"
+    Next i
+    combNo = combNo + 1
+    Comb = QS(CStr(combNo)) & ":{""NO"":" & combNo & ",""NAME"":" & QS(nm) & ",""ACTIVE"":""ACTIVE"",""bCB"":" & IIf(InStr(";" & items, ";CB|") > 0, "true", "false") & ",""iTYPE"":" & iType & ",""DESC"":"""",""vCOMB"":[" & s & "]}"
+End Function
+
+' mode 0 = service (table values), 1 = max, 2 = min
+Private Function TableItems(ByVal lab As String, ByVal mode As Long, ByVal strNo As Long) As String
+    Dim f As Variant, fDC As Double, fDW As Double, s As String
+    If Not facRows.Exists(lab) Then Err.Raise vbObjectError + 10, , "Tablo 14 row '" & lab & "' not found."
+    f = facRows(lab)
+    fDC = f(0): fDW = f(0)
+    If fDC = -2 Then
+        If mode = 2 Then
+            fDC = dcMin: fDW = dwMin
+        Else
+            fDC = IIf(strNo = 4, dcMax4, dcMax): fDW = dwMax
+        End If
+    End If
+    s = It("ST", "DC", fDC) & It("ST", "DW_1", fDC) & It("ST", "DW_2", fDW) & It("ST", "FR", f(2)) & _
+        It("ST", "WS-X", f(3)) & It("ST", "WS-Y", f(3)) & It("ST", "WS-Z", f(3)) & It("ST", "WL", f(4)) & It("CB", "TU", f(5)) & _
+        It("ST", "PL", f(1)) & It("ST", "MOVE", f(1)) & It("MV", "LM71", f(1)) & It("CB", "IVME/FREN", f(1))
+    If hasCF Then s = s & It("ST", "CF", f(1))
+    TableItems = s
+End Function
+
+Private Function EqItems(ByVal dead As Double, ByVal ll As Double, ByVal mainC As String, ByVal otherC As String) As String
+    EqItems = It("ST", "DC", dead) & It("ST", "DW_1", dead) & It("ST", "DW_2", dead) & It("ST", MASS_CASE, ll) & It("RS", mainC, eqMain) & It("RS", otherC, eqOther)
+End Function
+
+' TKDY: Tablo 14 dead and LL factors; H-TKDY: minimum dead load (Tablo 15 DC min), no live load, as ALTYAPI
+Private Sub AddSeisCombs()
+    Dim t As String, k As Long, f As Variant, pr As Variant, q As Variant, envD As String
+    combNo = 0
+    f = facRows("TKDY")
+    pr = Array("X-1|EQ-X-(+)|EQ-Y-(+)", "Y-1|EQ-Y-(+)|EQ-X-(+)", "X-2|EQ-X-(+)|EQ-Y-(-)", "Y-2|EQ-Y-(-)|EQ-X-(+)", _
+               "X-3|EQ-X-(-)|EQ-Y-(+)", "Y-3|EQ-Y-(+)|EQ-X-(-)", "X-4|EQ-X-(-)|EQ-Y-(-)", "Y-4|EQ-Y-(-)|EQ-X-(-)")
+    For k = 0 To 7
+        q = Split(pr(k), "|")
+        t = t & IIf(k = 0, "", ",") & Comb("TKDY-EQ-" & q(0), 0, EqItems(f(0), f(1), CStr(q(1)), CStr(q(2))))
+        envD = envD & It("CB", "TKDY-EQ-" & q(0), 1)
+    Next k
+    For k = 0 To 7
+        q = Split(pr(k), "|")
+        t = t & "," & Comb("H-TKDY-EQ-" & q(0), 0, EqItems(dcMin, -1, CStr(q(1)), CStr(q(2))))
+        envD = envD & It("CB", "H-TKDY-EQ-" & q(0), 1)
+    Next k
+    Add "db/LCOM-GEN", "{""Assign"":{" & t & "}}"
+    Add "db/LCOM-GEN", "{""Assign"":{" & Comb("ENV_DEP", 1, envD) & "}}"
+End Sub
+
+Private Sub AddCombs()
+    Dim t As String, a As String, i As Long, k As Long, f As Variant, pr As Variant, q As Variant
+    Dim mins As Variant, maxs As Variant, envS As String, envR As String
+    combNo = 0
+    For i = 1 To nSp
+        a = a & It("ST", "IVME " & AxisName(i), 1)
+    Next i
+    ' combinations used by other combinations go first
+    t = Comb("IVME", 1, a)
+    t = t & "," & Comb("TU", 1, It("ST", "TU+", 1) & It("ST", "TU-", 1))
+    a = ""
+    For i = 1 To nFW
+        a = a & It("ST", "FREN " & i, 1)
+    Next i
+    t = t & "," & Comb("FREN", 1, a)
+    Add "db/LCOM-GEN", "{""Assign"":{" & t & "}}"
+    Add "db/LCOM-GEN", "{""Assign"":{" & Comb("IVME/FREN", 0, It("CB", "FREN", 1) & It("CB", "IVME", 1)) & "}}"
+    t = ""
+    For k = 1 To 4
+        t = t & IIf(t = "", "", ",") & Comb("Servis " & k, 0, TableItems("Servis-" & k, 0, k))
+        envS = envS & It("CB", "Servis " & k, 1)
+    Next k
+    mins = Array("STR-1-Min.", "STR-2-Min.", "STR-3-Min", "STR-4-Min.", "STR-5-Min")
+    maxs = Array("STR-1-Maks.", "STR-2-Maks.", "STR-3-Maks.", "STR-4-Maks.", "STR-5-Maks")
+    For k = 1 To 5
+        t = t & "," & Comb(CStr(mins(k - 1)), 0, TableItems("STR-" & k, 2, k))
+        t = t & "," & Comb(CStr(maxs(k - 1)), 0, TableItems("STR-" & k, 1, k))
+        envR = envR & It("CB", CStr(mins(k - 1)), 1) & It("CB", CStr(maxs(k - 1)), 1)
+    Next k
+    Add "db/LCOM-GEN", "{""Assign"":{" & t & "}}"
+    t = Comb("ENV_SER", 1, envS)
+    t = t & "," & Comb("ENV_STR", 1, envR)
+    Add "db/LCOM-GEN", "{""Assign"":{" & t & "}}"
+    Add "db/LCOM-GEN", "{""Assign"":{" & Comb("ENV_ALL", 1, It("CB", "ENV_SER", 1) & It("CB", "ENV_STR", 1)) & "}}"
+End Sub
 
 ' ============================================================================
 '  ENGINE (copied from MIDAS_USTYAPI)
@@ -1085,6 +1664,32 @@ HaveHeader:
     If Abs(kb(3) / 2 - (kb(2) / 2 + kb(6))) > 0.0005 Then warnText = warnText & "- KIRIS_INPUT: b4/2 <> b3/2 + b7." & vbCrLf
 End Sub
 
+' db/CO_S (Section Color): W = wireframe (2D), HF = hidden fill (3D surface), HE = hidden edge (3D outline)
+Private Function SectColorJson() As String
+    Dim i As Long, s As String
+    For i = 1 To nDk
+        s = s & ColorItem(DeckSec(i), 45, 110, 200, i) & "," & ColorItem(SlabSec(i), 60, 140, 75, i) & ","
+    Next i
+    s = s & ColorItem(SEC_CAP, 205, 125, 40, 1)
+    For i = 1 To nPS
+        s = s & "," & ColorItem(SEC_PIER0 + i - 1, 150, 150, 150, i)
+    Next i
+    SectColorJson = "{""Assign"":{" & s & "}}"
+End Function
+
+Private Function ColorItem(ByVal no As Long, ByVal r As Long, ByVal g As Long, ByVal bl As Long, ByVal typeNo As Long) As String
+    Dim f As Double, v(1 To 3) As Long, t(1 To 3) As Long, k As Long
+    f = 1 - SECT_SHADE_STEP * (typeNo - 1)
+    If f < 0.4 Then f = 0.4
+    v(1) = CLng(r * f): v(2) = CLng(g * f): v(3) = CLng(bl * f)
+    For k = 1 To 3
+        t(k) = CLng(v(k) + (255 - v(k)) * SECT_FILL_TINT)
+    Next k
+    ColorItem = QS(CStr(no)) & ":{""W_R"":" & v(1) & ",""W_G"":" & v(2) & ",""W_B"":" & v(3) & _
+        ",""HF_R"":" & t(1) & ",""HF_G"":" & t(2) & ",""HF_B"":" & t(3) & _
+        ",""HE_R"":" & v(1) & ",""HE_G"":" & v(2) & ",""HE_B"":" & v(3) & ",""bBLEMD"":false,""FACT"":0.5}"
+End Function
+
 Private Function AddNode(ByVal x As Double, ByVal y As Double, ByVal z As Double) As Long
     Dim k As String
     k = JN(Round(x, 6)) & "|" & JN(Round(y, 6)) & "|" & JN(Round(z, 6))
@@ -1138,9 +1743,36 @@ Private Sub Add(ByVal ep As String, ByVal body As String)
 End Sub
 
 Private Function CleanTables() As Variant
-    CleanTables = Array("LCOM-CONC", "LCOM-GEN", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
+    CleanTables = Array("LCOM-CONC", "LCOM-GEN", "BCCT", "DYNF", "SPLC", "SPFC", "ETMP", "CNLD", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
         "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", "SECF", _
         "NSPR", "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
+End Function
+
+' The project comment of a model built by this macro says which type it is (ends SEISMIC or not).
+Private Function ModelTypeOk(ByRef msg As String) As Boolean
+    Dim pj As String, wasSeis As Boolean, txt As String
+    ModelTypeOk = True
+    If Not Api("GET", "db/PJCF", "", pj) Then Exit Function
+    If InStr(pj, SCRIPT_ID) = 0 Then Exit Function
+    wasSeis = (InStr(pj, " SEISMIC") > 0)
+    If wasSeis = seisMode Then Exit Function
+    txt = "The model open in Civil NX is a " & IIf(wasSeis, "SEISMIC", "STATIC") & " model, but you are building the " & IIf(seisMode, "SEISMIC", "STATIC") & " model."
+    If askUser Then
+        If MsgBox(txt & vbCrLf & vbCrLf & "WIPE it anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) = vbYes Then Exit Function
+    End If
+    msg = "STOPPED: " & txt & " Nothing was changed. Open the right .mcb, or use an empty file."
+    ModelTypeOk = False
+End Function
+
+' stiffness factors of the seismic model: one record per section, no boundary group
+Private Function SecfCheck() As String
+    Dim resp As String, n As Long, nWant As Long, sReport As String
+    nWant = 2 * nDk + 1 + nPS
+    If Not Api("GET", "db/SECF", "", resp) Then SecfCheck = "  stiffness factors: FAIL (db/SECF not readable)" & vbCrLf: Exit Function
+    n = CountOf(resp, """IYY_SF"":")
+    sReport = "  stiffness factors " & n & " / " & nWant
+    If n <> nWant Then sReport = sReport & "  FAIL"
+    SecfCheck = sReport & vbCrLf
 End Function
 
 Private Function CleanModel() As String

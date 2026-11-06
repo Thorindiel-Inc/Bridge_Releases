@@ -19,8 +19,9 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "dxf-alignment"
-Private Const SCRIPT_VERSION As String = "2026-11-06b"
-Private Const SCRIPT_CHANGELOG As String = "G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked; centerline mode: axis X / Y from the drawn centerline into G_AKS_XY, only its layer asked, A1 from the lines crossing it (else asked), label mode removed; first version: alignment labels and axis stations from a plan DXF into INPUT, layers asked"
+Private Const SCRIPT_VERSION As String = "2026-11-06c"
+Private Const SCRIPT_CHANGELOG As String = "Span radius in the column next to G_AKS_XY (centrifugal load of MIDAS_KOPRU); G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked; centerline mode: axis X / Y from the drawn centerline into G_AKS_XY, only its layer asked, A1 from the lines crossing it (else asked), label mode removed; first version: alignment labels and axis stations from a plan DXF into INPUT, layers asked"
+Private Const R_STRAIGHT As Double = 50000#     ' a span flatter than this counts as straight (m)
 
 Private Const MSG_TITLE As String = "DXF_OKU"
 Private Const TOL_SPAN As Double = 0.02      ' m, crossing lines against the span list
@@ -46,7 +47,7 @@ Private sgX0() As Double, sgY0() As Double, sgX1() As Double, sgY1() As Double
 Private nCr As Long, crS() As Double, nMt As Long, mtS() As Double, mtD() As Long, mtW() As Double
 Private nSm As Long, smS() As Double, smX() As Double, smY() As Double, nTx As Long, txS() As Double, txKm() As Double
 Private nSp As Long, sp() As Double, cum() As Double
-Private axX() As Double, axY() As Double, axS() As Double, a1S As Double, a1Dir As Long, a1How As String
+Private axX() As Double, axY() As Double, axS() As Double, a1S As Double, a1Dir As Long, a1How As String, axR() As Double
 Private nNm As Long, nameS() As Double, nameT() As String
 
 Public Sub DXF_OKU_OLUSTUR()
@@ -750,6 +751,12 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
             If dv > wS Then wS = dv
         End If
     Next k
+    ReDim axR(1 To nSp)
+    Dim nCv As Long
+    For k = 1 To nSp
+        axR(k) = SpanRadius(k)
+        If axR(k) <> 0 Then nCv = nCv + 1
+    Next k
     cl = Sqr((axX(nSp) - axX(0)) ^ 2 + (axY(nSp) - axY(0)) ^ 2)
     For k = 1 To nSp - 1
         off = Abs((axX(nSp) - axX(0)) * (axY(k) - axY(0)) - (axY(nSp) - axY(0)) * (axX(k) - axX(0))) / cl
@@ -762,7 +769,32 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
     s = s & NameCheck()
     s = s & "A1 " & Format(axX(0), "0.000") & " / " & Format(axY(0), "0.000") & ", A2 " & Format(axX(nSp), "0.000") & " / " & Format(axY(nSp), "0.000") & vbCrLf
     s = s & "Chord A1-A2 " & Format(cl, "0.000") & " m, largest axis offset from it " & Format(mx, "0.000") & " m" & vbCrLf
+    s = s & "Spans on a curve: " & nCv & " of " & nSp & vbCrLf
     Process = s
+End Function
+
+' radius of span k: least-squares parabola v = a u (L - u) of the centerline about the span chord, sampled every
+' metre (the clothoids are drawn as chords, three points alone would be too noisy). R < 0 left, R > 0 right as in
+' the drawing labels, 0 = straight
+Private Function SpanRadius(ByVal k As Long) As Double
+    Dim n As Long, j As Long, s0 As Double, s1 As Double, L As Double, cx As Double, cy As Double, x As Double, y As Double
+    Dim u As Double, v As Double, w As Double, sn As Double, sd As Double, a As Double
+    s0 = axS(k - 1): s1 = axS(k)
+    L = Sqr((axX(k) - axX(k - 1)) ^ 2 + (axY(k) - axY(k - 1)) ^ 2)
+    If L <= 0 Then Exit Function
+    cx = (axX(k) - axX(k - 1)) / L: cy = (axY(k) - axY(k - 1)) / L
+    n = Int(Abs(s1 - s0)): If n < 8 Then n = 8
+    For j = 1 To n - 1
+        PointAt s0 + (s1 - s0) * j / n, x, y
+        u = (x - axX(k - 1)) * cx + (y - axY(k - 1)) * cy
+        v = -(x - axX(k - 1)) * cy + (y - axY(k - 1)) * cx
+        w = u * (L - u)
+        sn = sn + v * w: sd = sd + w * w
+    Next j
+    If sd <= 0 Then Exit Function
+    a = sn / sd
+    If Abs(a) < 0.5 / R_STRAIGHT Then Exit Function
+    SpanRadius = Round(1 / (2 * a), 1)
 End Function
 
 ' axis names near the line against the axis order: A1, P1 .. P(n-1), A2
@@ -813,9 +845,14 @@ Private Sub WriteTable()
     Dim t As Range, k As Long
     Set t = NamedRange("G_AKS_XY")
     t.ClearContents
+    t.Columns(1).Offset(0, 2).ClearContents
+    If t.Row > 1 Then t.Cells(0, 3).Value = "A" & ChrW(231) & ChrW(305) & "kl" & ChrW(305) & "k R (m)"
     For k = 0 To nSp
         t.Cells(k + 1, 1).Value = axX(k)
         t.Cells(k + 1, 2).Value = axY(k)
+        If k > 0 Then
+            If axR(k) <> 0 Then t.Cells(k, 3).Value = axR(k)
+        End If
     Next k
 End Sub
 
