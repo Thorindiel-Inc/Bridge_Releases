@@ -39,8 +39,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-06l"
-Private Const SCRIPT_CHANGELOG As String = "RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ...; Bearing values from the first span sheet 4<letter>_KDME of this workbook, no 4-7 file dialog"
+Private Const SCRIPT_VERSION As String = "2026-11-06m"
+Private Const SCRIPT_CHANGELOG As String = "Static and seismic models use AASHTO Ec, RTI Eurocode Ecm; RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ...; Bearing values from the first span sheet 4<letter>_KDME of this workbook, no 4-7 file dialog"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -92,7 +92,7 @@ Private Const Q_BAL As Long = 1, Q_KERB As Long = 2, Q_RAIL As Long = 3, Q_PANEL
 
 ' ---- inputs ----
 Private nG As Long, sG As Double, Hg As Double, Lc As Double, deckW As Double
-Private tc As Double, eG As Double, eS As Double, clsG As String, clsS As String, clsO As String
+Private tc As Double, eG As Double, eS As Double, eO As Double, denG As Double, denS As Double, clsG As String, clsS As String, clsO As String
 Private sark As Double, kyB As Double, kEB As Double, jointL As Double, eAx As Double
 Private capS(1 To 5) As Double, capL As Double, capOff As Double, capDrop As Double
 Private nSp As Long, spL() As Double, fixLeft() As Boolean
@@ -242,11 +242,17 @@ Private Sub ReadInputs(wb As Workbook)
     clientName = CStr(NmRange(wb, "G_IDARE_ADI").Cells(1).Value)
     bridgeName = CStr(NmRange(wb, "G_KOPRU_ADI").Cells(1).Value)
     tc = Num(NmRange(wb, "G_TABLIYE_KALINLIGI").Cells(1).Offset(0, 1).Value, "Tabliye Kalinligi (INPUT column C)")
+    ' concrete E (owner 2026-11-06): static and seismic = AASHTO Ec (INPUT column C), RTI = Eurocode Ecm (column D)
+    Dim eCol As Long, eTxt As String
+    eCol = IIf(rtiMode, 3, 2): eTxt = IIf(rtiMode, "Ecm (INPUT column D)", "AASHTO Ec (INPUT column C)")
     Set r = NmRange(wb, "G_KIRIS_BETONU"): clsG = CStr(r.Cells(1, 1).Value)
-    eG = Num(r.Cells(1, 3).Value, "Ecm kiris betonu (INPUT column D)")
+    eG = Num(r.Cells(1, eCol).Value, "Kiris betonu " & eTxt)
     Set r = NmRange(wb, "G_TABLIYE_BETONU"): clsS = CStr(r.Cells(1, 1).Value)
-    eS = Num(r.Cells(1, 3).Value, "Ecm tabliye betonu (INPUT column D)")
-    clsO = CStr(NmRange(wb, "G_DIGER_BETONLAR").Cells(1, 1).Value)
+    eS = Num(r.Cells(1, eCol).Value, "Tabliye betonu " & eTxt)
+    Set r = NmRange(wb, "G_DIGER_BETONLAR"): clsO = CStr(r.Cells(1, 1).Value)
+    eO = Num(r.Cells(1, eCol).Value, "Diger betonlar " & eTxt)
+    denG = Num(NmRange(wb, "G_BIRIM_AGIRLIK_ONGERME").Cells(1).Value, "G_BIRIM_AGIRLIK_ONGERME")
+    denS = Num(NmRange(wb, "G_BIRIM_AGIRLIK_BETONARME").Cells(1).Value, "G_BIRIM_AGIRLIK_BETONARME")
     eAx = Num(NmRange(wb, "G_AKS_MESNET").Cells(1).Value, "G_AKS_MESNET")
     For i = 1 To 5
         capS(i) = Num(NmRange(wb, "G_BASLIK_KESIT").Cells(i).Value, "G_BASLIK_KESIT row " & i)
@@ -984,8 +990,16 @@ Private Function DbSect(ByVal no As Long, ByVal nm As String, ByVal head As Stri
     DbSect = QS(CStr(no)) & ":{""SECTTYPE"":""DBUSER"",""SECT_NAME"":" & QS(nm) & ",""SECT_BEFORE"":{" & head & ",""SHAPE"":" & QS(shp) & ",""DATATYPE"":2,""SECT_I"":{""vSIZE"":[" & sz & "]}}}"
 End Function
 
-Private Function MatJson(ByVal no As Long, ByVal cls As String) As String
-    MatJson = QS(CStr(no)) & ":{""TYPE"":""CONC"",""NAME"":" & QS(cls) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(cls)) & "}]}"
+' RTI: the MIDAS EN04(RC) database = Eurocode Ecm. Static and seismic: user concrete with the AASHTO Ec of the
+' workbook (MPa -> kN/m2); Poisson, thermal coefficient and unit weight as the database, only E changes
+Private Function MatJson(ByVal no As Long, ByVal cls As String, ByVal eMpa As Double, ByVal den As Double) As String
+    Dim prm As String
+    If rtiMode Then
+        prm = "{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(cls)) & "}"
+    Else
+        prm = "{""P_TYPE"":2,""ELAST"":" & JN(eMpa * 1000#) & ",""POISN"":0.2,""THERMAL"":0.00001,""DEN"":" & JN(den) & ",""MASS"":0}"
+    End If
+    MatJson = QS(CStr(no)) & ":{""TYPE"":""CONC"",""NAME"":" & QS(cls) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[" & prm & "]}"
 End Function
 
 Private Sub BuildPayloads()
@@ -997,7 +1011,7 @@ Private Sub BuildPayloads()
         ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(seisMode, " SEISMIC", IIf(rtiMode, " RTI", "")))) & "}}}"
     Dim sMat As String
     If rtiMode Then sMat = "," & RailMat()
-    Add "db/MATL", "{""Assign"":{" & MatJson(1, clsG) & "," & MatJson(2, clsS) & "," & MatJson(3, clsO) & sMat & "}}"
+    Add "db/MATL", "{""Assign"":{" & MatJson(1, clsG, eG, denG) & "," & MatJson(2, clsS, eS, denS) & "," & MatJson(3, clsO, eO, denS) & sMat & "}}"
     s = ""
     For i = 1 To nDk
         s = s & DbSect(SlabSec(i), "DOSEME" & IIf(i = 1, "", "_" & i), SectHead2("CT", 0, 0), "SB", JN(tc) & "," & JN(tW(i)) & ",0,0,0,0,0,0,0,0") & ","
@@ -1151,7 +1165,7 @@ Private Function Summary() As String
         If fixLeft(i) Then f = f + 1
     Next i
     s = SCRIPT_ID & " " & SCRIPT_VERSION & vbCrLf & bridgeName & ": " & nSp & " spans, length " & Format(tot, "0.00") & " m, " & nSp - 1 & " piers" & vbCrLf & _
-        dkLog & "Slab " & Format(tc, "0.000") & " m, sarkiklik " & sark & " m; concrete " & clsG & " / " & clsS & " / " & clsO & " (MIDAS EN04 database)" & vbCrLf & _
+        dkLog & "Slab " & Format(tc, "0.000") & " m, sarkiklik " & sark & " m; concrete " & clsG & " / " & clsS & " / " & clsO & IIf(rtiMode, " (MIDAS EN04 database, Ecm)", " (AASHTO Ec " & Format(eG, "0") & " / " & Format(eS, "0") & " / " & Format(eO, "0") & " MPa)") & vbCrLf & _
         "Bearings: kv " & Format(kEB, "0") & ", free ky " & Format(kyB, "0.0") & ", kh " & Format(kFix, "0") & ", link " & linkLen & " m; " & f & " spans fixed left, " & nSp - f & " right" & vbCrLf & _
         "Cap " & capL & " m, pier top " & capDrop & " m below cap top; " & nPS & " pier section(s)" & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _

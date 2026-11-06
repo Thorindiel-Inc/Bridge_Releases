@@ -22,8 +22,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "mak-ll"
-Private Const SCRIPT_VERSION As String = "2026-11-06e"
-Private Const SCRIPT_CHANGELOG As String = "Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
+Private Const SCRIPT_VERSION As String = "2026-11-06f"
+Private Const SCRIPT_CHANGELOG As String = "Refuses the DYNAMIC model; Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MAK_LL"
@@ -100,6 +100,10 @@ Private Function RunEnvelope(wb As Workbook, ws As Worksheet, ByVal caseName As 
     If Not GetKey(wb) Then RunEnvelope = "Stopped: no MAPI key (4-7 INPUT!T3, MIDAS_MAPI_KEY or the prompt).": Exit Function
     Set http = Nothing
     Application.StatusBar = "MAK_LL: reading the model from Civil NX..."
+    If IsDynamicModel() Then
+        RunEnvelope = "Stopped: the model open in Civil NX is the DYNAMIC model. Its supports hold X at slab level and give false moments at the bearings." & vbCrLf & "Open the staged model and run MAK_LL again. The table was not changed."
+        Exit Function
+    End If
     Set nodes = TableGet("NODE")
     If nodes Is Nothing Then RunEnvelope = "Stopped: Civil NX does not answer or the model has no nodes (is the API connected?).": Exit Function
     Set elems = TableGet("ELEM")
@@ -181,7 +185,7 @@ Private Function RunEnvelope(wb As Workbook, ws As Worksheet, ByVal caseName As 
 
     WriteSheet ws, caseName, gLines.Count, gElem.Count, Lg, sark
     RunEnvelope = "Done: " & caseName & ", " & gLines.Count & " girders, " & nSt & " stations." & vbCrLf & _
-        "M max " & Format(MaxOf(resM), "0.0") & " kNm, V max " & Format(MaxOf(resV), "0.0") & " kN written to LL!X" & OUT_ROW & ":Y" & (OUT_ROW + nSt - 1) & "." & vbCrLf & _
+        "M max " & Format(MaxOf(resM), "0.0") & " kNm, V max " & Format(MaxOf(resV), "0.0") & " kN written to O" & OUT_ROW & ":P" & (OUT_ROW + nSt - 1) & "." & vbCrLf & _
         SCRIPT_ID & " " & SCRIPT_VERSION
 End Function
 
@@ -317,6 +321,19 @@ Private Function ForceRows(ByVal keys As String, ByVal lc As String) As Variant
 End Function
 
 ' ---- API ----
+' MIDAS_USTYAPI ends the PJCF comment with DYNAMIC on the dynamic model (owner 2026-11-06: live load from the
+' staged model only). An unreadable PJCF does not stop the macro.
+Private Function IsDynamicModel() As Boolean
+    Dim pj As Object, k As Variant
+    On Error GoTo Done
+    Set pj = TableGet("PJCF")
+    If pj Is Nothing Then Exit Function
+    For Each k In pj.keys
+        If Right$(UCase$(Trim$(CStr(GetField(pj(k), "COMMENT")))), 7) = "DYNAMIC" Then IsDynamicModel = True
+    Next k
+Done:
+End Function
+
 Private Function TableGet(ByVal t As String) As Object
     Dim resp As String, root As Object, k As Variant
     If Not Api("GET", "db/" & t, "", resp) Then Exit Function

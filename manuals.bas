@@ -8,7 +8,7 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-06f"
+Private Const SCRIPT_VERSION As String = "2026-11-06g"
 Private Const SCRIPT_CHANGELOG As String = "Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
@@ -102,7 +102,7 @@ Private Function P1_1() As String
     s = s & "</nav>" & vbLf
     s = s & "<main>" & vbLf
     s = s & "<h1 id=""midas_kopru-reference-manual"">MIDAS_KOPRU - reference manual</h1>" & vbLf
-    s = s & "<p>Macro <code>scripts/midas/MIDAS_KOPRU.bas</code>, version <strong>2026-11-06i</strong> (SCRIPT_ID <code>midas-bridge-build</code>)." & vbLf
+    s = s & "<p>Macro <code>scripts/midas/MIDAS_KOPRU.bas</code>, version <strong>2026-11-06m</strong> (SCRIPT_ID <code>midas-bridge-build</code>)." & vbLf
     s = s & "It builds the whole-bridge model (deck, bearings, caps, piers) in <strong>MIDAS Civil NX</strong> through the" & vbLf
     s = s & "MAPI REST API. You run it from <code>global/1-7_YHT_XXXXX_INT-LDS-DYN-RTI-KDME.xlsm</code>. The layout follows" & vbLf
     s = s & "<code>models/ALTYAPI.mct</code>, but every value comes from the workbooks, not from that file.</p>" & vbLf
@@ -266,7 +266,7 @@ Private Function P1_2() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Slab, concrete</td>" & vbLf
-    s = s & "<td><code>G_TABLIYE_KALINLIGI</code> (column C), <code>G_KIRIS_BETONU</code>, <code>G_TABLIYE_BETONU</code>, <code>G_DIGER_BETONLAR</code> (class, Ecm in column D)</td>" & vbLf
+    s = s & "<td><code>G_TABLIYE_KALINLIGI</code> (column C), <code>G_KIRIS_BETONU</code>, <code>G_TABLIYE_BETONU</code>, <code>G_DIGER_BETONLAR</code> (class; AASHTO Ec in column C, Ecm in column D), <code>G_BIRIM_AGIRLIK_ONGERME</code>, <code>G_BIRIM_AGIRLIK_BETONARME</code></td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Substructure</td>" & vbLf
@@ -529,7 +529,7 @@ Private Function P1_3() As String
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
-    s = s & "<p>Materials come from the MIDAS EN04(RC) database by class name.</p>" & vbLf
+    s = s & "<p>Concrete E depends on the model. Static and seismic: user concrete with the AASHTO Ec of INPUT column C (4800 &#8730;f'c), Poisson 0.2, thermal 1e-5, unit weight from the workbook. RTI: the MIDAS EN04(RC) database by class name, which is the Eurocode Ecm.</p>" & vbLf
     s = s & "<p><strong>Pier shapes</strong> (<code>G_AYAK_TABLOSU</code>):</p>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
     s = s & "<thead>" & vbLf
@@ -574,7 +574,7 @@ Private Function P1_3() As String
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>A, Iyy, Izz, centroid</td>" & vbLf
-    s = s & "<td>From the girder outlines and the slab, slab scaled by Ecm slab / Ecm girder</td>" & vbLf
+    s = s & "<td>From the girder outlines and the slab, slab scaled by E slab / E girder of that model (AASHTO Ec, or Ecm in the RTI model)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>J</td>" & vbLf
