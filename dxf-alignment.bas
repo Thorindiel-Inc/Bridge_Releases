@@ -6,21 +6,21 @@ Option Explicit
 '  Only the centerline layer is asked. The centerline may be one LWPOLYLINE (bulges = arcs)
 '  or LINE / ARC / LWPOLYLINE pieces that join end to end (TOL_JOIN). SPLINE, ELLIPSE, old
 '  POLYLINE and a closed polyline on that layer are refused. Paper space is skipped.
-'  Axes sit along the line at the span lengths (stations along the line; MIDAS_KOPRU makes
-'  each span a straight chord between its axes).
+'  Axes = the points where the drawn axis lines cross the centerline (MIDAS_KOPRU makes each
+'  span a straight chord between its axes). A1 given by hand: axes at the span lengths along the line.
 '  A1: found from the lines of every other layer that cross the centerline - the one run of
 '  span count + 1 crossings whose spacing along the line matches the span list (TOL_SPAN),
 '  in either direction of the line. If there is no such run, or more than one, the distance
 '  along the line from its first point to A1 is asked (negative = from its last point,
 '  against the drawing direction).
-'  Writing also clears G_GUZERGAH (the label table of version 2026-11-05a).
+'  Texts A1, A2, P1, P2 ... near the line are checked against the axis order (warning only).
 '  Button macro: DXF_OKU_OLUSTUR. Scripted: DXF_OKU_RUN path, layer, reportFile[, a1Dist]
 '  (layer "" = best guess, a1Dist "" = find A1). Nothing is written if a check fails.
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "dxf-alignment"
-Private Const SCRIPT_VERSION As String = "2026-11-05b"
-Private Const SCRIPT_CHANGELOG As String = "Centerline mode: axis X / Y from the drawn centerline into G_AKS_XY, only its layer asked, A1 from the lines crossing it (else asked), label mode removed; first version: alignment labels and axis stations from a plan DXF into INPUT, layers asked"
+Private Const SCRIPT_VERSION As String = "2026-11-06b"
+Private Const SCRIPT_CHANGELOG As String = "G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked; centerline mode: axis X / Y from the drawn centerline into G_AKS_XY, only its layer asked, A1 from the lines crossing it (else asked), label mode removed; first version: alignment labels and axis stations from a plan DXF into INPUT, layers asked"
 
 Private Const MSG_TITLE As String = "DXF_OKU"
 Private Const TOL_SPAN As Double = 0.02      ' m, crossing lines against the span list
@@ -29,7 +29,7 @@ Private Const TXT_NEAR As Double = 50#       ' m, station text to the centerline
 Private Const SAMPLE_DS As Double = 1#       ' m, sample spacing along the line for station texts
 Private Const PI As Double = 3.14159265358979
 
-Private dl() As String, nDl As Long, reSt As Object
+Private dl() As String, nDl As Long, reSt As Object, reNm As Object
 ' entity being read
 Private eTyp As String, eLay As String, ePaper As Boolean, eZ As Double, eFlag As Long, eClosed As Boolean, eTxt As String
 Private nV As Long, vX() As Double, vY() As Double, vB() As Double
@@ -46,7 +46,8 @@ Private sgX0() As Double, sgY0() As Double, sgX1() As Double, sgY1() As Double
 Private nCr As Long, crS() As Double, nMt As Long, mtS() As Double, mtD() As Long, mtW() As Double
 Private nSm As Long, smS() As Double, smX() As Double, smY() As Double, nTx As Long, txS() As Double, txKm() As Double
 Private nSp As Long, sp() As Double, cum() As Double
-Private axX() As Double, axY() As Double, a1S As Double, a1Dir As Long, a1How As String
+Private axX() As Double, axY() As Double, axS() As Double, a1S As Double, a1Dir As Long, a1How As String
+Private nNm As Long, nameS() As Double, nameT() As String
 
 Public Sub DXF_OKU_OLUSTUR()
     Dim v As Variant, msg As String, lay As String
@@ -544,15 +545,19 @@ Private Sub SortCr(ByVal lo As Long, ByVal hi As Long)
 End Sub
 
 Private Function NearestCr(ByVal s As Double) As Double
-    Dim lo As Long, hi As Long, m As Long, d As Double
+    NearestCr = Abs(NearestCrS(s) - s)
+End Function
+
+' station of the crossing nearest to s
+Private Function NearestCrS(ByVal s As Double) As Double
+    Dim lo As Long, hi As Long, m As Long
     lo = 1: hi = nCr
     Do While hi - lo > 1
         m = (lo + hi) \ 2
         If crS(m) < s Then lo = m Else hi = m
     Loop
-    d = Abs(crS(lo) - s)
-    If Abs(crS(hi) - s) < d Then d = Abs(crS(hi) - s)
-    NearestCr = d
+    NearestCrS = crS(lo)
+    If Abs(crS(hi) - s) < Abs(crS(lo) - s) Then NearestCrS = crS(hi)
 End Function
 
 ' runs of crossings matching the span list; returns how many distinct runs (mtS / mtD / mtW, best first in a1S / a1Dir)
@@ -590,9 +595,10 @@ End Function
 
 ' station texts (101+848.373) near the line, at the distance along the line of the nearest sample point
 Private Sub AddStationText()
-    Dim m As Object, k As Long, b As Long, d As Double, dB As Double
+    Dim m As Object, k As Long, b As Long, d As Double, dB As Double, isNm As Boolean
     If nV < 1 Then Exit Sub
-    If Not reSt.Test(eTxt) Then Exit Sub
+    isNm = reNm.Test(Trim$(eTxt))
+    If Not isNm And Not reSt.Test(eTxt) Then Exit Sub
     If vX(1) < bbX0 - TXT_NEAR Or vX(1) > bbX1 + TXT_NEAR Or vY(1) < bbY0 - TXT_NEAR Or vY(1) > bbY1 + TXT_NEAR Then Exit Sub
     dB = 1E+30
     For k = 1 To nSm
@@ -600,6 +606,12 @@ Private Sub AddStationText()
         If d < dB Then dB = d: b = k
     Next k
     If dB > TXT_NEAR ^ 2 Then Exit Sub
+    If isNm Then
+        nNm = nNm + 1
+        If nNm > UBound(nameS) Then ReDim Preserve nameS(1 To nNm * 2): ReDim Preserve nameT(1 To nNm * 2)
+        nameS(nNm) = smS(b): nameT(nNm) = UCase$(Trim$(eTxt))
+        Exit Sub
+    End If
     Set m = reSt.Execute(eTxt)(0)
     nTx = nTx + 1
     If nTx > UBound(txS) Then ReDim Preserve txS(1 To nTx * 2): ReDim Preserve txKm(1 To nTx * 2)
@@ -672,13 +684,13 @@ End Sub
 
 Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask As Boolean) As String
     Dim t As Range, w As Double, nM As Long, why As String, v As String, k As Long, e As Double
-    Dim cl As Double, off As Double, mx As Double, s As String
+    Dim cl As Double, off As Double, mx As Double, s As String, drawn As Boolean, dv As Double, wS As Double
     Set t = NamedRange("G_AKS_XY")
     ReadSpans
     If t.Rows.Count < nSp + 1 Then Err.Raise vbObjectError + 7, , "G_AKS_XY has " & t.Rows.Count & " rows, the bridge has " & nSp + 1 & " axes."
     ReadPieces lay
     BuildChain lay
-    a1How = ""
+    a1How = "": nNm = 0
     If Trim$(a1Dist) <> "" Then
         SetA1 Val(Replace(a1Dist, ",", "."))
         a1How = "given"
@@ -686,6 +698,9 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
         Samples
         Set reSt = CreateObject("VBScript.RegExp")
         reSt.Pattern = "(?:^|[^0-9])(\d{1,3})\+(\d{3}\.\d{3})(?:$|[^0-9])": reSt.IgnoreCase = False: reSt.Global = False
+        Set reNm = CreateObject("VBScript.RegExp")
+        reNm.Pattern = "^(A[12]|P[0-9]+)$": reNm.IgnoreCase = True: reNm.Global = False
+        ReDim nameS(1 To 128): ReDim nameT(1 To 128)
         nCr = 0: ReDim crS(1 To 1024)
         nTx = 0: ReDim txS(1 To 128): ReDim txKm(1 To 128)
         Scan 3, lay
@@ -706,6 +721,7 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
             End If
         End If
         If nM = 1 Then
+            drawn = True
             a1How = "from the lines crossing the centerline (" & nSp + 1 & " crossings match the span list, worst " & Format(w, "0.000") & " m" & IIf(pick > 0, "; direction from " & votes, "") & ")"
         Else
             If nM = 0 Then
@@ -724,9 +740,15 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
     e = a1S + a1Dir * cum(nSp)
     If a1S < -0.001 Or a1S > totLen + 0.001 Or e < -0.001 Or e > totLen + 0.001 Then Err.Raise vbObjectError + 9, , _
         "The bridge (" & Format(cum(nSp), "0.000") & " m) runs past the end of the centerline (" & Format(totLen, "0.000") & " m, A1 at " & Format(a1S, "0.000") & " m " & IIf(a1Dir = 1, "along", "against") & " the line)."
-    ReDim axX(0 To nSp): ReDim axY(0 To nSp)
+    ReDim axX(0 To nSp): ReDim axY(0 To nSp): ReDim axS(0 To nSp)
     For k = 0 To nSp
-        PointAt a1S + a1Dir * cum(k), axX(k), axY(k)
+        axS(k) = a1S + a1Dir * cum(k)
+        If drawn Then axS(k) = NearestCrS(axS(k))
+        PointAt axS(k), axX(k), axY(k)
+        If k > 0 Then
+            dv = Abs(Abs(axS(k) - axS(k - 1)) - sp(k))
+            If dv > wS Then wS = dv
+        End If
     Next k
     cl = Sqr((axX(nSp) - axX(0)) ^ 2 + (axY(nSp) - axY(0)) ^ 2)
     For k = 1 To nSp - 1
@@ -736,10 +758,36 @@ Private Function Process(ByVal lay As String, ByVal a1Dist As String, ByVal ask 
     s = SCRIPT_ID & " " & SCRIPT_VERSION & vbCrLf
     s = s & "Centerline: " & nPc & " piece(s), " & nCh - 1 & " segments (" & nArc & " arcs), " & Format(totLen, "0.000") & " m" & vbCrLf
     s = s & "A1 " & a1How & ": " & Format(a1S, "0.000") & " m from the first point, axes " & IIf(a1Dir = 1, "along", "against") & " the drawing direction" & vbCrLf
-    s = s & nSp + 1 & " axes, spans total " & Format(cum(nSp), "0.000") & " m along the line" & vbCrLf
+    s = s & nSp + 1 & " axes " & IIf(drawn, "at the drawn crossing points, worst span against the list " & Format(wS, "0.000") & " m", "at the span lengths along the line") & ", spans total " & Format(cum(nSp), "0.000") & " m" & vbCrLf
+    s = s & NameCheck()
     s = s & "A1 " & Format(axX(0), "0.000") & " / " & Format(axY(0), "0.000") & ", A2 " & Format(axX(nSp), "0.000") & " / " & Format(axY(nSp), "0.000") & vbCrLf
     s = s & "Chord A1-A2 " & Format(cl, "0.000") & " m, largest axis offset from it " & Format(mx, "0.000") & " m" & vbCrLf
     Process = s
+End Function
+
+' axis names near the line against the axis order: A1, P1 .. P(n-1), A2
+Private Function NameCheck() As String
+    Dim i As Long, k As Long, b As Long, dB As Double, d As Double, w As String, nOk As Long, nBadN As Long, bad As String
+    If nNm = 0 Then Exit Function
+    For i = 1 To nNm
+        dB = 1E+30
+        For k = 0 To nSp
+            d = Abs(nameS(i) - axS(k))
+            If d < dB Then dB = d: b = k
+        Next k
+        w = IIf(b = 0, "A1", IIf(b = nSp, "A2", "P" & b))
+        If nameT(i) = w Then
+            nOk = nOk + 1
+        Else
+            nBadN = nBadN + 1
+            If nBadN <= 5 Then bad = bad & " " & nameT(i) & " at axis " & w
+        End If
+    Next i
+    If nBadN = 0 And nOk = nSp + 1 Then
+        NameCheck = "Axis names: all " & nOk & " in order" & vbCrLf
+    Else
+        NameCheck = "WARNING axis names: " & nOk & " of " & nSp + 1 & " in order, " & nBadN & " wrong" & IIf(bad = "", "", ":" & bad) & vbCrLf
+    End If
 End Function
 
 ' ---- table ------------------------------------------------------------------
@@ -753,27 +801,22 @@ Private Function NamedRange(ByVal nm As String) As Range
         Set ws = ThisWorkbook.Worksheets("INPUT")
         On Error GoTo 0
         If Not ws Is Nothing Then
-            ws.Cells(249, 1).Value = "Aks Noktalari (DXF Merkez Hatti)"
-            ws.Cells(250, 1).Value = "Aks X": ws.Cells(250, 2).Value = "Aks Y"
-            ThisWorkbook.Names.Add Name:="G_AKS_XY", RefersTo:=ws.Range("A251:B311")
-            Set NamedRange = ws.Range("A251:B311")
+            ws.Cells(223, 1).Value = "Aks X": ws.Cells(223, 2).Value = "Aks Y"
+            ThisWorkbook.Names.Add Name:="G_AKS_XY", RefersTo:=ws.Range("A224:B264")
+            Set NamedRange = ws.Range("A224:B264")
         End If
     End If
     If NamedRange Is Nothing Then Err.Raise vbObjectError + 20, , "INPUT name " & nm & " is missing in this workbook."
 End Function
 
 Private Sub WriteTable()
-    Dim t As Range, k As Long, g As Range
+    Dim t As Range, k As Long
     Set t = NamedRange("G_AKS_XY")
     t.ClearContents
     For k = 0 To nSp
         t.Cells(k + 1, 1).Value = axX(k)
         t.Cells(k + 1, 2).Value = axY(k)
     Next k
-    On Error Resume Next
-    Set g = ThisWorkbook.Names("G_GUZERGAH").RefersToRange
-    On Error GoTo 0
-    If Not g Is Nothing Then g.ClearContents
 End Sub
 
 Private Function Atn2(ByVal yy As Double, ByVal xx As Double) As Double

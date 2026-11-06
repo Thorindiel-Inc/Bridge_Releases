@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-05d"
-Private Const SCRIPT_CHANGELOG As String = "Self-weight mass in X, Y and Z (was Z only); Staged or Dynamic model pop-up; dynamic = no stages, no tendons, no links (girder nodes: X Y start, Y end, vertical springs kv from 4-7), static-based combinations, girder J brought to Hambly with measured SECF factors. Slab strips use db/SECF; warning if skew is not 0."
+Private Const SCRIPT_VERSION As String = "2026-11-06a"
+Private Const SCRIPT_CHANGELOG As String = "Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only); Staged or Dynamic model pop-up; dynamic = no stages, no tendons, no links (girder nodes: X Y start, Y end, vertical springs kv from 4-7), static-based combinations, girder J brought to Hambly with measured SECF factors. Slab strips use db/SECF; warning if skew is not 0."
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -914,7 +914,7 @@ Private Sub BuildPayloads()
     Dim s As String, i As Long, j As Long, k As Variant, cnt As Long
     Set payloads = New Collection
     Add "db/UNIT", "{""Assign"":{""1"":{""FORCE"":""KN"",""DIST"":""M"",""HEAT"":""J"",""TEMPER"":""C""}}}"
-    Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":true,""bSELFWEIGHT"":true,""SMASS"":1}}}"
+    Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":false,""bSELFWEIGHT"":true,""SMASS"":1}}}"
     ' PJCF: Civil NX rejects longer than 80 characters and (not always) Turkish letters -> ASCII, 80 max
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
         ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj("Hesap Acikligi - " & spanNo & " = " & Lc & " m; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(dynMode, " DYNAMIC", ""))) & "}}}"

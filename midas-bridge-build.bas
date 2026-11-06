@@ -22,18 +22,17 @@ Option Explicit
 '  Levels: deck node Z 0 (section offset CT), bearing top -(H + tc), bearing bottom = cap
 '  top node level, pier top = cap top - G_KOLON_BAGLANTI, pier base = pier top - height.
 '  X: A1 bearing axis = 0; pier bearings G_AKS_MESNET from the pier axis.
-'  Plan (owner 2026-11-05): G_GUZERGAH filled = axes on the alignment (km from G_KM_A1), each
-'  span a straight chord between its axes, caps on the bisector of the two chords, piers and
-'  bearing links turned with them; model X = chord A1 to A2. Empty table = straight. Level deck.
-'  G_AKS_XY (axis X / Y from the DXF centerline, DXF_OKU 2026-11-05b) comes first: filled =
-'  those points (A1 first, span count + 1 rows, chords checked against the span list).
+'  Plan: G_AKS_XY (axis X / Y from the DXF, DXF_OKU; A1 first, span count + 1 rows, chords checked
+'  against the span list) filled = each span a straight chord between its axes, caps on the
+'  bisector of the two chords, piers and bearing links turned with them; model X = chord A1 to A2.
+'  Empty table = straight. Level deck.
 '  Numbers stay below 10500 so the rail layer (RTI) can be added later.
 '  MAPI key: INPUT!T3, else MIDAS_MAPI_KEY, else asked (memory only).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-05h"
-Private Const SCRIPT_CHANGELOG As String = "Plan from G_AKS_XY (axis points of the DXF centerline) before G_GUZERGAH, STYP bMASSOFFSET true (consider mass at centroid); horizontal alignment from G_GUZERGAH: axes on the curve, chord spans, radial caps, piers and links turned; pier elements: at least 5 equal, none over 3 m; self-weight mass in X, Y and Z (was Z only), as ALTYAPI; deck types per span (Yatay Gabari + Kiris), box and solid piers; whole-section J, Asy, Asz of the deck solved in the macro; deck section with calculated properties (Civil NX refuses zero stiffness); clean pass skipped on an empty model; first version, step A: whole-bridge geometry (deck stick, bearings, caps, piers, fixed bases)"
+Private Const SCRIPT_VERSION As String = "2026-11-06b"
+Private Const SCRIPT_CHANGELOG As String = "Warning when G_AKS_XY is empty (straight plan); mass at the centroid of section (STYP bMASSOFFSET false; the 05h feed copy had true); old G_GUZERGAH / G_KM_A1 route removed, plan from G_AKS_XY only; horizontal alignment from G_GUZERGAH: axes on the curve, chord spans, radial caps, piers and links turned; pier elements: at least 5 equal, none over 3 m; self-weight mass in X, Y and Z (was Z only), as ALTYAPI; deck types per span (Yatay Gabari + Kiris), box and solid piers; whole-section J, Asy, Asz of the deck solved in the macro; deck section with calculated properties (Civil NX refuses zero stiffness); clean pass skipped on an empty model; first version, step A: whole-bridge geometry (deck stick, bearings, caps, piers, fixed bases)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -51,7 +50,6 @@ Private Const SEC_SLAB0 As Long = 40          ' slab of deck type d: section 2 f
 Private Const SEC_PIER0 As Long = 60
 Private Const MAX_TYPES As Long = 20
 Private Const PI As Double = 3.14159265358979
-Private Const ALIGN_DS As Double = 0.25        ' integration step along the alignment (m)
 Private Const NUM_LIMIT As Long = 10500         ' rail layer numbers start here
 Private Const SOLVE_H As Double = 0.05          ' deck section solver: coarse cell size (m); fine = half
 
@@ -82,7 +80,7 @@ Private rigdJson As String, elnkJson As String, consJson As String, nLink As Lon
 Private capSlaves As Object, polyArea As Double, deckArea As Double
 ' plan: axis points, cap direction (unit), span chord direction (unit), chord length, heading (deg)
 Private pxA() As Double, pyA() As Double, rxA() As Double, ryA() As Double, cxS() As Double, cyS() As Double, lenS() As Double, phiS() As Double, phiA() As Double
-Private pierAng As Object, nAlign As Long, maxOff As Double, nAxXY As Long
+Private pierAng As Object, maxOff As Double, nAxXY As Long
 Private gCz As Double, gIy As Double, gIz As Double, gPer As Double
 Private dkLog As String
 
@@ -346,68 +344,16 @@ Private Sub CheckBearing(ByVal v As Variant, ByVal where As String)
     If Val(Mid$(Trim$(CStr(v)), InStrRev(Trim$(CStr(v)), "-") + 1)) <> 1 Then Err.Raise vbObjectError + 38, , where & ": '" & v & "'. 4-7 reports kv and ky for Mesnet - 1 only for now."
 End Sub
 
-' plan of the axes. Curvature along the alignment: R < 0 = left, heading counter-clockwise in the model
-' (checked against the V2 drawing); transition = straight line between the curvatures of its neighbours.
+' plan of the axes: G_AKS_XY (DXF_OKU) if filled, else straight
 Private Sub BuildPlan()
-    Dim t As Range, n As Long, r As Long, s0 As Double, i As Long
-    Dim sA() As Double, sB() As Double, kA() As Double, kB() As Double, tp As String
+    Dim i As Long
     ReDim pxA(0 To nSp): ReDim pyA(0 To nSp): ReDim rxA(0 To nSp): ReDim ryA(0 To nSp)
     ReDim cxS(1 To nSp): ReDim cyS(1 To nSp): ReDim lenS(1 To nSp): ReDim phiS(1 To nSp): ReDim phiA(0 To nSp)
-    Set t = NmRange(ThisWorkbook, "G_GUZERGAH")
-    For r = 1 To t.Rows.Count
-        If IsEmpty(t.Cells(r, 1).Value) Then Exit For
-        n = n + 1
-    Next r
-    nAlign = n
     nAxXY = ReadAxisXY()
-    If nAxXY > 0 Then nAlign = 0
-    If nAxXY > 0 Then
-        ' axis points read from G_AKS_XY (A1 at the origin)
-    ElseIf n = 0 Then
+    If nAxXY = 0 Then
+        warnText = warnText & "- G_AKS_XY is empty: the bridge is built STRAIGHT. Check the name range or run DXF OKU." & vbCrLf
         For i = 1 To nSp: pxA(i) = pxA(i - 1) + spL(i): Next i
     Else
-        s0 = Num(NmRange(ThisWorkbook, "G_KM_A1").Cells(1).Value, "G_KM_A1")
-        ReDim sA(1 To n): ReDim sB(1 To n): ReDim kA(1 To n): ReDim kB(1 To n)
-        For r = 1 To n
-            sA(r) = Num(t.Cells(r, 1).Value, "G_GUZERGAH row " & r) - s0
-            sB(r) = Num(t.Cells(r, 2).Value, "G_GUZERGAH row " & r) - s0
-            tp = UCase$(Trim$(CStr(t.Cells(r, 3).Value)))
-            If tp = "KURP" Then
-                kA(r) = -1 / Num(t.Cells(r, 4).Value, "G_GUZERGAH R row " & r): kB(r) = kA(r)
-            ElseIf tp <> "DOGRU" And tp <> "GECIS" Then
-                Err.Raise vbObjectError + 41, , "G_GUZERGAH row " & r & ": Tip must be KURP, GECIS or DOGRU."
-            End If
-        Next r
-        For r = 1 To n
-            If UCase$(Trim$(CStr(t.Cells(r, 3).Value))) = "GECIS" Then
-                If r = 1 Or r = n Then Err.Raise vbObjectError + 42, , "G_GUZERGAH: a transition at the start or end of the bridge is not supported yet."
-                kA(r) = kB(r - 1): kB(r) = kA(r + 1)
-            End If
-        Next r
-        ' walk along the alignment, store the point at each axis
-        Dim x As Double, y As Double, th As Double, sNow As Double, ds As Double, ax As Long, sNext As Double, cum As Double, e As Long, km As Double, sM As Double
-        ax = 0: cum = 0: e = 1
-        Do While ax <= nSp
-            sNext = sNow + ALIGN_DS
-            If sNext > cum Then sNext = cum
-            ds = sNext - sNow
-            If ds > 0 Then
-                sM = sNow + ds / 2
-                Do While e < n And sM > sB(e): e = e + 1: Loop
-                km = kA(e) + (kB(e) - kA(e)) * (sM - sA(e)) / (sB(e) - sA(e))
-                x = x + ds * Cos(th + km * ds / 2)
-                y = y + ds * Sin(th + km * ds / 2)
-                th = th + km * ds
-                sNow = sNext
-            End If
-            If sNow >= cum - 0.0000001 Then
-                pxA(ax) = x: pyA(ax) = y
-                ax = ax + 1
-                If ax <= nSp Then cum = cum + spL(ax)
-            End If
-        Loop
-    End If
-    If nAxXY > 0 Or nAlign > 0 Then
         ' model X = chord A1 to A2
         Dim a As Double, c As Double, sn As Double, xx As Double
         a = Atn2(pyA(nSp) - pyA(0), pxA(nSp) - pxA(0))
@@ -934,7 +880,7 @@ Private Sub BuildPayloads()
     Dim s As String, i As Long, sz As String
     Set payloads = New Collection
     Add "db/UNIT", "{""Assign"":{""1"":{""FORCE"":""KN"",""DIST"":""M"",""HEAT"":""J"",""TEMPER"":""C""}}}"
-    Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":true,""bSELFWEIGHT"":true,""SMASS"":1}}}"
+    Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":false,""bSELFWEIGHT"":true,""SMASS"":1}}}"
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
         ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION)) & "}}}"
     Add "db/MATL", "{""Assign"":{" & MatJson(1, clsG) & "," & MatJson(2, clsS) & "," & MatJson(3, clsO) & "}}"
@@ -1078,7 +1024,7 @@ Private Function Summary() As String
         "Bearings: kv " & Format(kEB, "0") & ", free ky " & Format(kyB, "0.0") & ", kh " & Format(kFix, "0") & ", link " & linkLen & " m; " & f & " spans fixed left, " & nSp - f & " right" & vbCrLf & _
         "Cap " & capL & " m, pier top " & capDrop & " m below cap top; " & nPS & " pier section(s)" & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
-        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF centerline), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", IIf(nAlign > 0, "Plan: " & nAlign & " alignment elements, largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight (G_AKS_XY and G_GUZERGAH empty)")) & vbCrLf & _
+        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & _
         "Geometry only: no loads, no spectra, no combinations."
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     Summary = s
