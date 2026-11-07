@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-07a"
-Private Const SCRIPT_CHANGELOG As String = "Comment only: staged ESSF behaviour on Civil NX 2026 v2.3; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-07b"
+Private Const SCRIPT_CHANGELOG As String = "Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -91,6 +91,7 @@ Private kSol As Double, h1 As Double, h2 As Double, kSag As Double
 Private tc As Double, tMin As Double, enlB As Double, enlH As Double
 Private disB As Double, disL As Double   ' outer end beam (dis enleme) beyond the girder ends (1-2 G_DIS_ENLEME_*)
 Private eG As Double, eS As Double, clsG As String, clsS As String
+Private denG As Double, denS As Double   ' unit weights for the staged model's user materials (kN/m3)
 Private qBal As Double, qKor As Double, qBor As Double, qKork As Double, qCep As Double, qRay As Double
 Private sark As Double, kyB As Double, kEB As Double
 Private wG As Double, wV As Double, alphaLM As Double, tuPos As Double, tuNeg As Double, qtk As Double, railH As Double
@@ -314,10 +315,16 @@ Private Sub ReadInputs(wb12 As Workbook)
 ' bottom = girder H + tc + bearing (link) height from the pop-up (owner 2026-11-03; 1-2 G_DIS_ENLEME_YUKSEKLIGI not used)
     enlH = enlH - tMin + tc
 
+    ' concrete E (owner 2026-11-07): staged model = AASHTO Ec (INPUT column C), it feeds the AASHTO girder
+    ' design; dynamic model = Eurocode Ecm (column D). The same E sets the composite modular ratio eG / eS.
+    Dim eCol As Long, eTxt As String
+    eCol = IIf(dynMode, 3, 2): eTxt = IIf(dynMode, "Ecm (INPUT column D)", "AASHTO Ec (INPUT column C)")
     Set r = NmRange(wb12, "G_KIRIS_BETONU"): clsG = CStr(r.Cells(1, 1).Value)
-    eG = Num(r.Cells(1, 3).Value, "Ecm kiris betonu (INPUT column D)")
+    eG = Num(r.Cells(1, eCol).Value, "Kiris betonu " & eTxt)
     Set r = NmRange(wb12, "G_TABLIYE_BETONU"): clsS = CStr(r.Cells(1, 1).Value)
-    eS = Num(r.Cells(1, 3).Value, "Ecm tabliye betonu (INPUT column D)")
+    eS = Num(r.Cells(1, eCol).Value, "Tabliye betonu " & eTxt)
+    denG = Num(NmRange(wb12, "G_BIRIM_AGIRLIK_ONGERME").Cells(1).Value, "G_BIRIM_AGIRLIK_ONGERME")
+    denS = Num(NmRange(wb12, "G_BIRIM_AGIRLIK_BETONARME").Cells(1).Value, "G_BIRIM_AGIRLIK_BETONARME")
 
     qBal = Num(NmRange(wb12, "G_YUK_BALAST").Cells(k).Value, "G_YUK_BALAST span " & k)
     qKor = Num(NmRange(wb12, "G_YUK_KORUMA_BETONU").Cells(k).Value, "G_YUK_KORUMA_BETONU span " & k)
@@ -896,8 +903,7 @@ Private Sub BuildPayloads()
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
         ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj("Hesap Acikligi - " & spanNo & " = " & Lc & " m; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(dynMode, " DYNAMIC", ""))) & "}}}"
     Add "db/MATL", "{""Assign"":{" & _
-        """1"":{""TYPE"":""CONC"",""NAME"":" & QS(clsG) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(clsG)) & "}]}," & _
-        """2"":{""TYPE"":""CONC"",""NAME"":" & QS(clsS) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(clsS)) & "}]}," & _
+        ConcMat(1, clsG, eG, denG) & "," & ConcMat(2, clsS, eS, denS) & "," & _
         """3"":{""TYPE"":""CONC"",""NAME"":""Dummy"",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[{""P_TYPE"":2,""ELAST"":" & JN(eS * 1000#) & ",""POISN"":0.2,""THERMAL"":0.00001,""DEN"":0}]}," & _
         """4"":{""TYPE"":""STEEL"",""NAME"":""HALAT"",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.02,""PARAM"":[{""P_TYPE"":2,""ELAST"":" & JN(epS * 1000#) & ",""POISN"":0.3,""THERMAL"":0.000012,""DEN"":78.5}]}}}"
     ' time-dependent concrete (owner 2026-11-03): AASHTO creep/shrinkage (AASHTO 2020 5.4.2.3), strength gain
@@ -1386,6 +1392,18 @@ Private Function Comb(ByVal no As Long, ByVal nm As String, ByVal act As String,
         IIf(conc, ",""bES"":false", "") & ",""bCB"":" & IIf(bCB, "true", "false") & ",""iTYPE"":" & iType & ",""DESC"":"""",""vCOMB"":[" & s & "]}"
 End Function
 
+' girder / slab concrete. Dynamic: EN04(RC) database (Ecm, 25 kN/m3). Staged: user concrete with the AASHTO Ec
+' and the workbook unit weight; Poisson 0.2 and thermal 1e-5 as in the database.
+Private Function ConcMat(ByVal no As Long, ByVal cls As String, ByVal eMpa As Double, ByVal den As Double) As String
+    Dim prm As String
+    If dynMode Then
+        prm = "{""P_TYPE"":1,""STANDARD"":""EN04(RC)"",""CODE"":"""",""DB"":" & QS(EnDb(cls)) & "}"
+    Else
+        prm = "{""P_TYPE"":2,""ELAST"":" & JN(eMpa * 1000#) & ",""POISN"":0.2,""THERMAL"":0.00001,""DEN"":" & JN(den) & "}"
+    End If
+    ConcMat = QS(CStr(no)) & ":{""TYPE"":""CONC"",""NAME"":" & QS(cls) & ",""HE_SPEC"":0,""HE_COND"":0,""bMASS_DENS"":false,""DAMP_RAT"":0.05,""PARAM"":[" & prm & "]}"
+End Function
+
 Private Function EnDb(ByVal cls As String) As String
     Dim a As Variant, i As Long, c As String
     c = UCase$(Replace(Trim$(cls), " ", ""))
@@ -1839,6 +1857,7 @@ Private Function Summary() As String
         nG & " x " & KirisAdi() & " @ " & sG & " m, H " & Hg & ", A " & Format(polyArea, "0.00000") & " / Y " & Format(polyAreaY, "0.00000") & " m2, slab " & Format(tc, "0.000") & vbCrLf & _
         "Deck " & Format(yR - yL, "0.000") & " m, " & nTr & " track(s) on girders " & trG(1) + 1 & IIf(nTr = 2, "/" & trG(IIf(nTr = 2, 2, 1)) + 1, "") & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & payloads.Count & " tables" & vbCrLf & _
+        "Concrete " & clsG & " / " & clsS & ": " & IIf(dynMode, "Eurocode Ecm ", "AASHTO Ec ") & Format(eG, "0") & " / " & Format(eS, "0") & " MPa, ratio " & Format(eG / eS, "0.0000") & vbCrLf & _
         "Bearings: kE " & Format(kEB, "0") & ", ky " & Format(kyB, "0.0") & ", fixed " & Format(kFix, "0") & ", link " & linkLen & " m" & vbCrLf & _
         "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & ", end beam " & disB & " x " & Format(DisHgt(), "0.000") & " x " & disL & _
         ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _

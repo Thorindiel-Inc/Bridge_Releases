@@ -8,7 +8,7 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-06g"
+Private Const SCRIPT_VERSION As String = "2026-11-07a"
 Private Const SCRIPT_CHANGELOG As String = "Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
@@ -1172,8 +1172,8 @@ Private Function P2_2() As String
     s = s & "<td><code>G_ENLEME_KALINLIGI</code>; height = <code>G_ENLEME_YUKSEKLIGI</code>, or else the ""Enleme Y&#252;ksekli&#287;i"" row just below</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
-    s = s & "<td>Concrete classes, Ecm</td>" & vbLf
-    s = s & "<td><code>G_KIRIS_BETONU</code>, <code>G_TABLIYE_BETONU</code> (class in the 1st column, Ecm in the 3rd)</td>" & vbLf
+    s = s & "<td>Concrete classes and E</td>" & vbLf
+    s = s & "<td><code>G_KIRIS_BETONU</code>, <code>G_TABLIYE_BETONU</code>: class in the 1st column, AASHTO Ec in the 2nd (INPUT column C, staged model), Ecm in the 3rd (column D, dynamic model)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Line loads per girder</td>" & vbLf
@@ -1278,7 +1278,7 @@ Private Function P2_3() As String
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
-    s = s & "<p>The ""Dummy"" material has the slab Ecm and <strong>density 0</strong>. Slab weight and mass come from the" & vbLf
+    s = s & "<p>The ""Dummy"" material has the slab E (AASHTO Ec staged, Ecm dynamic) and <strong>density 0</strong>. Slab weight and mass come from the" & vbLf
     s = s & "  composite girder sections, not from the strips." & vbLf
     s = s & "- <strong>Track nodes</strong>: every transverse line also gets a node under each track centre, so the moving-load lanes can find a node.</p>" & vbLf
     s = s & "<hr />" & vbLf
@@ -1340,7 +1340,13 @@ Private Function P2_3() As String
     s = s & "<ul>" & vbLf
     s = s & "<li>The girder polygon is rebuilt from KIRIS_INPUT b2..b7 / h2..h7 (14 corners). Its area is" & vbLf
     s = s & "  computed with the shoelace formula, and the read-back compares MIDAS's area of sections 7 and 8 with it.</li>" & vbLf
-    s = s & "<li>The modular ratio of the composite section is Ecm girder / Ecm slab.</li>" & vbLf
+    s = s & "<li><strong>Concrete E (owner 2026-11-07):</strong> the staged model feeds the AASHTO girder design, so it uses AASHTO Ec" & vbLf
+    s = s & "  (INPUT column C) as user concrete with the workbook unit weight. The dynamic model keeps the EN04(RC)" & vbLf
+    s = s & "  database concrete (Ecm, column D). Measured on Civil NX 2026 v2.3: the time-dependent strength curve still" & vbLf
+    s = s & "  applies to the user concrete (E at the transfer age below Ec), and the analyses after the stages (moving" & vbLf
+    s = s & "  load, eigen) use Ec itself.</li>" & vbLf
+    s = s & "<li>The modular ratio of the composite section is E girder / E slab of that model: 1.2247 staged (AASHTO)," & vbLf
+    s = s & "  1.1050 dynamic (Ecm) for C45 / C30.</li>" & vbLf
     s = s & "<li><strong>Edge girders carry the cantilever slab</strong> (Hambly: the section represented by the member)." & vbLf
     s = s & "  No shear-lag reduction is applied, because Hambly asks for one only if the spacing exceeds L/6 or the" & vbLf
     s = s & "  cantilever exceeds L/12. Both are far below those limits here.</li>" & vbLf
@@ -1442,17 +1448,17 @@ Private Function P2_3() As String
     s = s & "<th>Where</th>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</thead>" & vbLf
+    P2_3 = s
+End Function
+
+Private Function P2_4() As String
+    Dim s As String
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>DC</td>" & vbLf
     s = s & "<td>self-weight (body force, -1 g)</td>" & vbLf
     s = s & "<td>all</td>" & vbLf
     s = s & "</tr>" & vbLf
-    P2_3 = s
-End Function
-
-Private Function P2_4() As String
-    Dim s As String
     s = s & "<tr>" & vbLf
     s = s & "<td>DW_1 (type DC)</td>" & vbLf
     s = s & "<td>ballast <code>G_YUK_BALAST</code></td>" & vbLf
@@ -1627,17 +1633,17 @@ Private Function P2_4() As String
     s = s & "<p>Only tables the macro writes are cleaned. Anything you added by hand in other tables stays.</p>" & vbLf
     s = s & "<hr />" & vbLf
     s = s & "<h2 id=""11-not-built-and-not-verified"">11. Not built and not verified</h2>" & vbLf
+    P2_4 = s
+End Function
+
+Private Function P2_5() As String
+    Dim s As String
     s = s & "<ul>" & vbLf
     s = s & "<li><strong>Not built</strong> (no API endpoint): PSC design parameters, DynaGen, load contribution for nonlinear case, perform-analysis entries.</li>" & vbLf
     s = s & "<li><strong>Not verified</strong>:</li>" & vbLf
     s = s & "<li>the stage-result names used in the combinations (""Dead Load"", ""Tendon Secondary"", ...): no analysis has been run;</li>" & vbLf
     s = s & "<li>the losses compared with 4-7 (the 03q model with CEB-FIP: 321 MPa vs 284.85; 03r with AASHTO not run yet);</li>" & vbLf
     s = s & "<li>how MIDAS's AASHTO creep model uses STR (28-day f'c or f'ci) and AGE (the API page does not say);</li>" & vbLf
-    P2_4 = s
-End Function
-
-Private Function P2_5() As String
-    Dim s As String
     s = s & "<li>the composite-girder J is not readable through the API, but MIDAS writes it to the solver deck" & vbLf
     s = s & "    (<code>&lt;model&gt;_Eigenvalue.mec</code>, cards PBAR / PBARC, factors on BARSF); section 7 staged J = 0.02665 was measured;</li>" & vbLf
     s = s & "<li>spans 2-6 (1-2 holds span 1 only).</li>" & vbLf
