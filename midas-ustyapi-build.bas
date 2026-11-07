@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-06e"
-Private Const SCRIPT_CHANGELOG As String = "CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-07a"
+Private Const SCRIPT_CHANGELOG As String = "Comment only: staged ESSF behaviour on Civil NX 2026 v2.3; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -945,7 +945,9 @@ Private Sub BuildPayloads()
         Add "db/ELNK", "{""Assign"":{" & elnkJson & "}}"
     End If
     ' Hambly torsion of the slab members (sections 3, 5, 13) and true strip of the drawn section 14: section
-    ' stiffness factors. Staged analysis ignores ESSF and any ungrouped factor; db/SECF works in a boundary group
+    ' stiffness factors. Staged analysis used to ignore ESSF and any ungrouped factor; since Civil NX 2026 v2.3 an
+    ' ungrouped ESSF is applied in PostCS (measured 2026-11-07), an ungrouped SECF is still ignored, and a grouped
+    ' ESSF still stops the analysis. db/SECF works in a boundary group
     ' activated in a stage (BG_SF, CS2 with the deck), measured 2026-11-05. IPART 1 = plain section.
     s = SlabSecf(3) & "," & SlabSecf(5) & "," & SlabSecf(13)
     If visW > 0 Then s = s & "," & VisSecf()
