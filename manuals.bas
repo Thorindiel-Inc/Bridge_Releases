@@ -8,8 +8,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-09c"
-Private Const SCRIPT_CHANGELOG As String = "Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
+Private Const SCRIPT_VERSION As String = "2026-11-09d"
+Private Const SCRIPT_CHANGELOG As String = "Skew per span in MIDAS_KOPRU, TKDY seismic warnings; Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
     Dim d As String
@@ -254,7 +254,7 @@ Private Function P1_2() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Span table</td>" & vbLf
-    s = s & "<td><code>G_SABIT_UC</code> (fixed end SOL / SAG), then to its right Yatay Gabari, Kiris, Mesnet; row <code>Son</code> = last right bearing</td>" & vbLf
+    s = s & "<td><code>G_SABIT_UC</code> (fixed end SOL / SAG), then to its right Yatay Gabari, Kiris, Mesnet, Verevlik (skew type 1 to 5, 0 or empty = square); row <code>Son</code> = last right bearing</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Deck type</td>" & vbLf
@@ -281,8 +281,12 @@ Private Function P1_2() As String
     s = s & "<td><code>G_YUK_BALAST</code>, <code>G_YUK_BORDUR</code>, <code>G_YUK_KORKULUK</code>, <code>G_YUK_CEPHE_PANELI</code>, <code>G_YUK_KORUMA_BETONU</code>, <code>G_YUK_RAY</code>, <code>G_YUK_ENLEME</code>, <code>G_HAT_DUSEY_YUKU</code>, <code>G_BALAST_YUKSEKLIGI</code>, <code>G_KORUMA_BETONU_YUKSEKLIGI</code>, <code>G_SICAKLIK_MAKS</code>, <code>G_SICAKLIK_MIN</code>, <code>G_TASARIM_HIZI</code></td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
+    s = s & "<td>Skew</td>" & vbLf
+    s = s & "<td><code>G_VEREVLIK</code> = INPUT B22, with B22:F22 the five skew types (degrees)</td>" & vbLf
+    s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
     s = s & "<td>Checks only</td>" & vbLf
-    s = s & "<td><code>G_VEREVLIK</code>, <code>G_KOPRU_ONEM_SINIFI</code></td>" & vbLf
+    s = s & "<td><code>G_KOPRU_ONEM_SINIFI</code></td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
@@ -380,8 +384,16 @@ Private Function P1_2() As String
     s = s & "  Each chord must match its span in the list within 0.05 m.</li>" & vbLf
     s = s & "<li>Empty: the bridge is built <strong>straight</strong> and the summary warns.</li>" & vbLf
     s = s & "<li>Caps lie on the bisector of the two chords at their axis. Piers and bearing links turn with them.</li>" & vbLf
-    s = s & "<li>The deck is level. There is no vertical alignment. <code>G_VEREVLIK</code> is not applied: the model is built" & vbLf
-    s = s & "  square and the summary warns if it is not 0.</li>" & vbLf
+    s = s & "<li>The deck is level. There is no vertical alignment.</li>" & vbLf
+    s = s & "<li><strong>Skew</strong> (owner 2026-11-09): column Verevlik of the span table picks a skew type, 1 to 5 = INPUT B22:F22," & vbLf
+    s = s & "  0 or empty = square. The angle is between the support line and the normal to the girders; + turns the" & vbLf
+    s = s & "  support line counter-clockwise in plan (A1 left, A2 right). A span has its skew at both ends, so the two" & vbLf
+    s = s & "  spans at a pier must have the same skew (one cap, one direction), otherwise the macro stops.</li>" & vbLf
+    s = s & "<li>With skew &#952; at an axis, the bearing of girder j (offset y from the deck axis) sits y&#183;tan&#952; back along the" & vbLf
+    s = s & "  girder, every girder keeps the Hesap Acikligi, the cap and the pier turn by &#952; and the bearings land on the" & vbLf
+    s = s & "  cap at y / cos&#952;. Bearing link axes stay along the girders, as the deck moves along them (<code>LINK_ON_SKEW</code>" & vbLf
+    s = s & "  False, owner 2026-11-09). The cap checks use the distance e&#183;cos&#952; from the cap axis. Lane ends are not skewed." & vbLf
+    s = s & "  Skew 0 gives exactly the payloads of the square build.</li>" & vbLf
     s = s & "</ul>" & vbLf
     s = s & "<hr />" & vbLf
     s = s & "<h2 id=""5-geometry"">5. Geometry</h2>" & vbLf
@@ -396,6 +408,11 @@ Private Function P1_2() As String
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Deck node (section offset CT = top of slab)</td>" & vbLf
+    P1_2 = s
+End Function
+
+Private Function P1_3() As String
+    Dim s As String
     s = s & "<td>0</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
@@ -408,11 +425,6 @@ Private Function P1_2() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Bearing seat</td>" & vbLf
-    P1_2 = s
-End Function
-
-Private Function P1_3() As String
-    Dim s As String
     s = s & "<td>The lower bearing bottom of the two spans at that pier</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
@@ -581,6 +593,11 @@ Private Function P1_3() As String
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
     s = s & "<p><strong>Deck stiffness.</strong> Civil NX keeps the composite stiffness lines as sent and does not recalculate them, so" & vbLf
+    P1_3 = s
+End Function
+
+Private Function P1_4() As String
+    Dim s As String
     s = s & "the macro calculates them.</p>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
     s = s & "<thead>" & vbLf
@@ -593,11 +610,6 @@ Private Function P1_3() As String
     s = s & "<tr>" & vbLf
     s = s & "<td>A, Iyy, Izz, centroid</td>" & vbLf
     s = s & "<td>From the girder outlines and the slab, slab scaled by E slab / E girder of that model (AASHTO Ec, or Ecm in the RTI model)</td>" & vbLf
-    P1_3 = s
-End Function
-
-Private Function P1_4() As String
-    Dim s As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>J</td>" & vbLf
@@ -742,6 +754,8 @@ Private Function P1_4() As String
     s = s & "</table></div>" & vbLf
     s = s & "<p>Torsion is reduced in the second seismic stage (DD1), which is not built yet.</p>" & vbLf
     s = s & "<p>If <code>G_KOPRU_ONEM_SINIFI</code> is not 1, the summary warns; the EQ cases still use DD2a.</p>" & vbLf
+    s = s & "<p>The summary also warns for TKDY 4.2.1.3 (a span over 80 m with KOS 1 or 2: vertical earthquake when DTS is 1 or 2," & vbLf
+    s = s & "the model has no Z case) and TKDY 4.3.2.4 (span / deck width of 2 or less: the deck as one bar line is not allowed).</p>" & vbLf
     s = s & "<p><strong>Measured on the 33-span bridge</strong> (test copy of the module, same cases and factors):</p>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
     s = s & "<thead>" & vbLf
@@ -764,6 +778,11 @@ Private Function P1_4() As String
     s = s & "<td>79,884 t</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
+    P1_4 = s
+End Function
+
+Private Function P1_5() As String
+    Dim s As String
     s = s & "</table></div>" & vbLf
     s = s & "<hr />" & vbLf
     s = s & "<h2 id=""9-combinations"">9. Combinations</h2>" & vbLf
@@ -778,11 +797,6 @@ Private Function P1_4() As String
     s = s & "</thead>" & vbLf
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
-    P1_4 = s
-End Function
-
-Private Function P1_5() As String
-    Dim s As String
     s = s & "<td>IVME, TU, FREN</td>" & vbLf
     s = s & "<td>Envelopes of the single cases</td>" & vbLf
     s = s & "</tr>" & vbLf
@@ -898,8 +912,12 @@ Private Function P1_5() As String
     s = s & "<td>Fixed for now</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
-    s = s & "<td>Vertical alignment, skew</td>" & vbLf
+    s = s & "<td>Vertical alignment</td>" & vbLf
     s = s & "<td>Not modelled</td>" & vbLf
+    s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
+    s = s & "<td>Skewed lane ends (<code>SKEW_START</code> / <code>SKEW_END</code>)</td>" & vbLf
+    s = s & "<td>0</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
@@ -1692,7 +1710,7 @@ Private Function P2_5() As String
     s = s & "  probably per side of the web, which would give a T about 1.27 m wide).</li>" & vbLf
     s = s & "<li><strong>Slab strip depth</strong>: uniform tc, as in Hambly's 4.5.1 example, although the girder top flanges leave only" & vbLf
     s = s & "  2.5 cm of thin slab between them (Hambly 4.4.1, Fig. 4.5d).</li>" & vbLf
-    s = s & "<li><strong>Skew</strong>: the model is always built square. If <code>G_VEREVLIK</code> is not 0 the build summary shows a warning.</li>" & vbLf
+    s = s & "<li><strong>Skew</strong>: the model is always built square. If any skew type in <code>G_VEREVLIK</code> B22:F22 is not 0 the build summary shows a warning.</li>" & vbLf
     s = s & "</ul>" & vbLf
     s = s & "<h2 id=""12-constants-in-the-module-change-in-the-code-not-in-excel"">12. Constants in the module (change in the code, not in Excel)</h2>" & vbLf
     s = s & "<p><code>WL_ECC</code> 3.5 m, <code>NOSING_Q</code> 100 kN, <code>NOSING_LEN</code> 3 m, <code>NOSING_ECC</code> 1.1 m, <code>RAIL_HALF_GAUGE</code> 0.7175 m," & vbLf

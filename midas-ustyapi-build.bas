@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09b"
-Private Const SCRIPT_CHANGELOG As String = "HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-09c"
+Private Const SCRIPT_CHANGELOG As String = "Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -354,13 +354,16 @@ Private Sub ReadInputs(wb12 As Workbook)
     tuNeg = Num(NmRange(wb12, "G_SICAKLIK_MIN").Cells(1).Value, "G_SICAKLIK_MIN")
     If tuPos <= 0 Or tuNeg >= 0 Then warnText = warnText & "- Temperature: G_SICAKLIK_MAKS = " & tuPos & ", G_SICAKLIK_MIN = " & tuNeg & " (expected > 0 and < 0)." & vbCrLf
     ' the model is always built square (owner 2026-11-05: warn, do not stop)
-    Dim skewV As Variant
+    ' skew types G_VEREVLIK B22:F22 (owner 2026-11-09): any non-zero value is reported, the grillage stays square
+    Dim skewV As Variant, kS As Long, skTxt As String
     On Error Resume Next
-    skewV = wb12.Names("G_VEREVLIK").RefersToRange.Cells(1).Value
+    For kS = 0 To 4
+        skewV = Empty
+        skewV = wb12.Names("G_VEREVLIK").RefersToRange.Cells(1).Offset(0, kS).Value
+        If IsNumeric(skewV) And Not IsEmpty(skewV) Then If CDbl(skewV) <> 0 Then skTxt = skTxt & " " & kS + 1 & ": " & skewV
+    Next kS
     On Error GoTo 0
-    If IsNumeric(skewV) Then
-        If CDbl(skewV) <> 0 Then warnText = warnText & "- Skew G_VEREVLIK = " & skewV & ": this macro ignores skew, the model is built SQUARE." & vbCrLf
-    End If
+    If skTxt <> "" Then warnText = warnText & "- Skew G_VEREVLIK (types" & skTxt & " deg): this macro ignores skew, the model is built SQUARE." & vbCrLf
 
     ReadCombTables wb12.Worksheets("1_GIRIS")
 

@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09d"
-Private Const SCRIPT_CHANGELOG As String = "Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm; RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ..."
+Private Const SCRIPT_VERSION As String = "2026-11-09e"
+Private Const SCRIPT_CHANGELOG As String = "Skew per span from the span table (column R picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -88,6 +88,7 @@ Private Const EQ_FUNC As String = "DD2a"        ' KOS 1, KK level, elastic (owne
 Private Const EQ_STIFF As Double = 0.5          ' TKDY effective bending stiffness: deck, cap, pier
 Private Const EQ_STIFF_SLAB As Double = 0.25    ' TKDY: connection slab
 Private Const RITZ_X As Long = 35, RITZ_Y As Long = 35, RITZ_Z As Long = 30   ' for now (owner 2026-11-06)
+Private Const LINK_ON_SKEW As Boolean = False   ' bearing link axes along the girders on a skewed support (owner 2026-11-09); True = along the support line
 Private Const MASS_CASE As String = "LL_KUTLE"  ' uniform train load x Tablo 14 TKDY LL factor: mass and TKDY combinations (owner 2026-11-06)
 Private Const BMLD_CHUNK As Long = 60
 Private Const Q_BAL As Long = 1, Q_KERB As Long = 2, Q_RAIL As Long = 3, Q_PANEL As Long = 4, Q_PROT As Long = 5, Q_TRK As Long = 6, Q_ENL As Long = 7
@@ -133,6 +134,7 @@ Private tQ(1 To MAX_TYPES, 1 To 7) As Double, tKL(1 To MAX_TYPES) As Double, tKR
 Private wG As Double, wV As Double, alphaLM As Double, qsk As Double, tuPos As Double, tuNeg As Double, vDes As Double, qvk As Double, railH As Double
 Private facRows As Object, dcMax As Double, dcMin As Double, dcMax4 As Double, dwMax As Double, dwMin As Double, eqMain As Double, eqOther As Double
 Private specNames As Collection, specJson As Collection, phiByElem As Boolean
+Private skS() As Double, skA() As Double   ' skew per span / per axis (deg), + = support line turned counter-clockwise in plan
 Private spR() As Double, dkA() As Long, dkB() As Long, mnA() As Long, mnB() As Long, dxS() As Double
 Private brgNode() As Long, brgSpan() As Long, nBrg As Long
 Private nFW As Long, fwA() As Long, fwB() As Long
@@ -315,6 +317,7 @@ SpansDone:
     ' last right bearing: the row 'Son' under the 60 span rows
     If StrComp(Trim$(CStr(r.Cells(r.Rows.Count + 1).Offset(0, -1).Value)), "Son", vbTextCompare) <> 0 Then Err.Raise vbObjectError + 35, , "Span table: row 'Son' not found under the last span row."
     CheckBearing r.Cells(r.Rows.Count + 1).Offset(0, 3).Value, "Last right"
+    ReadSkew wb, r
 
     ' pier table: one row per axis, label in column 1 (P1, P2, ...); height, type, width, length in 2..5
     Dim tb As Range, rr As Long, found As Boolean, q As Long, en As Double, boy As Double, th As Double
@@ -347,9 +350,6 @@ SpansDone:
         pSec(i) = SEC_PIER0 + q - 1
     Next i
     ReadLoadData wb
-    Dim skewV As Variant
-    skewV = NmRange(wb, "G_VEREVLIK").Cells(1).Value
-    If NumOr0(skewV) <> 0 Then warnText = warnText & "- G_VEREVLIK = " & skewV & ": the model is built square." & vbCrLf
     For i = 1 To nDk
         If (tJoint(i) - tLc(i)) / 2 <= sark + 0.0005 Then warnText = warnText & "- " & tName(i) & ": joint spacing gives no deck-end slab." & vbCrLf
     Next i
@@ -488,6 +488,40 @@ Private Sub SeisChecks(wb As Workbook)
     If iMin > 0 And rMin <= 2 Then warnText = warnText & "- Span " & iMin & ": span / deck width = " & Format(rMin, "0.00") & " (<= 2). TKDY 4.3.2.4 allows the deck as one bar line only above 2 (otherwise 4.3.2.5)." & vbCrLf
 End Sub
 
+' skew (owner 2026-11-09): span table column R (4 right of G_SABIT_UC) = 1..5 picks G_VEREVLIK B22:F22, 0 or empty
+' = square. Degrees from the normal to the girders, + = support line turned counter-clockwise in plan (A1 -> A2
+' left to right). A span has its skew at both ends; the two spans at a pier must agree (one cap, one direction).
+Private Sub ReadSkew(wb As Workbook, r As Range)
+    Dim i As Long, v As Variant, k As Long, sk As Range
+    Set sk = NmRange(wb, "G_VEREVLIK").Cells(1)
+    ReDim skS(1 To nSp): ReDim skA(0 To nSp)
+    For i = 1 To nSp
+        v = r.Cells(i).Offset(0, 4).Value
+        k = 0
+        If Trim$(CStr(v)) <> "" Then
+            If Not IsNumeric(v) Then Err.Raise vbObjectError + 63, , "Span table Verevlik, span " & i & ": '" & v & "' (write 1 to 5 = G_VEREVLIK B22:F22, or 0)."
+            k = CLng(v)
+            If k <> CDbl(v) Or k < 0 Or k > 5 Then Err.Raise vbObjectError + 63, , "Span table Verevlik, span " & i & ": '" & v & "' (write 1 to 5 = G_VEREVLIK B22:F22, or 0)."
+        End If
+        If k > 0 Then skS(i) = Num(sk.Offset(0, k - 1).Value, "G_VEREVLIK skew " & k & " (INPUT row 22), span " & i)
+        If Abs(skS(i)) >= 85 Then Err.Raise vbObjectError + 63, , "Span " & i & ": skew " & skS(i) & " deg cannot be built."
+    Next i
+    skA(0) = skS(1): skA(nSp) = skS(nSp)
+    For i = 1 To nSp - 1
+        If Abs(skS(i) - skS(i + 1)) > 0.0001 Then Err.Raise vbObjectError + 64, , "Spans " & i & " and " & i + 1 & " meet at one pier with skews " & skS(i) & " and " & skS(i + 1) & " deg: one cap has one direction."
+        skA(i) = skS(i)
+    Next i
+End Sub
+
+Private Function SkewText() As String
+    Dim i As Long, n As Long, mx As Double
+    For i = 0 To nSp
+        If skA(i) <> 0 Then n = n + 1
+        If Abs(skA(i)) > mx Then mx = Abs(skA(i))
+    Next i
+    If n = 0 Then SkewText = "Skew: none (square)" Else SkewText = "Skew: " & n & " of " & nSp + 1 & " axes, largest " & Format(mx, "0.0") & " deg; bearing links along the " & IIf(LINK_ON_SKEW, "support line", "girders")
+End Function
+
 Private Sub BuildPlan()
     Dim i As Long
     ReDim pxA(0 To nSp): ReDim pyA(0 To nSp): ReDim rxA(0 To nSp): ReDim ryA(0 To nSp)
@@ -515,7 +549,7 @@ Private Sub BuildPlan()
         phiS(i) = Atn2(cyS(i), cxS(i)) * 180 / PI
     Next i
     ' cap direction at an axis = bisector of the normals of its two chords
-    Dim nx As Double, ny As Double, q As Double
+    Dim nx As Double, ny As Double, q As Double, ck As Double, sq As Double
     For i = 0 To nSp
         If i = 0 Then
             nx = -cyS(1): ny = cxS(1)
@@ -526,6 +560,10 @@ Private Sub BuildPlan()
         End If
         q = Sqr(nx ^ 2 + ny ^ 2)
         rxA(i) = nx / q: ryA(i) = ny / q
+        If skA(i) <> 0 Then
+            ck = Cos(skA(i) * PI / 180): sq = Sin(skA(i) * PI / 180)
+            q = rxA(i): rxA(i) = q * ck - ryA(i) * sq: ryA(i) = q * sq + ryA(i) * ck
+        End If
         phiA(i) = Atn2(ryA(i), rxA(i)) * 180 / PI - 90
     Next i
 End Sub
@@ -602,7 +640,7 @@ End Function
 ' pier must give the same e. Seat: rectangle or e on the web = cap top; inverted T with e beyond the web =
 ' ledge (flange top). Cap length and width are checked against the bearing size (warnings).
 Private Sub BearingOffsets()
-    Dim i As Long, Lci As Double, ys As Double, d As Variant, msg As String, half As Double
+    Dim i As Long, Lci As Double, ys As Double, d As Variant, msg As String, half As Double, ep As Double
     ReDim eLs(1 To nSp): ReDim eRs(1 To nSp): ReDim ePier(0 To nSp): ReDim seatOnLedge(0 To nSp)
     For i = 1 To nSp
         Lci = tLc(spType(i))
@@ -620,19 +658,20 @@ Private Sub BearingOffsets()
     For i = 1 To nSp - 1
         If Abs(eRs(i) - eLs(i + 1)) > 0.02 Then msg = msg & "axis " & i & ": " & Format(eRs(i), "0.000") & " m from span " & i & ", " & Format(eLs(i + 1), "0.000") & " m from span " & i + 1 & "; "
         ePier(i) = IIf(eRs(i) > eLs(i + 1), eRs(i), eLs(i + 1))
-        seatOnLedge(i) = (Not capRect) And ePier(i) > capS(4) / 2 + 0.0005
+        seatOnLedge(i) = (Not capRect) And ePier(i) * Cos(skA(i) * PI / 180) > capS(4) / 2 + 0.0005
     Next i
     If msg <> "" Then Err.Raise vbObjectError + 38, , "Axis to bearing distance does not fit the span list and Hesap Acikligi: " & msg
     ' warnings: bearings on the cap
     For i = 1 To nSp - 1
+        ep = ePier(i) * Cos(skA(i) * PI / 180)
         If capRect Or Not seatOnLedge(i) Then
-            If ePier(i) + brgL / 2 > capS(4) / 2 + 0.0005 Then warnText = warnText & "- Axis " & i & ": bearing (e " & Format(ePier(i), "0.000") & " + " & brgL / 2 & ") reaches past the cap width " & capS(4) & " m." & vbCrLf
+            If ep + brgL / 2 > capS(4) / 2 + 0.0005 Then warnText = warnText & "- Axis " & i & ": bearing (e " & Format(ePier(i), "0.000") & " + " & brgL / 2 & ") reaches past the cap width " & capS(4) & " m." & vbCrLf
         Else
             half = capS(4) / 2 + IIf(capS(2) < capS(3), capS(2), capS(3))
-            If ePier(i) + brgL / 2 > half + 0.0005 Or ePier(i) - brgL / 2 < capS(4) / 2 - 0.0005 Then warnText = warnText & "- Axis " & i & ": bearing (e " & Format(ePier(i), "0.000") & " m, length " & brgL & " m) does not fit on the ledge between " & capS(4) / 2 & " and " & Format(half, "0.000") & " m." & vbCrLf
+            If ep + brgL / 2 > half + 0.0005 Or ep - brgL / 2 < capS(4) / 2 - 0.0005 Then warnText = warnText & "- Axis " & i & ": bearing (e " & Format(ePier(i), "0.000") & " m, length " & brgL & " m) does not fit on the ledge between " & capS(4) / 2 & " and " & Format(half, "0.000") & " m." & vbCrLf
         End If
         For Each d In Array(spType(i), spType(i + 1))
-            ys = (tNG(d) - 1) / 2# * tSG(d) + brgW / 2
+            ys = (tNG(d) - 1) / 2# * tSG(d) / Cos(skA(i) * PI / 180) + brgW / 2
             If ys > capL / 2 + 0.0005 Then warnText = warnText & "- Axis " & i & ": outer bearing reaches " & Format(ys, "0.000") & " m from the axis, cap half length " & Format(capL / 2, "0.000") & " m." & vbCrLf
         Next d
     Next i
@@ -703,7 +742,7 @@ Private Sub BuildModel()
         Set ys = CreateObject("Scripting.Dictionary")
         AddX ys, -capL / 2: AddX ys, capL / 2: AddX ys, 0
         For Each sp In Array(i, i + 1)
-            For j = 0 To tNG(spType(sp)) - 1: AddX ys, (j - (tNG(spType(sp)) - 1) / 2#) * tSG(spType(sp)): Next j
+            For j = 0 To tNG(spType(sp)) - 1: AddX ys, (j - (tNG(spType(sp)) - 1) / 2#) * tSG(spType(sp)) / Cos(skA(i) * PI / 180): Next j
         Next sp
         yk = SortedKeys(ys)
         For k = UBound(yk) To 2 Step -1
@@ -733,19 +772,20 @@ End Sub
 ' one bearing line: deck node -> rigid -> bearing top nodes -> elastic links -> bottom nodes
 ' -> rigid to the cap (pier) or fixed (abutment)
 Private Sub BearingLine(ByVal sp As Long, ByVal u As Double, ByVal axisNo As Long, ByVal abut As Boolean, ByVal fixedEnd As Boolean, y() As Double, ByVal zU As Double, ByVal zL As Double, ByVal zC As Double)
-    Dim j As Long, up As Long, lo As Long, sl As String, cn As Long, kLong As Double
+    Dim j As Long, up As Long, lo As Long, sl As String, cn As Long, kLong As Double, tk As Double, ck As Double
+    tk = Tan(skA(axisNo) * PI / 180): ck = Cos(skA(axisNo) * PI / 180)
     kLong = IIf(fixedEnd, kFix, kyB)
     For j = 0 To nG - 1
-        up = SpN(sp, u, y(j), zU)
-        lo = SpN(sp, u, y(j), zL)
+        up = SpN(sp, u - y(j) * tk, y(j), zU)
+        lo = SpN(sp, u - y(j) * tk, y(j), zL)
         sl = sl & IIf(sl = "", "", ",") & up
         nLink = nLink + 1
-        elnkJson = elnkJson & IIf(elnkJson = "", "", ",") & QS(CStr(nLink)) & ":{""NODE"":[" & up & "," & lo & "],""ANGLE"":" & JN(-phiS(sp)) & ",""LINK"":""GEN""," & _
+        elnkJson = elnkJson & IIf(elnkJson = "", "", ",") & QS(CStr(nLink)) & ":{""NODE"":[" & up & "," & lo & "],""ANGLE"":" & JN(-phiS(sp) - IIf(LINK_ON_SKEW, skA(axisNo), 0)) & ",""LINK"":""GEN""," & _
             """R_S"":[false,false,false,false,false,false],""SDR"":[" & JN(kEB) & "," & JN(kFix) & "," & JN(kLong) & ",0,0,0],""bSHEAR"":false,""DR"":[0.5,0.5],""BNGR_NAME"":""BG_MESNET""}"
         If abut Then
             Fix1 lo
         Else
-            cn = CapN(axisNo, y(j), zC)
+            cn = CapN(axisNo, y(j) / ck, zC)
             If capSlaves.Exists(CStr(cn)) Then
                 capSlaves(CStr(cn)) = capSlaves(CStr(cn)) & "," & lo
             Else
@@ -1284,7 +1324,7 @@ Private Function Summary() As String
         "Cap " & IIf(capRect, "rectangle " & capS(1) & " x " & capS(4), "inverted T H " & capS(1)) & ", length " & capL & " m, centroid " & Format(capYc, "0.000") & " m below its top, pier top at the cap bottom; " & nPS & " pier section(s)" & vbCrLf & _
         "Axis to bearing " & AxisBearingText() & IIf(capRect, "", ", seat on the " & IIf(seatOnLedge(1), "ledges", "web")) & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
-        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & _
+        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & SkewText() & vbCrLf & _
         IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _
         IIf(seisMode, "EQ " & EQ_FUNC & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z, IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s

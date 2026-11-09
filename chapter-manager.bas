@@ -26,8 +26,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "chapter-manager"
-Private Const SCRIPT_VERSION As String = "2026-11-06g"
-Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
+Private Const SCRIPT_VERSION As String = "2026-11-09a"
+Private Const SCRIPT_CHANGELOG As String = "RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
 
 Private Const MSG_TITLE As String = "BOLUM_YONETICI"
 ' chapter types: code | suffixes (main first, ';') | heading code cells ('cell' or 'cell>code', ';') | export: cell>INPUT row (column B = span 1)
@@ -217,6 +217,11 @@ Private Sub OrderSheets(wb As Workbook)
     Dim reg As Variant, k As Long, f() As String, sfx() As String, i As Long, j As Long
     Dim anchor As Worksheet, ws As Worksheet, nm As String, side As Worksheet
     If SheetExists(wb, "SPECTRUM") Then Set side = wb.Worksheets("SPECTRUM")
+    ' the RTI result sheet sits right after SPECTRUM, the calculation sheets follow it (owner 2026-11-09)
+    If Not side Is Nothing And SheetExists(wb, "RTI_SONUC") Then
+        If wb.Worksheets("RTI_SONUC").Index <> side.Index + 1 Then wb.Worksheets("RTI_SONUC").Move After:=side
+        Set side = wb.Worksheets("RTI_SONUC")
+    End If
     ' anchor = last report sheet that is not managed
     For Each ws In wb.Worksheets
         If IsReportName(ws.Name) And ManagedCode(ws.Name) = "" Then Set anchor = ws
