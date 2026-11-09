@@ -36,8 +36,8 @@ Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPt
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-09a"
-Private Const SCRIPT_CHANGELOG As String = "Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases; UiChoice can preselect an item; RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons; new pop-up design: coloured header, aligned rows with tick / warning / error marks, question box, styled buttons, Kopyala; Enter follows the default button of the call"
+Private Const SCRIPT_VERSION As String = "2026-11-09b"
+Private Const SCRIPT_CHANGELOG As String = "Tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari; Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases; UiChoice can preselect an item; RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons; new pop-up design: coloured header, aligned rows with tick / warning / error marks, question box, styled buttons, Kopyala; Enter follows the default button of the call"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -87,14 +87,46 @@ Private uiBtn As Long, uiText As String, uiPick As Long, pickDef As Long, runnin
 Private Function Tools() As Variant
     Tools = Array( _
         "Girdiler|DXF'ten g\u00FCzergah oku|DXF_OKU_OLUSTUR||Plan DXF dosyas\u0131ndaki eksen ve aks \u00E7izgilerini okur, aks koordinatlar\u0131n\u0131 ve a\u00E7\u0131kl\u0131k yar\u0131\u00E7aplar\u0131n\u0131 INPUT sayfas\u0131na yazar.|", _
+        "Girdiler|De\u011Ferleri \u00E7a\u011F\u0131r|DEGER_CAGIRMA.DEGER_CAGIRMA||Ana \u00E7al\u0131\u015Fma kitab\u0131ndan G_ adl\u0131 girdileri (MAPI anahtar\u0131 dahil) ve \u00F6nceki b\u00F6l\u00FCm\u00FCn son tablo, \u015Fekil ve sayfa numaralar\u0131n\u0131 bu dosyaya \u00E7eker.|", _
         "Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|", _
         "MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet", _
         "MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan", _
+        "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Civil NX'te a\u00E7\u0131k sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131m oranlar\u0131n\u0131 okur, MOD sayfas\u0131na yazar. Modele bir \u015Fey yazmaz.|", _
         "Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|", _
         "Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
         "Rapor|\u015Eekil ve tablo listeleri|FIG_TAB_AYARLA||\u015Eekil ve tablo listelerini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
         "Yard\u0131m|K\u0131lavuzlar|KILAVUZ_AC||Makro k\u0131lavuzlar\u0131n\u0131 taray\u0131c\u0131da a\u00E7ar.|", _
         "Yard\u0131m|Makro g\u00FCncellemesi|CheckBridgeMacroUpdates||Makrolar\u0131 yay\u0131nla kar\u015F\u0131la\u015Ft\u0131r\u0131r, yeni s\u00FCr\u00FCmleri kurar.|")
+End Function
+
+' tools whose macro is in this workbook; without access to the VBA project every tool is kept
+Private Function Present(all As Variant) As Variant
+    Dim i As Long, n As Long, out() As String, p As Variant
+    ReDim out(0 To UBound(all))
+    For i = LBound(all) To UBound(all)
+        p = Split(all(i), "|")
+        If HasMacro(CStr(p(2))) Then out(n) = all(i): n = n + 1
+    Next i
+    If n = 0 Then Present = all: Exit Function
+    ReDim Preserve out(0 To n - 1)
+    Present = out
+End Function
+
+Private Function HasMacro(ByVal m As String) As Boolean
+    Dim c As Object, cs As Object, modN As String, proc As String, p As Long, ln As Long
+    On Error Resume Next
+    Set cs = ThisWorkbook.VBProject.VBComponents
+    If cs Is Nothing Then HasMacro = True: Exit Function
+    p = InStr(m, ".")
+    If p > 0 Then modN = Left$(m, p - 1): proc = mid$(m, p + 1) Else proc = m
+    For Each c In cs
+        If c.Type = 1 And (modN = "" Or StrComp(c.Name, modN, vbTextCompare) = 0) Then
+            ln = 0
+            Err.Clear
+            ln = c.CodeModule.ProcStartLine(proc, 0)
+            If Err.Number = 0 And ln > 0 Then HasMacro = True: Exit Function
+        End If
+    Next c
 End Function
 
 Private Function CHK() As String
@@ -173,6 +205,14 @@ Public Function PANEL_PROBE(ByVal row As Long, ByVal run As Boolean) As String
         s = s & " LOG[" & pForm.Controls("txtLog").Text & "] STEP[" & pForm.Controls("lblStep").Caption & "]"
     End If
     PANEL_PROBE = s
+End Function
+
+' test: titles of the tools this workbook shows
+Public Function PANEL_TOOLS() As String
+    Dim v As Variant, i As Long, s As String
+    v = Present(Tools())
+    For i = LBound(v) To UBound(v): s = s & U(CStr(Split(v(i), "|")(1))) & "; ": Next i
+    PANEL_TOOLS = s
 End Function
 
 ' test: a yes / no dialog, the answer goes to the log
@@ -272,7 +312,7 @@ End Sub
 
 Private Sub FillTools()
     Dim i As Long, p As Variant, g As String, n As Long
-    toolList = Tools()
+    toolList = Present(Tools())
     ReDim rowTool(0 To ROWS_MAX - 1)
     For i = LBound(toolList) To UBound(toolList)
         p = Split(toolList(i), "|")

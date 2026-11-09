@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09a"
-Private Const SCRIPT_CHANGELOG As String = "Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm; RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ...; Bearing values from the first span sheet 4<letter>_KDME of this workbook, no 4-7 file dialog"
+Private Const SCRIPT_VERSION As String = "2026-11-09d"
+Private Const SCRIPT_CHANGELOG As String = "Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm; RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ..."
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -81,8 +81,7 @@ Private Const TRK_U0 As Double = 0.002          ' m, ballast track law: displace
 Private Const TRK_Q_UNL As Double = 12#         ' kN/m per track, unloaded, moderate maintenance (owner 2026-11-05)
 Private Const TRK_Q_LOAD As Double = 60#        ' kN/m per track, loaded
 Private Const RAIL_E As Double = 210000000#     ' kN/m2
-Private Const RAIL_A As Double = 0.01534        ' m2: 2 x UIC 60 per track
-Private Const RAIL_I As Double = 0.00006076     ' m4: 2 x UIC 60, strong axis
+Private Const RAIL_SIZE As String = "0.172,0.144,0.033,0.051,0.3,0.015,0,0,0,0" ' m: H, B1, tw, tf1, B2, tf2 of 2 x UIC 60 per track
 Private Const SEC_RAIL As Long = 90
 Private Const MAT_RAIL As Long = 9
 Private Const EQ_FUNC As String = "DD2a"        ' KOS 1, KK level, elastic (owner 2026-11-06)
@@ -114,7 +113,7 @@ Private warnText As String, askUser As Boolean, seisMode As Boolean, rtiMode As 
 Private rigMap As Object, nTrk As Long, rN(1 To 2) As Long, rNode() As Long, rGr() As Long, rSt() As Double, rTr() As Double, rAng() As Double, rOn() As Boolean
 Private rFirst() As Long, rLast() As Long, xNo As Long, xX() As Double, xY() As Double, xZ() As Double, reCnt As Long, rE1() As Long, rE2() As Long, rET() As Long, rEI() As Long
 Private rtiNL As Boolean, nLL As Long, lpA() As Long, lpB() As Long, lpX() As Long
-Private nWin As Long, wNm() As String, wA() As Double, wB() As Double, wC() As Double, wD() As Double, wS() As Long, cut1() As Double, cut2() As Double
+Private nWin As Long, wNm() As String, wA() As Double, wB() As Double, wC() As Double, wD() As Double, wE() As Double, wF() As Double, wBr() As Boolean, wTr() As Boolean, wS() As Long, cut1() As Double, cut2() As Double
 Private bgUsed As Object, lgUsed As Object, railItems As Object, fnIds As Object
 
 ' ---- model ----
@@ -177,6 +176,7 @@ Private Sub PrepareModel()
     Application.StatusBar = "MIDAS_KOPRU: reading inputs..."
     ReadInputs ThisWorkbook
     BuildModel
+    If seisMode Then SeisChecks ThisWorkbook
     BuildLoads
     BuildPayloads
 End Sub
@@ -372,16 +372,35 @@ Private Function RailMat() As String
 End Function
 
 Private Function RailSect() As String
-    Dim h As Double, w As Double
-    ' rectangle with the area and strong-axis inertia of two rails
-    h = Sqr(12# * RAIL_I / RAIL_A): w = RAIL_A / h
-    RailSect = DbSect(SEC_RAIL, "RAY", SectHead2("CC", 0, 0), "SB", JN(h) & "," & JN(w) & ",0,0,0,0,0,0,0,0")
+    ' the two UIC 60 rails of one track as one rail-shaped H (owner 2026-11-09): head 2 x 72, web 2 x 16.5,
+    ' foot 2 x 150, height 172 mm, as the rail of models/RTI.mct halved; A 0.015342 m2, Iyy 6.064e-5 m4
+    ' (2 x UIC 60: 0.01534, 6.076e-5), so the Beam Stress table gives the rail stress directly
+    RailSect = DbSect(SEC_RAIL, "RAY", SectHead2("CC", 0, 0), "H", RAIL_SIZE)
 End Function
 
 Private Function GrupAll() As String
-    Dim s As String, i As Long
-    s = "1to" & nCnt
-    GrupAll = """4"":{""NAME"":""SG_TUM"",""P_TYPE"":0,""N_LIST"":[" & Seq(1, nCnt) & "," & Seq(NUM_LIMIT, NUM_LIMIT + xNo - 1) & "],""E_LIST"":[" & Seq(1, eCnt) & "," & Seq(NUM_LIMIT, NUM_LIMIT + reCnt - 1) & "]}"
+    Dim s As String, i As Long, t As Long, k As Long, n As Long, nl As String, el As String, ax As String
+    s = """4"":{""NAME"":""SG_TUM"",""P_TYPE"":0,""N_LIST"":[" & Seq(1, nCnt) & "," & Seq(NUM_LIMIT, NUM_LIMIT + xNo - 1) & "],""E_LIST"":[" & Seq(1, eCnt) & "," & Seq(NUM_LIMIT, NUM_LIMIT + reCnt - 1) & "]}"
+    n = 4
+    ' groups the RTI result pull reads: rail elements and nodes per track, track nodes (rigid to the deck
+    ' on the bridge, fixed on the embankment) per track, deck end node left / right of every axis
+    For t = 1 To nTrk
+        nl = "": el = ""
+        For i = 1 To rN(t): nl = nl & IIf(nl = "", "", ",") & rNode(t, i): Next i
+        For i = 1 To reCnt
+            If rET(i) = t Then el = el & IIf(el = "", "", ",") & (NUM_LIMIT + i - 1)
+        Next i
+        n = n + 1: s = s & "," & QS(CStr(n)) & ":{""NAME"":""SG_RAY_" & t & """,""P_TYPE"":0,""N_LIST"":[" & nl & "],""E_LIST"":[" & el & "]}"
+        nl = ""
+        For i = 1 To rN(t): nl = nl & IIf(nl = "", "", ",") & rGr(t, i): Next i
+        n = n + 1: s = s & "," & QS(CStr(n)) & ":{""NAME"":""SG_IZ_" & t & """,""P_TYPE"":0,""N_LIST"":[" & nl & "]}"
+    Next t
+    For k = 0 To nSp
+        ax = IIf(k = 0, "A1", IIf(k = nSp, "A2", "P" & k))
+        If k >= 1 Then n = n + 1: s = s & "," & QS(CStr(n)) & ":{""NAME"":""DE_" & ax & "_L"",""P_TYPE"":0,""N_LIST"":[" & eN2(dkB(k)) & "]}"
+        If k < nSp Then n = n + 1: s = s & "," & QS(CStr(n)) & ":{""NAME"":""DE_" & ax & "_R"",""P_TYPE"":0,""N_LIST"":[" & eN1(dkA(k + 1)) & "]}"
+    Next k
+    GrupAll = s
 End Function
 
 Private Function Seq(ByVal a As Long, ByVal b As Long) As String
@@ -452,6 +471,23 @@ Private Sub CheckBearing(ByVal v As Variant, ByVal where As String)
 End Sub
 
 ' plan of the axes: G_AKS_XY (DXF_OKU) if filled, else straight
+' TKDY checks of the seismic model, warnings only (owner 2026-11-09): vertical earthquake (4.2.1.3) and
+' deck as one bar line (4.3.2.4). Span = axis to axis chord, width = deck width of the span's deck type.
+Private Sub SeisChecks(wb As Workbook)
+    Dim i As Long, kos As Double, lMax As Double, iMax As Long, r As Double, rMin As Double, iMin As Long
+    kos = NumOr0(NmRange(wb, "G_KOPRU_ONEM_SINIFI").Cells(1).Value)
+    rMin = 1E+30
+    For i = 1 To nSp
+        If lenS(i) > lMax Then lMax = lenS(i): iMax = i
+        If tW(spType(i)) > 0 Then
+            r = lenS(i) / tW(spType(i))
+            If r < rMin Then rMin = r: iMin = i
+        End If
+    Next i
+    If lMax > 80 And (kos = 1 Or kos = 2) Then warnText = warnText & "- Span " & iMax & " is " & Format(lMax, "0.0") & " m (> 80 m) with KOS " & kos & ": TKDY 4.2.1.3 asks for the vertical earthquake when DTS is 1 or 2. The model has no Z spectrum case." & vbCrLf
+    If iMin > 0 And rMin <= 2 Then warnText = warnText & "- Span " & iMin & ": span / deck width = " & Format(rMin, "0.00") & " (<= 2). TKDY 4.3.2.4 allows the deck as one bar line only above 2 (otherwise 4.3.2.5)." & vbCrLf
+End Sub
+
 Private Sub BuildPlan()
     Dim i As Long
     ReDim pxA(0 To nSp): ReDim pyA(0 To nSp): ReDim rxA(0 To nSp): ReDim ryA(0 To nSp)
@@ -1992,32 +2028,46 @@ Private Function PosLabel(ByVal a As Long) As String
     End If
 End Function
 
-Private Sub AddWin(ByVal nm As String, ByVal a As Double, ByVal b As Double, ByVal c As Double, ByVal d As Double, ByVal sgn1 As Long)
+' a, b braking train on track 1; c, d traction zone on the last track; e, f the whole train on that track
+' br / tr: the window carries braking / traction (one track: one of them, two tracks: both)
+Private Sub AddWin(ByVal nm As String, ByVal a As Double, ByVal b As Double, ByVal c As Double, ByVal d As Double, ByVal e As Double, ByVal f As Double, ByVal sgn1 As Long, Optional ByVal br As Boolean = True, Optional ByVal tr As Boolean = True)
     ' a window that does not reach the bridge carries no load
     If b <= rSt(1, rFirst(1, 1)) + 1 Or a >= rSt(1, rLast(1, nSp)) - 1 Then Exit Sub
+    If Not br And (d <= rSt(nTrk, rFirst(nTrk, 1)) + 0.001 Or c >= rSt(nTrk, rLast(nTrk, nSp)) - 0.001) Then Exit Sub
     nWin = nWin + 1
-    wNm(nWin) = nm: wA(nWin) = a: wB(nWin) = b: wC(nWin) = c: wD(nWin) = d: wS(nWin) = sgn1
+    wNm(nWin) = nm: wA(nWin) = a: wB(nWin) = b: wC(nWin) = c: wD(nWin) = d: wE(nWin) = e: wF(nWin) = f: wBr(nWin) = br: wTr(nWin) = tr: wS(nWin) = sgn1
+End Sub
+
+' two tracks: one window, braking train on track 1 and traction on track 2. One track (owner 2026-11-09):
+' the same train position twice, once braking only and once traction only (name + "_T"), never both
+Private Sub WinPair(ByVal nm As String, ByVal a As Double, ByVal b As Double, ByVal c As Double, ByVal d As Double, ByVal e As Double, ByVal f As Double, ByVal sgn1 As Long)
+    If nTrk > 1 Then
+        AddWin nm, a, b, c, d, e, f, sgn1
+    Else
+        AddWin nm, a, b, c, d, e, f, sgn1, True, False
+        AddWin nm & "_T", a, b, c, d, e, f, sgn1, False, True
+    End If
 End Sub
 
 Private Sub BuildWindows()
     Dim a As Long, s1 As Double, s2 As Double, tl As Double, tt As Long
     tt = nTrk
     nWin = 0
-    ReDim wNm(1 To 8 * (nSp + 1)): ReDim wA(1 To 8 * (nSp + 1)): ReDim wB(1 To 8 * (nSp + 1)): ReDim wC(1 To 8 * (nSp + 1)): ReDim wD(1 To 8 * (nSp + 1)): ReDim wS(1 To 8 * (nSp + 1))
+    ReDim wNm(1 To 16 * (nSp + 1)): ReDim wA(1 To 16 * (nSp + 1)): ReDim wB(1 To 16 * (nSp + 1)): ReDim wC(1 To 16 * (nSp + 1)): ReDim wD(1 To 16 * (nSp + 1)): ReDim wE(1 To 16 * (nSp + 1)): ReDim wF(1 To 16 * (nSp + 1)): ReDim wBr(1 To 16 * (nSp + 1)): ReDim wTr(1 To 16 * (nSp + 1)): ReDim wS(1 To 16 * (nSp + 1))
     tl = TRAC_L
     ' window ends on every axis and every mid-span: the mid-span positions close the gap to the
     ' every-element run of the old model (rail compression and deck movement, owner 2026-11-06)
     For a = 0 To 2 * nSp
         s1 = PosSt(1, a): s2 = PosSt(tt, a)
         ' train moving +: head at the position, then tail at the position; traction at the rear
-        AddWin "F_BAS_" & PosLabel(a), s1 - BRAKE_L, s1, s2 - BRAKE_L, s2 - BRAKE_L + tl, 1
-        AddWin "F_SON_" & PosLabel(a), s1, s1 + BRAKE_L, s2, s2 + tl, 1
+        WinPair "F_BAS_" & PosLabel(a), s1 - BRAKE_L, s1, s2 - BRAKE_L, s2 - BRAKE_L + tl, s2 - BRAKE_L, s2, 1
+        WinPair "F_SON_" & PosLabel(a), s1, s1 + BRAKE_L, s2, s2 + tl, s2, s2 + BRAKE_L, 1
     Next a
     For a = 2 * nSp To 0 Step -1
         s1 = PosSt(1, a): s2 = PosSt(tt, a)
         ' train moving -
-        AddWin "B_BAS_" & PosLabel(a), s1, s1 + BRAKE_L, s2 + BRAKE_L - tl, s2 + BRAKE_L, -1
-        AddWin "B_SON_" & PosLabel(a), s1 - BRAKE_L, s1, s2 - tl, s2, -1
+        WinPair "B_BAS_" & PosLabel(a), s1, s1 + BRAKE_L, s2 + BRAKE_L - tl, s2 + BRAKE_L, s2, s2 + BRAKE_L, -1
+        WinPair "B_SON_" & PosLabel(a), s1 - BRAKE_L, s1, s2 - tl, s2, s2 - BRAKE_L, s2, -1
     Next a
 End Sub
 
@@ -2066,7 +2116,8 @@ Private Function SegMid(ByVal t As Long, ByVal k As Long) As Double
 End Function
 
 Private Sub BuildRailLoads()
-    Dim d1 As Object, d2 As Object, i As Long, t As Long, tt As Long, e As Long, k As Long, n As Long, mdS As Double, q As Double, nm As String, s As String
+    Dim d1 As Object, d2 As Object, i As Long, t As Long, tt As Long, e As Long, k As Long, n As Long, q As Double, nm As String, s As String
+    Dim s0 As Double, s1 As Double, le As Double, pa As Double, pb As Double, c() As Double, j As Long, ra As Double, rb As Double
     Const EPS As Double = 0.001
     Set d1 = CreateObject("Scripting.Dictionary"): Set d2 = CreateObject("Scripting.Dictionary")
     tt = nTrk
@@ -2076,6 +2127,7 @@ Private Sub BuildRailLoads()
             AddCut d1, wC(i) - EPS: AddCut d1, wD(i) + EPS
         Else
             AddCut d2, wC(i) - EPS: AddCut d2, wD(i) + EPS
+            AddCut d2, wE(i) - EPS: AddCut d2, wF(i) + EPS
         End If
     Next i
     AddCut d1, rSt(1, rFirst(1, 1)) - EPS: AddCut d1, rSt(1, rLast(1, nSp)) + EPS
@@ -2093,19 +2145,31 @@ Private Sub BuildRailLoads()
             FnId rTr(t, i)
         Next i
     Next t
+    ' each bridge rail element is cut at the window ends inside it and every piece is loaded in the group
+    ' of its own segment (partial UNILOAD, D = distance ratios), so a window carries exactly its length
     For e = 1 To reCnt
         t = rET(e): i = rEI(e)
         If rOn(t, i) And rOn(t, i + 1) Then
-            mdS = (rSt(t, i) + rSt(t, i + 1)) / 2
-            k = SegOf(t, mdS)
-            If t = 1 Then
-                RailLoad e, "FREN", "FB_" & k, BRAKE_Q * alphaLM
-                RailLoad e, "FREN", "RB_" & k, -BRAKE_Q * alphaLM
-            End If
-            If t = tt Then
-                RailLoad e, "IVME", "FT_" & k, TRAC_Q * alphaLM
-                RailLoad e, "IVME", "RT_" & k, -TRAC_Q * alphaLM
-            End If
+            s0 = rSt(t, i): s1 = rSt(t, i + 1): le = s1 - s0
+            If t = 1 Then c = cut1 Else c = cut2
+            pa = s0
+            Do While pa < s1 - 0.000001
+                pb = s1
+                For j = 1 To UBound(c)
+                    If c(j) > pa + 0.000001 And c(j) < pb Then pb = c(j): Exit For
+                Next j
+                k = SegOf(t, (pa + pb) / 2)
+                ra = (pa - s0) / le: rb = (pb - s0) / le
+                If t = 1 Then
+                    RailLoad e, "FREN", "FB_" & k, BRAKE_Q * alphaLM, ra, rb
+                    RailLoad e, "FREN", "RB_" & k, -BRAKE_Q * alphaLM, ra, rb
+                End If
+                If t = tt Then
+                    RailLoad e, "IVME", "FT_" & k, TRAC_Q * alphaLM, ra, rb
+                    RailLoad e, "IVME", "RT_" & k, -TRAC_Q * alphaLM, ra, rb
+                End If
+                pa = pb
+            Loop
         End If
     Next e
 End Sub
@@ -2118,14 +2182,14 @@ Private Function FnId(ByVal trib As Double) As Long
     FnId = fnIds(k)
 End Function
 
-Private Sub RailLoad(ByVal e As Long, ByVal lc As String, ByVal grp As String, ByVal q As Double)
+Private Sub RailLoad(ByVal e As Long, ByVal lc As String, ByVal grp As String, ByVal q As Double, ByVal ra As Double, ByVal rb As Double)
     Dim el As Long, id As Long, s As String
     el = NUM_LIMIT + e - 1
     lgUsed(grp) = 1
     id = 1
     If railItems.Exists(el) Then id = 2 + (Len(railItems(el)) - Len(Replace(railItems(el), """ID"":", ""))) \ 5 - 1
     s = "{""ID"":" & id & ",""LCNAME"":" & QS(lc) & ",""GROUP_NAME"":" & QS(grp) & ",""CMD"":""BEAM"",""TYPE"":""UNILOAD"",""DIRECTION"":""LX"",""USE_PROJECTION"":false,""USE_ECCEN"":false," & _
-        """D"":[0,1,0,0],""P"":[" & JN(q) & "," & JN(q) & ",0,0],""USE_ADDITIONAL"":false,""ADDITIONAL_I_END"":0,""ADDITIONAL_J_END"":0,""USE_ADDITIONAL_J_END"":false}"
+        """D"":[" & JN(ra) & "," & JN(rb) & ",0,0],""P"":[" & JN(q) & "," & JN(q) & ",0,0],""USE_ADDITIONAL"":false,""ADDITIONAL_I_END"":0,""ADDITIONAL_J_END"":0,""USE_ADDITIONAL_J_END"":false}"
     If railItems.Exists(el) Then railItems(el) = railItems(el) & "," & s Else railItems(el) = s
 End Sub
 
@@ -2166,17 +2230,19 @@ Private Sub AddRailLinks()
         s = s & IIf(s = "", "", ",") & MlfcJson(f, "U_" & kk, trib * TRK_Q_UNL) & "," & MlfcJson(f + 1, "L_" & kk, trib * TRK_Q_LOAD)
     Next kk
     Add "db/MLFC", "{""Assign"":{" & s & "}}"
+    ' links run down from the rail node to the track node, like the bearing links: ANGLE -phi then
+    ' turns the spring along the track (an upward link put it 2 phi off, measured 2026-11-09)
     s = "": no = nLink
     For t = 1 To nTrk
         For i = 1 To rN(t)
             k = SegOf(t, rSt(t, i))
             f = FnId(rTr(t, i))
             no = no + 1
-            s = s & IIf(s = "", "", ",") & QS(CStr(no)) & ":{""NODE"":[" & rGr(t, i) & "," & rNode(t, i) & "],""ANGLE"":" & JN(rAng(t, i)) & ",""LINK"":""GEN"",""R_S"":[true,true,false,true,false,true],""SDR"":[0,0,0,0,0,0],""bSHEAR"":false,""DR"":[0.5,0.5],""BNGR_NAME"":""BG_RAY""}"
+            s = s & IIf(s = "", "", ",") & QS(CStr(no)) & ":{""NODE"":[" & rNode(t, i) & "," & rGr(t, i) & "],""ANGLE"":" & JN(rAng(t, i)) & ",""LINK"":""GEN"",""R_S"":[true,true,false,true,false,true],""SDR"":[0,0,0,0,0,0],""bSHEAR"":false,""DR"":[0.5,0.5],""BNGR_NAME"":""BG_RAY""}"
             no = no + 1
-            s = s & "," & QS(CStr(no)) & ":{""NODE"":[" & rGr(t, i) & "," & rNode(t, i) & "],""ANGLE"":" & JN(rAng(t, i)) & ",""LINK"":""MULTILINEAR"",""DIR"":2,""MLFC"":" & f & ",""DRENDI"":0.5,""BNGR_NAME"":" & QS("U" & t & "_" & k) & "}"
+            s = s & "," & QS(CStr(no)) & ":{""NODE"":[" & rNode(t, i) & "," & rGr(t, i) & "],""ANGLE"":" & JN(rAng(t, i)) & ",""LINK"":""MULTILINEAR"",""DIR"":2,""MLFC"":" & f & ",""DRENDI"":0.5,""BNGR_NAME"":" & QS("U" & t & "_" & k) & "}"
             no = no + 1
-            s = s & "," & QS(CStr(no)) & ":{""NODE"":[" & rGr(t, i) & "," & rNode(t, i) & "],""ANGLE"":" & JN(rAng(t, i)) & ",""LINK"":""MULTILINEAR"",""DIR"":2,""MLFC"":" & (f + 1) & ",""DRENDI"":0.5,""BNGR_NAME"":" & QS("L" & t & "_" & k) & "}"
+            s = s & "," & QS(CStr(no)) & ":{""NODE"":[" & rNode(t, i) & "," & rGr(t, i) & "],""ANGLE"":" & JN(rAng(t, i)) & ",""LINK"":""MULTILINEAR"",""DIR"":2,""MLFC"":" & (f + 1) & ",""DRENDI"":0.5,""BNGR_NAME"":" & QS("L" & t & "_" & k) & "}"
             c = c + 3
             If c >= 900 Then Add "db/ELNK", "{""Assign"":{" & s & "}}": s = "": c = 0
         Next i
@@ -2234,29 +2300,31 @@ Private Sub AddStages()
         If i = tot Then kind = 3           ' END
         j = i - nWin - 2
         For t = 1 To nTrk
-            nSeg = IIf(t = 1, UBound(cut1), UBound(cut2)) + 1
+            ' not IIf: it evaluates both sides, and cut2 is empty on a single-track bridge
+            If t = 1 Then nSeg = UBound(cut1) + 1 Else nSeg = UBound(cut2) + 1
             For k = 1 To nSeg
+                m = SegMid(t, k)
                 If bgUsed.Exists("U" & t & "_" & k) Then
-                    m = SegMid(t, k)
                     win1 = False
                     If kind = 0 Then
                         If t = 1 Then win1 = (m >= wA(i) - EPS And m <= wB(i) + EPS)
-                        If t = tt And tt > 1 Then win1 = (m >= wC(i) - EPS And m <= wD(i) + EPS)
+                        If t = tt And tt > 1 Then win1 = (m >= wE(i) - EPS And m <= wF(i) + EPS)
                     ElseIf kind = 3 Then
                         win1 = (m >= rSt(t, rFirst(t, 1)) - EPS And m <= rSt(t, rLast(t, nSp)) + EPS)
                     ElseIf kind = 4 Then
                         win1 = (m >= AxisSt(t, lpA(j) - 1) - EPS And m <= AxisSt(t, lpB(j)) + EPS)
                     End If
                     curB(IIf(win1, "L", "U") & t & "_" & k) = 1
-                    If kind = 0 Then
-                        If t = 1 And m >= wA(i) - EPS And m <= wB(i) + EPS Then
-                            nm = IIf(wS(i) > 0, "FB_", "RB_") & k
-                            If lgUsed.Exists(nm) Then curL(nm) = 1
-                        End If
-                        If t = tt And m >= wC(i) - EPS And m <= wD(i) + EPS Then
-                            nm = IIf(wS(i) > 0, "FT_", "RT_") & k
-                            If lgUsed.Exists(nm) Then curL(nm) = 1
-                        End If
+                End If
+                ' loads apart from the springs: a short segment can hold an element midpoint but no rail node
+                If kind = 0 Then
+                    If t = 1 And wBr(i) And m >= wA(i) - EPS And m <= wB(i) + EPS Then
+                        nm = IIf(wS(i) > 0, "FB_", "RB_") & k
+                        If lgUsed.Exists(nm) Then curL(nm) = 1
+                    End If
+                    If t = tt And wTr(i) And m >= wC(i) - EPS And m <= wD(i) + EPS Then
+                        nm = IIf(wS(i) > 0, "FT_", "RT_") & k
+                        If lgUsed.Exists(nm) Then curL(nm) = 1
                     End If
                 End If
             Next k
