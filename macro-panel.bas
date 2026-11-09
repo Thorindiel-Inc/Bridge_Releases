@@ -36,8 +36,8 @@ Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPt
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-09e"
-Private Const SCRIPT_CHANGELOG As String = "RTI sonuclari: picture and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari; Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases; UiChoice can preselect an item; RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons"
+Private Const SCRIPT_VERSION As String = "2026-11-09f"
+Private Const SCRIPT_CHANGELOG As String = "Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: picture and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari; Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases; UiChoice can preselect an item"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -84,6 +84,7 @@ Private fKey() As String, fTyp() As String, fCnt As Long
 Private vals As Object
 Private uiBtn As Long, uiText As String, uiPick As Long, pickDef As Long, running As Boolean
 Private stepTxt As String, stepT As Double, runBad As Boolean   ' live log: open step, its start, a failure was logged
+Private stopReq As Boolean, stopRaised As Boolean, runBack As Long   ' Durdur: asked, raised once; colour of the Run button
 
 Private Function Tools() As Variant
     Tools = Array( _
@@ -92,9 +93,8 @@ Private Function Tools() As Variant
         "Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|", _
         "MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet", _
         "MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan", _
-        "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Civil NX'te a\u00E7\u0131k sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131m oranlar\u0131n\u0131 okur, MOD sayfas\u0131na yazar. Modele bir \u015Fey yazmaz.|", _
-        "MIDAS sonu\u00E7lar\u0131|Mod \u015Fekilleri|MIDAS_SEKIL_AL||Civil NX'te a\u00E7\u0131k sismik modelden iki model g\u00F6r\u00FCn\u00FC\u015F\u00FC ile X ve Y y\u00F6n\u00FCnde k\u00FCtle kat\u0131l\u0131m\u0131 en b\u00FCy\u00FCk iki\u015Fer modun \u015Feklini (MOD sayfas\u0131ndan) yakalar; Z_YATAY resimlerini ve \u015Fekil adlar\u0131n\u0131 g\u00FCnceller. Modele bir \u015Fey yazmaz, yaln\u0131zca g\u00F6r\u00FCn\u00FCm\u00FC de\u011Fi\u015Ftirir.|res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px: Civil NX penceresi her resimde ge\u00E7ici olarak de\u011Fi\u015Fir)~c~Ekran boyutu/4000 px/3000 px/2000 px/1000 px", _
-        "MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'te a\u00E7\u0131k RTI modelinden ray gerilmesini, tabliye ucu ve ray-tabliye yer de\u011Fi\u015Ftirmelerini okur, RTI_SONUC sayfas\u0131na yazar; 3B_RTI_Y resimlerini de al\u0131r; 'Yaln\u0131z resimle' okumay\u0131 atlar, pencereleri RTI_SONUC'tan al\u0131r (model, ray gerilmesi N/mm\u00B2, tabliye yer de\u011Fi\u015Ftirmesi mm, belirleyici pencerelerde). Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez; resimler s\u0131ras\u0131nda birim sistemi ge\u00E7ici olarak N, mm olur.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px: Civil NX penceresi her resimde ge\u00E7ici olarak de\u011Fi\u015Fir)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
+        "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131mlar\u0131n\u0131 MOD'a okur; en b\u00FCy\u00FCk X ve Y modlar\u0131n\u0131n \u015Fekillerini Z_YATAY'a resimler. Modele bir \u015Fey yazmaz.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
+        "MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri 3B_RTI_Y'ye yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu;olcek~LM71 diyagram \u00F6l\u00E7e\u011Fi~n~1", _
         "Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|", _
         "Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
         "Rapor|\u015Eekil ve tablo listeleri|FIG_TAB_AYARLA||\u015Eekil ve tablo listelerini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
@@ -194,6 +194,42 @@ Public Sub PANEL_TEST(ByVal row As Long, ByVal txt As String)
     UiLog txt
     UiProgress 45, "test"
 End Sub
+
+' test: a fake run, Durdur pressed at step 3; the fake macro has its own handler whose cleanup
+' reports progress again (the stop must raise only once); returns the states and the log
+Public Function PANEL_STOPTEST() As String
+    Dim s As String
+    PANEL_AC
+    pForm.Controls("txtLog").Text = ""
+    running = True: stepTxt = "": runBad = False: stopReq = False: stopRaised = False
+    SetBusy True
+    s = "busy caption=" & pForm.Controls("cmdRun").Caption & ", enabled=" & pForm.Controls("cmdRun").Enabled
+    s = s & vbLf & "fake macro: " & FakeMacro()
+    s = s & vbLf & "after: caption=" & pForm.Controls("cmdRun").Caption & ", enabled=" & pForm.Controls("cmdRun").Enabled & ", UiStopped=" & UiStopped()
+    FlushStep ""
+    LogLine IIf(runBad Or stopReq, ChrW(215), ChrW(9632)), IIf(stopReq, "Durduruldu", "Bitti"), -1
+    running = False: SetBusy False
+    s = s & vbLf & "idle caption=" & pForm.Controls("cmdRun").Caption & ", enabled=" & pForm.Controls("cmdRun").Enabled
+    PANEL_STOPTEST = s & vbLf & "LOG:" & vbLf & pForm.Controls("txtLog").Text
+End Function
+
+Private Function FakeMacro() As String
+    Dim i As Long, done As Long
+    On Error GoTo Fail
+    For i = 1 To 10
+        UiProgress i * 10, "table " & i & "/10  db/STAG"
+        done = i
+        If i = 3 Then EvRun
+    Next i
+    FakeMacro = "ran to the end (" & done & " steps): the stop did NOT act"
+    Exit Function
+Fail:
+    FakeMacro = "stopped after step " & done & ": " & Err.Description
+    On Error Resume Next
+    UiProgress 100, "cleanup: units back"
+    FakeMacro = FakeMacro & "; cleanup progress err=" & Err.Number
+    UiMsg "STOPPED: " & Err.Description, vbExclamation, "Test"
+End Function
 
 ' test: fakes a run from the window and returns the time of 500 steps in ms, then the log
 Public Function PANEL_LOGTEST() As String
@@ -506,7 +542,11 @@ End Function
 
 Public Sub EvRun()
     Dim k As Long, p As Variant, sh As String, t As Single, msg As String
-    If running Then Exit Sub
+    ' while a macro runs, the button is Durdur: the click asks the macro to stop at its next step
+    If running Then
+        RequestStop
+        Exit Sub
+    End If
     k = curRow
     If k < 0 Then Exit Sub
     p = Split(toolList(rowTool(k)), "|")
@@ -528,14 +568,14 @@ Public Sub EvRun()
     End If
     running = True
     SetBusy True
-    stepTxt = "": runBad = False
+    stepTxt = "": runBad = False: stopReq = False: stopRaised = False
     LogLine ChrW(9658), U(CStr(p(1))) & FieldText(), -1
     SetBar 0, U("\u00C7al\u0131\u015F\u0131yor...")
     t = Timer
     Application.run "'" & ThisWorkbook.Name & "'!" & p(2)
     FlushStep IIf(runBad, ChrW(215), "")
     SetBar 100, U("Bitti: ") & Format(Timer - t, "0") & " s"
-    LogLine IIf(runBad, ChrW(215), ChrW(9632)), IIf(runBad, U("Bitti, hata var: "), U("Bitti: ")) & Format(Timer - t, "0") & " s", -1
+    LogLine IIf(runBad Or stopReq, ChrW(215), ChrW(9632)), IIf(stopReq, U("Durduruldu: "), IIf(runBad, U("Bitti, hata var: "), U("Bitti: "))) & Format(Timer - t, "0") & " s", -1
     AddText ""
 Done:
     running = False
@@ -571,9 +611,36 @@ End Function
 
 Private Sub SetBusy(ByVal busy As Boolean)
     If pForm Is Nothing Then Exit Sub
-    pForm.Controls("cmdRun").Enabled = Not busy
+    With pForm.Controls("cmdRun")
+        If busy Then
+            runBack = .BackColor
+            .Caption = "Durdur": .BackColor = C_RED
+        Else
+            .Caption = U("\u00C7al\u0131\u015Ft\u0131r")
+            If runBack <> 0 Then .BackColor = runBack
+        End If
+        .Enabled = True
+    End With
     pForm.Repaint
 End Sub
+
+' Durdur pressed: the running macro stops at its next progress step (UiProgress raises once);
+' a Civil NX request already sent is finished first
+Private Sub RequestStop()
+    If stopReq Then Exit Sub
+    stopReq = True
+    With pForm.Controls("cmdRun")
+        .Caption = "Duruyor...": .Enabled = False
+    End With
+    LogLine ChrW(215), U("Durdurma istendi: makro bir sonraki ad\u0131mda duracak (g\u00F6nderilmi\u015F bir Civil NX iste\u011Fi \u00F6nce biter)."), -1
+    pForm.Repaint
+End Sub
+
+' for macros that want to check between their own steps
+Public Function UiStopped() As Boolean
+    DoEvents
+    UiStopped = (running And stopReq)
+End Function
 
 Public Sub EvClear()
     pForm.Controls("txtLog").Text = ""
@@ -636,9 +703,15 @@ Public Sub UiLog(ByVal txt As String)
     DoEvents
 End Sub
 
-' progress bar; during a run from the window a new step text also closes the last step in the log
+' progress bar; during a run from the window a new step text also closes the last step in the log.
+' After Durdur it raises one error, so the macro stops through its own error handling (cleanup runs).
 Public Sub UiProgress(ByVal pct As Double, ByVal txt As String)
     If Not PanelOpen() Then Exit Sub
+    If running And stopReq And Not stopRaised Then
+        stopRaised = True
+        FlushStep ChrW(215)
+        Err.Raise vbObjectError + 900, "PANEL", U("Durduruldu (Durdur d\u00FC\u011Fmesi). Yar\u0131m kalan bir MIDAS modeli eksiktir: yeniden kurun.")
+    End If
     If running And txt <> stepTxt Then
         FlushStep ""
         stepTxt = txt: stepT = Timer
@@ -726,6 +799,7 @@ Public Function UiMsg(ByVal prompt As String, Optional ByVal buttons As Long = v
     Dim kind As Long, style As Long
     kind = buttons And 7
     style = buttons And 112
+    If kind = vbOKOnly And running And stopReq And PanelOpen() Then UiLog prompt: UiMsg = vbOK: Exit Function
     If kind = vbOKOnly And style <> vbCritical And style <> vbExclamation And PanelOpen() Then
         UiLog prompt
         UiMsg = vbOK

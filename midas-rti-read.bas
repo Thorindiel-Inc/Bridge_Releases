@@ -46,8 +46,8 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-09d"
-Private Const SCRIPT_CHANGELOG As String = "Window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times; reads shown step by step in the macro window log; new: rail stress, deck end and rail-deck movements of the RTI model into sheet RTI_SONUC"
+Private Const SCRIPT_VERSION As String = "2026-11-09e"
+Private Const SCRIPT_CHANGELOG As String = "Pictures: LM71 strip over the whole bridge with Civil NX zoom fit and a diagram scale field (olcek); LM71 values MinMax Only, Min & Max, Limit Scale 0.01 % (as the GUI); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, LM71 diagram at half scale, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times; reads shown step by step in the macro window log; new: rail stress, deck end and rail-deck movements of the RTI model into sheet RTI_SONUC"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_RTI"
@@ -59,7 +59,7 @@ Private Const CHUNK_ROWS As Long = 30000
 Private Const BIG As Double = 1E+300
 ' pictures (3B_RTI_Y)
 Private Const FIG_SHEET As String = "3B_RTI_Y"
-Private Const PAGE_ROWS As String = "29,61,93,125"   ' caption rows, pages 1-4
+Private Const PAGE_ROWS As String = "29,61,93"      ' caption rows, pages 1-3 (owner removed the displacement page)
 Private Const CAM_H As Double = 30                  ' model pictures: camera as MIDAS_SEKIL
 Private Const CAM_V As Double = 30
 Private Const CAM_V_STRIP As Double = 0             ' result strips: side view
@@ -68,7 +68,6 @@ Private Const CS_CASE As String = "Summation"
 Private Const MV_CASE As String = "LM71"
 Private Const MV_MINMAX As String = "All"
 Private Const MV_STAGE As String = "PostCS"
-Private Const DIAG_SCALE As Double = 1#
 Private Const N_COLOR As Long = 12
 Private Const WAIT_S As Long = 30
 Private Const FILL As Double = 0.9
@@ -77,6 +76,9 @@ Private Const ZOOM_RATE As Double = 0.0203
 Private Const RES_W As String = "4000,3000,2000,0"  ' window field res; 0 = screen size
 Private Const PIC_PREFIX As String = "RTI_RESIM_"
 Private Const LBL_PREFIX As String = "RTI_ETIKET_"
+Private Const LIMIT_PCT As Double = 0.01             ' values: MinMax Only, Min & Max, Limit Scale 0.01 % (owner's GUI)
+Private Const SLOT_PREFIX As String = "RTI_YER_"     ' place for a stage picture pasted by hand
+Private Const FRAME_TAG As String = "RTI_FRAME"      ' frame of a page, kept in the alternative text
 
 Private mKey As String
 Private http As Object
@@ -102,6 +104,8 @@ Private gTenE As Long, gTenWin As String, gCmpE As Long, gCmpWin As String
 Private gDbAx As String, gDbWin As String, gDhAx As String, gDaAx As String, gDaWin As String
 Private mPics As Boolean, mOnly As Boolean, mResW As Long, mLastMode As String, mAspect As Double, mPlanLog As String
 Private mWm As Double, mHm As Double, mD As Double
+Private mNoLimit As Boolean   ' Civil NX refused LIMIT_SCALE as a decimal: sent without it
+Private mDiag As Double       ' diagram scale of the rail stress strip (window field olcek, default 1)
 
 ' ============================================================================
 Public Sub MIDAS_RTI_OKU()
@@ -111,6 +115,8 @@ Public Sub MIDAS_RTI_OKU()
     ' field islem: 1 read + pictures, 2 pictures only (windows from RTI_SONUC), 3 read only
     mPics = (UiIdx("islem", 1) <> 3): mOnly = (UiIdx("islem", 1) = 2)
     mResW = ResWidth(UiIdx("res", 1))
+    mDiag = UiNum("olcek", 1)
+    If mDiag <= 0 Then mDiag = 1
     msg = RunAll(True)
     UiMsg msg, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
     Exit Sub
@@ -122,7 +128,7 @@ End Sub
 ' live run that also saves every request and answer to folder (for the offline test)
 Public Function MIDAS_RTI_RECORD(ByVal folder As String, Optional ByVal withPics As Boolean = False, Optional ByVal resW As Long = 4000, Optional ByVal onlyPics As Boolean = False) As String
     On Error GoTo Fail
-    mRec = folder: mPlay = "": mSeq = 0: mPics = withPics Or onlyPics: mOnly = onlyPics: mResW = resW
+    mRec = folder: mPlay = "": mSeq = 0: mPics = withPics Or onlyPics: mOnly = onlyPics: mResW = resW: mDiag = 1
     MIDAS_RTI_RECORD = RunAll(False)
     mRec = ""
     Exit Function
@@ -135,7 +141,7 @@ End Function
 ' offline run on a folder saved by MIDAS_RTI_RECORD (pictures: only the requests are listed)
 Public Function MIDAS_RTI_TEST(ByVal folder As String, Optional ByVal withPics As Boolean = False, Optional ByVal resW As Long = 4000, Optional ByVal onlyPics As Boolean = False) As String
     On Error GoTo Fail
-    mPlay = folder: mRec = "": mSeq = 0: mPics = withPics Or onlyPics: mOnly = onlyPics: mResW = resW
+    mPlay = folder: mRec = "": mSeq = 0: mPics = withPics Or onlyPics: mOnly = onlyPics: mResW = resW: mDiag = 1
     MIDAS_RTI_TEST = RunAll(False)
     mPlay = ""
     Exit Function
@@ -175,7 +181,7 @@ Private Function RunAll(ByVal ask As Boolean) As String
     ReadStages
     If ask Then
         If UiMsg("RTI results: " & nEl & " rail elements, " & (nN) & " nodes, " & nW & " windows." & vbCrLf & _
-                 "Reading takes several minutes and keeps Civil NX busy." & IIf(mPics, vbCrLf & "Then 10 pictures go into " & FIG_SHEET & ": Civil NX shows each view and uses N, mm for the result pictures (set back after).", "") & vbCrLf & "Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
+                 "Reading takes several minutes and keeps Civil NX busy." & IIf(mPics, vbCrLf & "Then 3 pictures go into " & FIG_SHEET & " (and 4 labelled places for the stage pictures pasted by hand): Civil NX shows each view and uses N, mm for the LM71 picture (set back after).", "") & vbCrLf & "Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
             RunAll = "Stopped: nothing was written.": Exit Function
         End If
     End If
@@ -886,14 +892,17 @@ End Sub
 '  PICTURES in 3B_RTI_Y (owner 2026-11-09: one macro with the result pull)
 '  page 1  model, line view with supports, whole bridge
 '  page 2  model, solid, +-REG_SPANS spans around the axis of the largest dB
-'  page 3  5 strips of rail axial stress Sax (N/mm2): LM71, window of the largest tension,
-'          window of the largest compression, TU+, TU-; LM71 and TU+ around the rail element of
-'          the largest tension, the others around their own element; rail of that track only
-'  page 4  3 strips of deck displacement DX (mm): LM71 around the axis of the largest dH, the
-'          window of the largest dB and of the largest dabs around their axes
+'  page 3  5 strips of rail axial stress Sax (N/mm2): LM71 (captured: the whole rail of the track
+'          of the largest tension, Civil NX zoom fit, diagram scale from field olcek), then the
+'          window of the largest tension, the window of the
+'          largest compression, TU+, TU-: Civil NX ignores STAGE_NAME in a capture (owner's run
+'          2026-11-09), so these four get a labelled place for a picture pasted by hand
+'  (the displacement page was removed by the owner 2026-11-09)
 '  A strip shows +-REG_SPANS spans (ACTIVE elements), side view; a label names its case.
-'  The strips fill the frame of the page's old picture, which is deleted only after all the
-'  new ones are in. Units N, mm for the result pictures, set back after (as the Culvert macros).
+'  The strips fill the frame of the page (kept in the alternative text of the macro's shapes); on
+'  the first run the old pictures go only after all the new ones are in; later runs replace only
+'  the macro's own shapes, so pictures pasted by hand stay. Units N, mm for the result pictures,
+'  set back after (as the Culvert macros).
 ' ============================================================================
 Private Function Pictures() As String
     Dim ws As Worksheet, rows As Variant, p As Long, res As String, rep As String, nOk As Long
@@ -906,10 +915,10 @@ Private Function Pictures() As String
     If mPlay = "" Then
         If Len(Dir(folder, vbDirectory)) = 0 Then MkDir folder
     End If
-    mLastMode = "": mAspect = 0: mPlanLog = ""
+    mLastMode = "": mAspect = 0: mPlanLog = "": mNoLimit = False
     PicGeometry
     rows = Split(PAGE_ROWS, ",")
-    For p = 1 To 4
+    For p = 1 To 3
         If p = 3 Then
             uSet = UnitsTo(uOld)
             If Not uSet Then rep = rep & vbCrLf & "  ! the unit system could not be set to N, mm: the result pictures show kN, m"
@@ -923,29 +932,36 @@ Done:
     ActiveAll
     If mPlay = "" Then MaximizeCivil
     If mPlay <> "" Then WriteUtf8 mPlay & "\picture_plan.txt", mPlanLog
-    Pictures = "  Pictures in " & FIG_SHEET & ": " & nOk & " of 4 pages " & IIf(mPlay = "", "replaced", "planned (dry run, list in picture_plan.txt)") & rep
+    Pictures = "  Pictures in " & FIG_SHEET & ": " & nOk & " of 3 pages " & IIf(mPlay = "", "replaced", "planned (dry run, list in picture_plan.txt)") & rep
     Exit Function
 Fail:
     rep = rep & vbCrLf & "  ! STOPPED: " & Err.Description
     Resume Done
 End Function
 
-' one page: captures its strips (1 on the model pages), then puts them into the frame of the old
-' picture; when a capture fails the page is left as it was; "" = done
+' one page: captures its pictures, then puts them into the frame of the page; page 3 strips 2-5
+' (stage results) get a labelled place to paste the picture by hand; when a capture fails the page
+' is left as it was; "" = done
 Private Function PicturePage(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, ByVal folder As String) As String
-    Dim fr As Variant, n As Long, i As Long, f() As String, lbl() As String, res As String
-    fr = PageFrame(ws, capRow)
+    Dim fr As Variant, n As Long, i As Long, f() As String, lbl() As String, res As String, man() As Boolean
+    fr = PageFrame(ws, page, capRow)
     If IsEmpty(fr) Then PicturePage = "no picture on the page (rows " & capRow - 27 & "-" & capRow - 1 & "), nothing captured": Exit Function
-    n = Choose(page, 1, 1, 5, IIf(gDaAx = "", 2, 3))
-    ReDim f(1 To n): ReDim lbl(1 To n)
+    n = Choose(page, 1, 1, 5)
+    ReDim f(1 To n): ReDim lbl(1 To n): ReDim man(1 To n)
     For i = 1 To n
-        Note 97, "picture: page " & page & IIf(n > 1, ", strip " & i & " / " & n, "")
-        f(i) = folder & "\RTI_Y_" & page & "_" & i & ".png"
-        res = CaptureStrip(page, i, n, fr, f(i), lbl(i))
-        If res <> "" Then PicturePage = IIf(n > 1, "strip " & i & ": ", "") & res & "; the page was not changed": Exit Function
+        man(i) = (page = 3 And i > 1)
+        If man(i) Then
+            lbl(i) = SlotText(i)
+            mPlanLog = mPlanLog & vbLf & "page " & page & ", strip " & i & " / " & n & ": by hand: " & Replace(lbl(i), vbLf, " / ")
+        Else
+            Note 97, "picture: page " & page & IIf(n > 1, ", strip " & i & " / " & n, "")
+            f(i) = folder & "\RTI_Y_" & page & "_" & i & ".png"
+            res = CaptureStrip(page, i, n, fr, f(i), lbl(i))
+            If res <> "" Then PicturePage = IIf(n > 1, "strip " & i & ": ", "") & res & "; the page was not changed": Exit Function
+        End If
     Next i
     If mPlay <> "" Then Exit Function
-    PicturePage = PlaceStrips(ws, page, capRow, fr, f, lbl, n)
+    PicturePage = PlaceStrips(ws, page, capRow, fr, f, lbl, man, n)
 End Function
 
 ' one capture; "" = the image file is there (dry run: the request is only listed)
@@ -1007,12 +1023,22 @@ Private Function CaptureStrip(ByVal page As Long, ByVal i As Long, ByVal n As Lo
         asp = frameAsp
     End If
     zoom = ZoomFor(asp, frameAsp)
+    ' side view of the flat rail: Civil NX's own zoom fit (the computed zoom 181 showed about 65 m
+    ' instead of the planned 120 m in the owner's run 2026-11-09)
+    If kind = "stress" Then zoom = 100
     mPlanLog = mPlanLog & vbLf & "page " & page & ", strip " & i & " / " & n & ": " & kind & " " & cType & " " & stg & ", " & cnt & " elements, direction " & JNum(Round(axDeg, 2)) & " deg, frame " & JNum(Round(frameAsp, 2)) & ":1, zoom " & zoom & IIf(w > 0, ", " & w & " x " & h & " px", "") & ", label: " & lbl
     ' Civil NX drops ZOOM_LEVEL on the capture that switches between model and result view
     ' (MIDAS_SEKIL, measured 2026-11-09): that capture is sent once more
     If pMode <> mLastMode Then
         body = CapBody(kind, cType, stg, Replace(f, "\", "\\"), w, h, zoom, hor, vert, eL, nL)
-        If Not Api("POST", "view/CAPTURE", body, resp) Then CaptureStrip = "Civil NX: " & Left$(resp, 200): Exit Function
+        If Not Api("POST", "view/CAPTURE", body, resp) Then
+            ' the schema types LIMIT_SCALE as an integer: a refused capture is sent once more without it
+            If InStr(body, "LIMIT_SCALE") = 0 Then CaptureStrip = "Civil NX: " & Left$(resp, 200): Exit Function
+            mNoLimit = True
+            If mPlay = "" And mRec = "" Then UiLog "! Civil NX refused LIMIT_SCALE " & JNum(LIMIT_PCT) & ", values shown without it: " & Left$(resp, 120)
+            body = CapBody(kind, cType, stg, Replace(f, "\", "\\"), w, h, zoom, hor, vert, eL, nL)
+            If Not Api("POST", "view/CAPTURE", body, resp) Then CaptureStrip = "Civil NX: " & Left$(resp, 200): Exit Function
+        End If
         If mPlay = "" Then
             Call WaitForFile(f, WAIT_S)
             If mResW > 0 Then MaximizeCivil
@@ -1029,7 +1055,14 @@ Private Function CaptureStrip(ByVal page As Long, ByVal i As Long, ByVal n As Lo
             End If
         End If
         body = CapBody(kind, cType, stg, Replace(f, "\", "\\"), w, h, zoom, hor, vert, eL, nL)
-        If Not Api("POST", "view/CAPTURE", body, resp) Then CaptureStrip = "Civil NX: " & Left$(resp, 200): Exit Function
+        If Not Api("POST", "view/CAPTURE", body, resp) Then
+            ' the schema types LIMIT_SCALE as an integer: a refused capture is sent once more without it
+            If InStr(body, "LIMIT_SCALE") = 0 Then CaptureStrip = "Civil NX: " & Left$(resp, 200): Exit Function
+            mNoLimit = True
+            If mPlay = "" And mRec = "" Then UiLog "! Civil NX refused LIMIT_SCALE " & JNum(LIMIT_PCT) & ", values shown without it: " & Left$(resp, 120)
+            body = CapBody(kind, cType, stg, Replace(f, "\", "\\"), w, h, zoom, hor, vert, eL, nL)
+            If Not Api("POST", "view/CAPTURE", body, resp) Then CaptureStrip = "Civil NX: " & Left$(resp, 200): Exit Function
+        End If
         If mPlay <> "" Then Exit For
         If Not WaitForFile(f, WAIT_S) Then
             If mResW > 0 Then MaximizeCivil
@@ -1041,6 +1074,7 @@ Private Function CaptureStrip(ByVal page As Long, ByVal i As Long, ByVal n As Lo
         If Not PngSize(f, pw, ph) Then Exit For
         mAspect = pw / ph
         z2 = ZoomFor(mAspect, frameAsp)
+        If kind = "stress" Then z2 = 100
         If z2 = zoom Then Exit For
         zoom = z2
     Next pass
@@ -1074,13 +1108,13 @@ Private Function CapBody(ByVal kind As String, ByVal cType As String, ByVal stg 
                 b = b & """LOAD_CASE_COMB"":{""TYPE"":""CS"",""NAME"":" & QJ(CS_CASE) & "},"
             End If
             If kind = "stress" Then
-                b = b & """COMPONENTS"":{""PART"":""Total"",""COMP"":""Sax""},""DISPLAY_OPTIONS"":{""SCALE"":" & JNum(DIAG_SCALE) & ",""FILL"":""Solid""},"
+                b = b & """COMPONENTS"":{""PART"":""Total"",""COMP"":""Sax""},""DISPLAY_OPTIONS"":{""SCALE"":" & JNum(mDiag) & ",""FILL"":""Solid""},"
             Else
                 b = b & """COMPONENTS"":{""COMP"":""DX""},"
             End If
             b = b & """TYPE_OF_DISPLAY"":{""CONTOUR"":{""OPT_CHECK"":true,""NUM_OF_COLOR"":" & N_COLOR & ",""COLOR_TYPE"":""rgb""},"
             If kind = "disp" Then b = b & """DEFORM"":{""OPT_CHECK"":false},"
-            b = b & """VALUES"":{""OPT_CHECK"":true,""DECIMAL_PT"":" & IIf(kind = "stress", 1, 2) & ",""MINMAX_ONLY"":{""OPT_CHECK"":true,""MAXMIN"":""Min&Max""}},"
+            b = b & """VALUES"":{""OPT_CHECK"":true,""DECIMAL_PT"":" & IIf(kind = "stress", 1, 2) & ",""MINMAX_ONLY"":{""MAXMIN"":""Min&Max""" & IIf(mNoLimit, "", ",""LIMIT_SCALE"":" & JNum(LIMIT_PCT)) & "}},"
             b = b & """LEGEND"":{""OPT_CHECK"":false}}}"
     End Select
     CapBody = b & "}}"
@@ -1136,6 +1170,7 @@ Private Function PicRegion(ByVal kind As String, ByVal cx As Double, ByVal cy As
     Dim s0 As Double, rr As Double, i As Long, ka As Long, kb As Long, sm As Double, take As Boolean, t As Long
     Dim seen As Object, key As Variant
     s0 = Sta(cx, cy): rr = REG_SPANS * mSpan
+    If kind = "stress" Then rr = BIG          ' rail stress strip: the whole rail of the track (owner 2026-11-09)
     Set seen = CreateObject("Scripting.Dictionary")
     eL = "": nL = ""
     For i = 1 To aeN
@@ -1277,10 +1312,19 @@ Private Function ZoomFor(ByVal aspect As Double, ByVal frameAsp As Double) As Lo
 End Function
 
 ' ---- the sheet ----
-' frame of a page: the box around its pictures and picture groups (rows capRow-27 .. capRow-1);
-' Empty when none
-Private Function PageFrame(ws As Worksheet, ByVal capRow As Long) As Variant
-    Dim shp As Shape, r As Long, l0 As Double, t0 As Double, l1 As Double, t1 As Double, n As Long
+' frame of a page: kept by the macro in the alternative text of its shapes (RTI_FRAME|l|t|w|h);
+' first run: the box around the pictures and picture groups in rows capRow-27 .. capRow-1; Empty
+' when there is none
+Private Function PageFrame(ws As Worksheet, ByVal page As Long, ByVal capRow As Long) As Variant
+    Dim shp As Shape, r As Long, l0 As Double, t0 As Double, l1 As Double, t1 As Double, n As Long, v As Variant
+    For Each shp In ws.Shapes
+        If IsOurs(shp.Name, page) Then
+            v = Split(shp.AlternativeText, "|")
+            If UBound(v) = 4 Then
+                If v(0) = FRAME_TAG Then PageFrame = Array(Val(v(1)), Val(v(2)), Val(v(3)), Val(v(4))): Exit Function
+            End If
+        End If
+    Next shp
     For Each shp In ws.Shapes
         If shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup Then
             r = 0
@@ -1303,36 +1347,63 @@ Private Function PageFrame(ws As Worksheet, ByVal capRow As Long) As Variant
     If n > 0 Then PageFrame = Array(l0, t0, l1 - l0, t1 - t0)
 End Function
 
-' new pictures stacked in the frame, then the old pictures and labels of the page deleted
-Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, fr As Variant, f() As String, lbl() As String, ByVal n As Long) As String
+Private Function IsOurs(ByVal nm As String, ByVal page As Long) As Boolean
+    Dim pre As Variant
+    For Each pre In Array(PIC_PREFIX, LBL_PREFIX, SLOT_PREFIX)
+        If Left$(nm, Len(pre & page & "_")) = pre & page & "_" Then IsOurs = True: Exit Function
+    Next pre
+End Function
+
+Private Function FrameTag(fr As Variant) As String
+    FrameTag = FRAME_TAG & "|" & Trim$(Str$(fr(0))) & "|" & Trim$(Str$(fr(1))) & "|" & Trim$(Str$(fr(2))) & "|" & Trim$(Str$(fr(3)))
+End Function
+
+' the page's new pictures and hand-paste places stacked in the frame, then the old ones deleted:
+' the macro's own shapes always, the other pictures of the page only on the first run (the original
+' layout); a picture pasted by hand over a place is kept and that place is not drawn again
+Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, fr As Variant, f() As String, lbl() As String, man() As Boolean, ByVal n As Long) As String
     Dim i As Long, shp As Shape, newS() As Shape, hs As Double, old As New Collection, plc As Long, r As Long
+    Dim firstRun As Boolean, tg As String
     hs = fr(3) / n
     plc = 1
+    tg = FrameTag(fr)
+    firstRun = True
+    For Each shp In ws.Shapes
+        If IsOurs(shp.Name, page) Then firstRun = False: Exit For
+    Next shp
     For Each shp In ws.Shapes
         r = 0
         On Error Resume Next
         r = shp.TopLeftCell.Row
         On Error GoTo 0
-        If (shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup) And r >= capRow - 27 And r < capRow Then
-            old.Add shp: plc = shp.Placement
-        ElseIf Left$(shp.Name, Len(LBL_PREFIX & page & "_")) = LBL_PREFIX & page & "_" Then
+        If IsOurs(shp.Name, page) Then
             old.Add shp
+            If Left$(shp.Name, Len(PIC_PREFIX)) = PIC_PREFIX Then plc = shp.Placement
+        ElseIf firstRun And (shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup) And r >= capRow - 27 And r < capRow Then
+            old.Add shp: plc = shp.Placement
         End If
     Next shp
     ReDim newS(1 To n)
     On Error GoTo Bad
     For i = 1 To n
-        Set newS(i) = ws.Shapes.AddPicture(f(i), msoFalse, msoTrue, fr(0), fr(1) + (i - 1) * hs, -1, -1)
-        FitInto newS(i), fr(0), fr(1) + (i - 1) * hs, fr(2), hs
-        newS(i).Placement = plc
+        If Not man(i) Then
+            Set newS(i) = ws.Shapes.AddPicture(f(i), msoFalse, msoTrue, fr(0), fr(1) + (i - 1) * hs, -1, -1)
+            FitInto newS(i), fr(0), fr(1) + (i - 1) * hs, fr(2), hs
+            newS(i).Placement = plc
+            newS(i).AlternativeText = tg
+        End If
     Next i
     On Error GoTo 0
     For Each shp In old
         shp.Delete
     Next shp
     For i = 1 To n
-        newS(i).Name = PIC_PREFIX & page & "_" & i
-        If n > 1 Then AddLabel ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs
+        If man(i) Then
+            If Not HandPicture(ws, page, fr(0) + fr(2) / 2, fr(1) + (i - 0.5) * hs) Then AddSlot ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs, fr(2), hs, tg
+        Else
+            newS(i).Name = PIC_PREFIX & page & "_" & i
+            If n > 1 Then AddLabel ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs
+        End If
     Next i
     Exit Function
 Bad:
@@ -1341,6 +1412,70 @@ Bad:
     For i = 1 To n
         If Not newS(i) Is Nothing Then newS(i).Delete
     Next i
+End Function
+
+' a picture the macro did not make covering the point (pasted by hand)
+Private Function HandPicture(ws As Worksheet, ByVal page As Long, ByVal px As Double, ByVal py As Double) As Boolean
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        If Not IsOurs(shp.Name, page) Then
+            If shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup Then
+                If px >= shp.Left And px <= shp.Left + shp.Width And py >= shp.Top And py <= shp.Top + shp.Height Then HandPicture = True: Exit Function
+            End If
+        End If
+    Next shp
+End Function
+
+' dashed box with the text of what to capture by hand
+Private Sub AddSlot(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal txt As String, ByVal bl As Double, ByVal bt As Double, ByVal bw As Double, ByVal bh As Double, ByVal tg As String)
+    Dim sh As Shape
+    Set sh = ws.Shapes.AddShape(1, bl, bt, bw, bh)
+    With sh
+        .Name = SLOT_PREFIX & page & "_" & i
+        .Placement = 1
+        .AlternativeText = tg
+        .Fill.ForeColor.RGB = RGB(248, 248, 248)
+        .Line.ForeColor.RGB = RGB(150, 150, 150): .Line.Weight = 0.75: .Line.DashStyle = 4
+        With .TextFrame2
+            .WordWrap = msoTrue
+            .VerticalAnchor = 3
+            .TextRange.Text = txt
+            .TextRange.ParagraphFormat.Alignment = 2
+            .TextRange.Font.Size = 8
+            .TextRange.Font.Name = "Calibri"
+            .TextRange.Font.Fill.ForeColor.RGB = RGB(70, 70, 70)
+        End With
+    End With
+End Sub
+
+' text of a place for a stage picture pasted by hand (page 3, strips 2-5)
+Private Function SlotText(ByVal i As Long) As String
+    Dim e As Long, stg As String, what As String, cx As Double, cy As Double, trk As Long, axn As String, bb As String
+    bb = "en b" & ChrW(252) & "y" & ChrW(252) & "k "
+    Select Case i
+        Case 2: e = gTenE: stg = gTenWin: what = "Fren + ivme, " & stg & " (" & bb & ChrW(231) & "ekme)"
+        Case 3: e = gCmpE: stg = gCmpWin: what = "Fren + ivme, " & stg & " (" & bb & "bas" & ChrW(305) & "n" & ChrW(231) & ")"
+        Case 4: e = gTenE: stg = "TU+": what = "TU+"
+        Case Else: e = gCmpE: stg = "TU-": what = "TU-"
+    End Select
+    ElemPoint e, cx, cy, trk
+    axn = AxisNear(cx, cy)        ' the governing rail element is near this axis
+    SlotText = what & ", hat " & trk & ", Sax (N/mm" & ChrW(178) & ")" & vbLf & _
+        "Elle: Civil NX'te a" & ChrW(351) & "ama " & stg & ", CS Summation, Beam Stresses Diagram Sax, hat " & trk & " ray" & ChrW(305) & ", t" & ChrW(252) & "m k" & ChrW(246) & "pr" & ChrW(252) & " (belirleyici eleman aks " & axn & " yak" & ChrW(305) & "n" & ChrW(305) & "nda)" & _
+        "; resmi bu kutunun yerine yap" & ChrW(305) & ChrW(351) & "t" & ChrW(305) & "r" & ChrW(305) & "n."
+End Function
+
+' label of the axis nearest to the point
+Private Function AxisNear(ByVal px As Double, ByVal py As Double) As String
+    Dim key As Variant, ax2 As Double, ay2 As Double, dd As Double, bd As Double
+    bd = BIG
+    If mDeK Is Nothing Then Exit Function
+    For Each key In mDeK.keys
+        If AxisPoint(CStr(key), ax2, ay2) Then
+            dd = (ax2 - px) ^ 2 + (ay2 - py) ^ 2
+            If dd < bd Then bd = dd: AxisNear = CStr(key)
+        End If
+    Next key
 End Function
 
 ' crop the image (centred) to the shape of the box, then give it the box
@@ -1518,7 +1653,7 @@ Private Function PicturesOnly(ByVal ask As Boolean, ByVal pj As String) As Strin
         If UiMsg(msg & vbCrLf & vbCrLf & "Take the pictures with these windows anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
     End If
     If ask Then
-        If UiMsg("Pictures only: 10 pictures go into " & FIG_SHEET & ", windows and places from " & OUT_SHEET & " (" & gTenWin & ", " & gCmpWin & ", " & gDbWin & ")." & vbCrLf & _
+        If UiMsg("Pictures only: 3 pictures and 4 places for stage pictures go into " & FIG_SHEET & ", windows and places from " & OUT_SHEET & " (" & gTenWin & ", " & gCmpWin & ", " & gDbWin & ")." & vbCrLf & _
                  "Civil NX shows each view and uses N, mm for the result pictures (set back after). Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
     End If
     Set mDeK = DeckEnds()
@@ -1539,8 +1674,8 @@ Private Function FromSheet(ws As Worksheet, ByRef msg As String) As Boolean
     gDbAx = AxOf(ws.Range("E7").Value): gDbWin = WinOf(ws.Range("F7").Value)
     gDhAx = AxOf(ws.Range("E8").Value)
     gDaAx = AxOf(ws.Range("E11").Value): gDaWin = WinOf(ws.Range("F11").Value)
-    If gTenE = 0 Or gCmpE = 0 Or gTenWin = "" Or gCmpWin = "" Or gDbAx = "" Or gDbWin = "" Or gDhAx = "" Then
-        msg = OUT_SHEET & " holds no results of this model (E5:F8 empty or other rail elements): run it with " & ChrW(39) & "Oku + resimle" & ChrW(39) & " first. Nothing was captured."
+    If gTenE = 0 Or gCmpE = 0 Or gTenWin = "" Or gCmpWin = "" Or gDbAx = "" Then
+        msg = OUT_SHEET & " holds no results of this model (E5:F7 empty or other rail elements): run it with " & ChrW(39) & "Oku + resimle" & ChrW(39) & " first. Nothing was captured."
         Exit Function
     End If
     FromSheet = True

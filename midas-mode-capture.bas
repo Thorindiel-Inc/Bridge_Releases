@@ -9,7 +9,8 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 '  MIDAS_SEKIL - model and mode-shape pictures of the seismic model into sheet Z_YATAY
 '  (chapter 8 workbook)
 '
-'  Macro window (MAKROLAR) > MIDAS sonuclari > Mod sekilleri, or MIDAS_SEKIL_AL.
+'  Macro window (MAKROLAR) > MIDAS sonuclari > Modal analiz sonuclari (MIDAS_MOD_OKU, field Islem:
+'  read + pictures or pictures only), which calls MIDAS_SEKIL_CAPTURE; or MIDAS_SEKIL_AL alone.
 '  Reads the model OPEN in Civil NX through the MAPI; it writes nothing to the model,
 '  it only changes the view (view/CAPTURE) and reads db/PJCF and db/NODE.
 '  Pages of Z_YATAY, found by their caption row (C29, C61 ...):
@@ -40,8 +41,8 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-mode-capture"
-Private Const SCRIPT_VERSION As String = "2026-11-09a"
-Private Const SCRIPT_CHANGELOG As String = "New: warm-up capture where the view switches between model and results (Civil NX drops the zoom there); zoom from the model so the bridge fills the picture; picture size choice (screen size, 4000, 3000, 2000 or 1000 px wide); model and mode-shape pictures of the seismic model into Z_YATAY (2 largest X + 2 largest Y modes from MOD), captions follow the modes"
+Private Const SCRIPT_VERSION As String = "2026-11-09b"
+Private Const SCRIPT_CHANGELOG As String = "Scripted entry MIDAS_SEKIL_CAPTURE for the combined tool Modal analiz sonuclari (MIDAS_MOD_OKU: read + pictures, pictures only, read only); new: warm-up capture where the view switches between model and results (Civil NX drops the zoom there); zoom from the model so the bridge fills the picture; picture size choice (screen size, 4000, 3000, 2000 or 1000 px wide); model and mode-shape pictures of the seismic model into Z_YATAY (2 largest X + 2 largest Y modes from MOD), captions follow the modes"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_SEKIL"
@@ -111,6 +112,49 @@ Fail:
     MaximizeCivil
     UiMsg "STOPPED: " & Err.Description, vbExclamation, MSG_TITLE
 End Sub
+
+' scripted capture for the combined tool MIDAS_MOD_OKU (called late bound with Application.Run):
+'   pxWidth        picture width in px, 0 = screen size
+'   ask            True: questions in the window when the model or the MOD stamp do not fit;
+'                  False: such a run stops with a STOPPED line
+'   startQuestion  True: the 'Civil NX will show and capture 6 views' question (pictures only)
+'   modelChecked   True: the caller has already accepted the open model (read + pictures)
+' returns the summary text; it never raises
+Public Function MIDAS_SEKIL_CAPTURE(ByVal pxWidth As Long, ByVal ask As Boolean, Optional ByVal startQuestion As Boolean = False, Optional ByVal modelChecked As Boolean = False) As String
+    Dim pj As String, msg As String, modes As Variant, ok As Boolean
+    On Error GoTo Fail
+    If Not LayoutOk(msg) Then MIDAS_SEKIL_CAPTURE = msg: Exit Function
+    modes = PickModes(msg)
+    If IsEmpty(modes) Then MIDAS_SEKIL_CAPTURE = msg: Exit Function
+    If Not GetKey() Then MIDAS_SEKIL_CAPTURE = "STOPPED: no MAPI key: nothing was captured.": Exit Function
+    mResW = pxWidth
+    UiLog "Civil NX: model check (pictures)"
+    If Not Api("GET", "db/PJCF", "", pj) Then
+        If Left$(pj, 10) = "HTTP error" Or pj = "" Then MIDAS_SEKIL_CAPTURE = "STOPPED: Civil NX does not answer (is it open, is the MAPI connected?). " & Left$(pj, 200): Exit Function
+        pj = ""
+    End If
+    If Not modelChecked Then
+        If InStr(1, pj, " SEISMIC", vbBinaryCompare) = 0 Or InStr(1, pj, "midas-bridge-build", vbBinaryCompare) = 0 Then
+            If Not ask Then MIDAS_SEKIL_CAPTURE = "STOPPED: the model open in Civil NX is not a MIDAS_KOPRU seismic model.": Exit Function
+            If UiMsg("The model open in Civil NX is not a MIDAS_KOPRU seismic model." & vbCrLf & vbCrLf & _
+                     "Take its pictures anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then MIDAS_SEKIL_CAPTURE = "Stopped: nothing was captured.": Exit Function
+        End If
+    End If
+    If Not ModMatches(pj, msg) Then
+        If Not ask Then MIDAS_SEKIL_CAPTURE = "STOPPED: " & msg: Exit Function
+        If UiMsg(msg & vbCrLf & vbCrLf & "Take the pictures with these modes anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then MIDAS_SEKIL_CAPTURE = "Stopped: nothing was captured.": Exit Function
+    End If
+    If startQuestion Then
+        If UiMsg("Civil NX will show and capture 6 views (modes " & JoinModes(modes) & ")." & vbCrLf & _
+                 IIf(mResW > 0, "Pictures " & mResW & " px wide: the Civil NX window changes size for each capture and is maximized again after it.", "Pictures at the size of the Civil NX view: its window is not changed.") & vbCrLf & vbCrLf & _
+                 "Continue?", vbOKCancel + vbQuestion, MSG_TITLE) <> vbOK Then MIDAS_SEKIL_CAPTURE = "Stopped: nothing was captured.": Exit Function
+    End If
+    MIDAS_SEKIL_CAPTURE = CaptureAll(modes, ok)
+    Exit Function
+Fail:
+    MaximizeCivil
+    MIDAS_SEKIL_CAPTURE = "STOPPED: " & Err.Description
+End Function
 
 ' test entry without dialogs: live captures on the open model, only when it is a
 ' MIDAS_KOPRU seismic model and MOD was read from it; returns the summary

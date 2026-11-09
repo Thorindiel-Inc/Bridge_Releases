@@ -4,6 +4,10 @@ Option Explicit
 '  MIDAS_MOD - modal results of the seismic model into sheet MOD (chapter 8 workbook)
 '
 '  Macro window (MAKROLAR) > MIDAS sonuclari > Modal analiz sonuclari, or MIDAS_MOD_OKU.
+'  Window field 'islem': 1 read + pictures (default), 2 pictures only (no read: the modes come
+'  from MOD, whose Q1 stamp must name the open model), 3 read only; field 'res': picture width
+'  4000 / 3000 / 2000 px or screen size. The pictures (Z_YATAY) are taken by MIDAS_SEKIL, called
+'  late bound (MIDAS_SEKIL_CAPTURE), so this module also runs where MIDAS_SEKIL is missing.
 '  Reads the model OPEN in Civil NX through the MAPI, read only (nothing is written
 '  to the model): post/TABLE EIGENVALUEMODE and its sub-tables
 '     EIGENVALUE ANALYSIS                      -> MOD C6:J105   (mode, rad/s, Hz, s, tolerance)
@@ -22,8 +26,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-modal-read"
-Private Const SCRIPT_VERSION As String = "2026-11-09a"
-Private Const SCRIPT_CHANGELOG As String = "New: periods, frequencies, mass participation and factors of the seismic model into sheet MOD"
+Private Const SCRIPT_VERSION As String = "2026-11-09b"
+Private Const SCRIPT_CHANGELOG As String = "One tool with the mode-shape pictures: window field Islem = read + pictures, pictures only, read only; field res = picture width (pictures by MIDAS_SEKIL); new: periods, frequencies, mass participation and factors of the seismic model into sheet MOD"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_MOD"
@@ -34,14 +38,25 @@ Private Const OUT_SHEET As String = "MOD"
 Private Const N_MAX As Long = 100
 Private Const R_EIG As Long = 6, R_PCT As Long = 109, R_MAS As Long = 211, R_FAC As Long = 314, R_DIR As Long = 417
 Private Const STAMP_CELL As String = "Q1"
+Private Const RES_W As String = "4000,3000,2000,0"  ' window field res: picture width, 0 = screen size
 
 Private mKey As String
 Private http As Object
 
 ' ============================================================================
 Public Sub MIDAS_MOD_OKU()
-    Dim resp As String, msg As String, pj As String
+    Dim resp As String, msg As String, pj As String, mode As Long, pxW As Long, pics As String, ok As Boolean
     On Error GoTo Fail
+    ' field islem: 1 read + pictures, 2 pictures only, 3 read only (owner 2026-11-09: one tool, like MIDAS_RTI)
+    mode = UiIdx("islem", 1)
+    If mode < 1 Or mode > 3 Then mode = 1
+    pxW = PicWidth(UiIdx("res", 1))
+    If mode = 2 Then
+        ' pictures only: MIDAS_SEKIL asks its own questions (model, MOD stamp, start)
+        pics = Capture(pxW, True, True, False)
+        UiMsg pics, IIf(Left$(pics, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
+        Exit Sub
+    End If
     If Not LayoutOk(msg) Then UiMsg msg, vbExclamation, MSG_TITLE: Exit Sub
     If Not GetKey() Then UiMsg "No MAPI key: nothing was read.", vbExclamation, MSG_TITLE: Exit Sub
     UiLog "Civil NX: model check"
@@ -54,16 +69,47 @@ Public Sub MIDAS_MOD_OKU()
     End If
     If InStr(1, pj, " SEISMIC", vbBinaryCompare) = 0 Or InStr(1, pj, "midas-bridge-build", vbBinaryCompare) = 0 Then
         If UiMsg("The model open in Civil NX is not a MIDAS_KOPRU seismic model." & vbCrLf & vbCrLf & _
-                 "Read its modal results into MOD anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then Exit Sub
+                 IIf(mode = 1, "Read its modal results into MOD and take its pictures anyway?", "Read its modal results into MOD anyway?"), vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then Exit Sub
+    End If
+    If mode = 1 Then
+        ' one start question for the read and the pictures
+        If UiMsg("The modal results go into MOD, then Civil NX shows and captures 6 views into Z_YATAY (2 model views, the modes with the 2 largest X and the 2 largest Y mass shares)." & vbCrLf & _
+                 IIf(pxW > 0, "Pictures " & pxW & " px wide: the Civil NX window changes size for each capture and is maximized again after it.", "Pictures at the size of the Civil NX view: its window is not changed.") & vbCrLf & vbCrLf & _
+                 "Continue?", vbOKCancel + vbQuestion, MSG_TITLE) <> vbOK Then Exit Sub
     End If
     UiLog "Civil NX: eigenvalue table"
     resp = ReadTable()
     msg = WriteAll(resp, ModelTag(pj))
-    UiMsg msg, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
+    ok = (Left$(msg, 4) = "Done")
+    If mode = 1 Then
+        pics = Capture(pxW, True, False, True)
+        ok = ok And (Left$(pics, 4) = "Done")
+        msg = msg & vbCrLf & vbCrLf & "Pictures (Z_YATAY): " & pics
+    End If
+    UiMsg msg, IIf(ok, vbInformation, vbExclamation), MSG_TITLE
     Exit Sub
 Fail:
     UiMsg "STOPPED: " & Err.Description, vbExclamation, MSG_TITLE
 End Sub
+
+' pictures by MIDAS_SEKIL.MIDAS_SEKIL_CAPTURE, late bound so this module compiles without it;
+' a summary text in any case
+Private Function Capture(ByVal pxW As Long, ByVal ask As Boolean, ByVal startQ As Boolean, ByVal modelChecked As Boolean) As String
+    Dim r As Variant
+    On Error GoTo NoModule
+    r = Application.Run("'" & Replace(ThisWorkbook.Name, "'", "''") & "'!MIDAS_SEKIL.MIDAS_SEKIL_CAPTURE", pxW, ask, startQ, modelChecked)
+    Capture = CStr(r)
+    Exit Function
+NoModule:
+    Capture = "STOPPED: the pictures need module MIDAS_SEKIL in this workbook (" & Err.Description & ")."
+End Function
+
+' picture width of the window field res: 4000 / 3000 / 2000 px, 0 = screen size
+Private Function PicWidth(ByVal choice As Long) As Long
+    Dim v As Variant
+    v = Split(RES_W, ",")
+    If choice >= 1 And choice <= UBound(v) + 1 Then PicWidth = CLng(v(choice - 1))
+End Function
 
 ' offline test: a saved post/TABLE EIGENVALUEMODE answer; returns the summary
 Public Function MIDAS_MOD_TEST(ByVal jsonPath As String) As String
