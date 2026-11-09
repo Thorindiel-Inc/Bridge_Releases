@@ -36,8 +36,8 @@ Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPt
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-09g"
-Private Const SCRIPT_CHANGELOG As String = "RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: Islem and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari; Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases"
+Private Const SCRIPT_VERSION As String = "2026-11-09h"
+Private Const SCRIPT_CHANGELOG As String = "Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: Islem and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -249,7 +249,19 @@ Public Function PANEL_LOGTEST() As String
     FlushStep IIf(runBad, ChrW(215), "")
     LogLine IIf(runBad, ChrW(215), ChrW(9632)), "Bitti", -1
     running = False
-    PANEL_LOGTEST = Format$((Timer - t) * 1000#, "0") & " ms" & vbLf & pForm.Controls("txtLog").Text
+    PANEL_LOGTEST = Format$((Timer - t) * 1000#, "0") & " ms" & vbLf & LogState() & vbLf & pForm.Controls("txtLog").Text
+End Function
+
+' focus and caret of the log, for the tests
+Private Function LogState() As String
+    Dim a As String, cl As Long, lc As Long
+    On Error Resume Next
+    a = pForm.ActiveControl.Name
+    With pForm.Controls("txtLog")
+        cl = -1: lc = -1
+        cl = .CurLine: lc = .LineCount
+        LogState = "focus=" & a & ", caret " & .SelStart & " of " & Len(.Text) & " characters, line " & (cl + 1) & " / " & lc
+    End With
 End Function
 
 ' test: picks a row and returns the names and values of its fields; run = True presses Run and returns the log
@@ -769,6 +781,23 @@ Private Sub AddText(ByVal s As String)
     If Not PanelOpen() Then Exit Sub
     With pForm.Controls("txtLog")
         .Text = .Text & s & vbLf
+    End With
+    LogToEnd
+End Sub
+
+' last line in view: an MSForms text box scrolls to its caret, and shows the scroll bar of text
+' set by code, only while it has the focus (owner 2026-11-09: the log stayed at its first lines,
+' no scroll bar). During a run the log takes the focus and keeps it, so the wheel and the keys
+' scroll it during and after the run; outside a run a field the user is in keeps the focus.
+Private Sub LogToEnd()
+    Dim had As String
+    On Error Resume Next
+    had = pForm.ActiveControl.Name
+    With pForm.Controls("txtLog")
+        If had <> "txtLog" Then
+            If Left$(had, 2) = "p_" And Not running Then Exit Sub
+            .SetFocus
+        End If
         .SelStart = Len(.Text)
     End With
 End Sub
