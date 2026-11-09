@@ -20,16 +20,19 @@ Option Explicit
 '    2. asks element length, bearing link length, fixed horizontal stiffness kh
 '    3. reads 1-3A: span list, G_AYAK_TABLOSU (one row per axis), span table right of
 '       G_SABIT_UC (fixed end SOL / SAG, Yatay Gabari, Kiris, Mesnet: left bearing of each
-'       span, row 'Son' = last right), G_BASLIK_*, G_KOLON_BAGLANTI, G_AKS_MESNET, girder data.
+'       span, row 'Son' = last right), G_BASLIK_KESIT, G_BASLIK_BOYU, girder data.
 '       One deck section per Yatay Gabari + Kiris combination. Joint spacing: B25, or the
 '       cell of the same Hesap Acikligi in B25:G25 when filled.
 '    4. summary; Yes = clean pass on the model open in Civil NX, MCT import of the
 '       composite deck section (no JSON form; IMPORTMXT replaces the model, so it runs
 '       first), all tables, read-back, doc/SAVE
 '  Dry run (no dialogs, no HTTP): MIDAS_KOPRU_PAYLOAD outDir [, seismicModel]
-'  Levels: deck node Z 0 (section offset CT), bearing top -(H + tc), bearing bottom = cap
-'  top node level, pier top = cap top - G_KOLON_BAGLANTI, pier base = pier top - height.
-'  X: A1 bearing axis = 0; pier bearings G_AKS_MESNET from the pier axis.
+'  Levels: deck node Z 0 (section offset CT), bearing top -(H + tc), bearing bottom = bearing seat
+'  (cap top for a rectangle or when the bearings sit on the web of the inverted T, flange top when they
+'  sit on its ledges); cap nodes at the cap centroid (offset CC), pier top = cap bottom, pier base =
+'  pier top - table height (foundation top to cap bottom; owner 2026-11-09).
+'  X: A1 bearing axis = 0; pier bearings at e from the pier axis, e = (axis spacing - Hesap Acikligi) / 2
+'  (end spans: axis spacing - Hesap Acikligi); the two spans at a pier must agree (owner 2026-11-09).
 '  Plan: G_AKS_XY (axis X / Y from the DXF, DXF_OKU; A1 first, span count + 1 rows, chords checked
 '  against the span list) filled = each span a straight chord between its axes, caps on the
 '  bisector of the two chords, piers and bearing links turned with them; model X = chord A1 to A2.
@@ -39,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-06m"
-Private Const SCRIPT_CHANGELOG As String = "Static and seismic models use AASHTO Ec, RTI Eurocode Ecm; RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ...; Bearing values from the first span sheet 4<letter>_KDME of this workbook, no 4-7 file dialog"
+Private Const SCRIPT_VERSION As String = "2026-11-09a"
+Private Const SCRIPT_CHANGELOG As String = "Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm; RTI live load gate: moving load by default, nonlinear LM71 stages on request; Inputs and messages through the macro window; RTI branch: rail per track, track springs, windows on every axis; Span sheets named 4A_, 4B_ ...; Bearing values from the first span sheet 4<letter>_KDME of this workbook, no 4-7 file dialog"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -94,7 +97,8 @@ Private Const Q_BAL As Long = 1, Q_KERB As Long = 2, Q_RAIL As Long = 3, Q_PANEL
 Private nG As Long, sG As Double, Hg As Double, Lc As Double, deckW As Double
 Private tc As Double, eG As Double, eS As Double, eO As Double, denG As Double, denS As Double, clsG As String, clsS As String, clsO As String
 Private sark As Double, kyB As Double, kEB As Double, jointL As Double, eAx As Double
-Private capS(1 To 5) As Double, capL As Double, capOff As Double, capDrop As Double
+Private capS(1 To 5) As Double, capL As Double, capRect As Boolean, capYc As Double, brgW As Double, brgL As Double
+Private eLs() As Double, eRs() As Double, ePier() As Double, seatOnLedge() As Boolean
 Private nSp As Long, spL() As Double, fixLeft() As Boolean
 Private pH() As Double, pSec() As Long     ' pier 1..nSp-1: height, section number
 Private nPS As Long, psTyp() As String, psEn() As Double, psBoy() As Double, psT() As Double
@@ -253,13 +257,23 @@ Private Sub ReadInputs(wb As Workbook)
     eO = Num(r.Cells(1, eCol).Value, "Diger betonlar " & eTxt)
     denG = Num(NmRange(wb, "G_BIRIM_AGIRLIK_ONGERME").Cells(1).Value, "G_BIRIM_AGIRLIK_ONGERME")
     denS = Num(NmRange(wb, "G_BIRIM_AGIRLIK_BETONARME").Cells(1).Value, "G_BIRIM_AGIRLIK_BETONARME")
-    eAx = Num(NmRange(wb, "G_AKS_MESNET").Cells(1).Value, "G_AKS_MESNET")
     For i = 1 To 5
         capS(i) = Num(NmRange(wb, "G_BASLIK_KESIT").Cells(i).Value, "G_BASLIK_KESIT row " & i)
     Next i
     capL = Num(NmRange(wb, "G_BASLIK_BOYU").Cells(1).Value, "G_BASLIK_BOYU")
-    capOff = NumOr0(NmRange(wb, "G_BASLIK_OFSET").Cells(1).Value)
-    capDrop = Num(NmRange(wb, "G_KOLON_BAGLANTI").Cells(1).Value, "G_KOLON_BAGLANTI")
+    ' B1 = B2 = 0: rectangle H x tw (owner 2026-11-09); else MIDAS invert-T (UDT): web tw on top, bottom flange
+    ' tf with outstands B1 / B2 (read from the MIDAS shape table: H B1 B2 tw tf; outstand meaning not verified live)
+    capRect = (capS(2) = 0 And capS(3) = 0)
+    If capS(1) <= 0 Or capS(4) <= 0 Then Err.Raise vbObjectError + 37, , "G_BASLIK_KESIT: H and tw must be > 0."
+    If capRect Then
+        capYc = capS(1) / 2
+    Else
+        If capS(5) <= 0 Or capS(5) >= capS(1) Then Err.Raise vbObjectError + 37, , "G_BASLIK_KESIT: tf must be between 0 and H."
+        capYc = (capS(4) * (capS(1) - capS(5)) ^ 2 / 2 + (capS(2) + capS(4) + capS(3)) * capS(5) * (capS(1) - capS(5) / 2)) / _
+                (capS(4) * (capS(1) - capS(5)) + (capS(2) + capS(4) + capS(3)) * capS(5))
+    End If
+    brgW = NumOr0(NmRange(wb, "G_MESNET_ENI").Cells(1).Value) / 100#
+    brgL = NumOr0(NmRange(wb, "G_MESNET_BOYU").Cells(1).Value) / 100#
 
     sark = Num(NmRange(wb, "G_SARKIKLIK").Cells(1).Value, "G_SARKIKLIK") / 100#
     Dim rp As Worksheet: Set rp = FirstKdme(wb)
@@ -547,6 +561,47 @@ Private Function PierShape(ByVal s As String) As String
     End If
 End Function
 
+' bearing offsets from the axes (owner 2026-11-09): e = (axis spacing - Hesap Acikligi) / 2 for inner spans,
+' axis spacing - Hesap Acikligi for end spans (A1 / A2 bearing axis on the abutment axis); the two spans at a
+' pier must give the same e. Seat: rectangle or e on the web = cap top; inverted T with e beyond the web =
+' ledge (flange top). Cap length and width are checked against the bearing size (warnings).
+Private Sub BearingOffsets()
+    Dim i As Long, Lci As Double, ys As Double, d As Variant, msg As String, half As Double
+    ReDim eLs(1 To nSp): ReDim eRs(1 To nSp): ReDim ePier(0 To nSp): ReDim seatOnLedge(0 To nSp)
+    For i = 1 To nSp
+        Lci = tLc(spType(i))
+        If nSp = 1 Then
+            eLs(i) = 0: eRs(i) = 0
+        ElseIf i = 1 Then
+            eLs(i) = 0: eRs(i) = lenS(i) - Lci
+        ElseIf i = nSp Then
+            eLs(i) = lenS(i) - Lci: eRs(i) = 0
+        Else
+            eLs(i) = (lenS(i) - Lci) / 2: eRs(i) = eLs(i)
+        End If
+        If eLs(i) < -0.0005 Or eRs(i) < -0.0005 Then msg = msg & "span " & i & ": axis spacing " & Format(lenS(i), "0.000") & " m < Hesap Acikligi " & Lci & " m; "
+    Next i
+    For i = 1 To nSp - 1
+        If Abs(eRs(i) - eLs(i + 1)) > 0.02 Then msg = msg & "axis " & i & ": " & Format(eRs(i), "0.000") & " m from span " & i & ", " & Format(eLs(i + 1), "0.000") & " m from span " & i + 1 & "; "
+        ePier(i) = IIf(eRs(i) > eLs(i + 1), eRs(i), eLs(i + 1))
+        seatOnLedge(i) = (Not capRect) And ePier(i) > capS(4) / 2 + 0.0005
+    Next i
+    If msg <> "" Then Err.Raise vbObjectError + 38, , "Axis to bearing distance does not fit the span list and Hesap Acikligi: " & msg
+    ' warnings: bearings on the cap
+    For i = 1 To nSp - 1
+        If capRect Or Not seatOnLedge(i) Then
+            If ePier(i) + brgL / 2 > capS(4) / 2 + 0.0005 Then warnText = warnText & "- Axis " & i & ": bearing (e " & Format(ePier(i), "0.000") & " + " & brgL / 2 & ") reaches past the cap width " & capS(4) & " m." & vbCrLf
+        Else
+            half = capS(4) / 2 + IIf(capS(2) < capS(3), capS(2), capS(3))
+            If ePier(i) + brgL / 2 > half + 0.0005 Or ePier(i) - brgL / 2 < capS(4) / 2 - 0.0005 Then warnText = warnText & "- Axis " & i & ": bearing (e " & Format(ePier(i), "0.000") & " m, length " & brgL & " m) does not fit on the ledge between " & capS(4) / 2 & " and " & Format(half, "0.000") & " m." & vbCrLf
+        End If
+        For Each d In Array(spType(i), spType(i + 1))
+            ys = (tNG(d) - 1) / 2# * tSG(d) + brgW / 2
+            If ys > capL / 2 + 0.0005 Then warnText = warnText & "- Axis " & i & ": outer bearing reaches " & Format(ys, "0.000") & " m from the axis, cap half length " & Format(capL / 2, "0.000") & " m." & vbCrLf
+        Next d
+    Next i
+End Sub
+
 Private Sub BuildModel()
     Dim i As Long, j As Long, m As Long, k As Long, a As Long, b As Long, xL As Double, xR As Double, ext As Double
     Dim zLs() As Double, y() As Double, dx As Double, zCap() As Double
@@ -568,11 +623,17 @@ Private Sub BuildModel()
     For i = 1 To nSp - 1
         zCap(i) = IIf(zLs(i) < zLs(i + 1), zLs(i), zLs(i + 1))
     Next i
+    BearingOffsets
+    ' zCap = bearing seat; cap top above it by H - tf when the bearings sit on the ledges of the inverted T
+    Dim zTop() As Double: ReDim zTop(0 To nSp)
+    For i = 1 To nSp - 1
+        zTop(i) = zCap(i) + IIf(seatOnLedge(i), capS(1) - capS(5), 0)
+    Next i
 
     For i = 1 To nSp
         UseType spType(i)
-        xL = IIf(i = 1, 0, eAx)
-        xR = lenS(i) - IIf(i = nSp, 0, eAx)
+        xL = eLs(i)
+        xR = lenS(i) - eRs(i)
         If Abs(xR - xL - Lc) > 0.01 Then warnText = warnText & "- Span " & i & ": bearing to bearing " & Format(xR - xL, "0.000") & " m, Hesap Acikligi " & Lc & " m." & vbCrLf
         ext = (jointL - Lc) / 2
         m = CLng((xR - xL) / meshDx): If m < 1 Then m = 1
@@ -594,10 +655,10 @@ Private Sub BuildModel()
         UseType spType(i)
         ReDim y(0 To nG - 1)
         For j = 0 To nG - 1: y(j) = (j - (nG - 1) / 2#) * sG: Next j
-        xL = IIf(i = 1, 0, eAx)
-        xR = lenS(i) - IIf(i = nSp, 0, eAx)
-        BearingLine i, xL, i - 1, (i = 1), fixLeft(i), y, zLs(i) + linkLen, zLs(i), zCap(i - 1)
-        BearingLine i, xR, i, (i = nSp), Not fixLeft(i), y, zLs(i) + linkLen, zLs(i), zCap(i)
+        xL = eLs(i)
+        xR = lenS(i) - eRs(i)
+        BearingLine i, xL, i - 1, (i = 1), fixLeft(i), y, zLs(i) + linkLen, zLs(i), zTop(i - 1) - capYc
+        BearingLine i, xR, i, (i = nSp), Not fixLeft(i), y, zLs(i) + linkLen, zLs(i), zTop(i) - capYc
     Next i
 
     ' caps and piers
@@ -610,15 +671,16 @@ Private Sub BuildModel()
         Next sp
         yk = SortedKeys(ys)
         For k = UBound(yk) To 2 Step -1
-            Member grpCap, 3, SEC_CAP, CapN(i, yk(k), zCap(i)), CapN(i, yk(k - 1), zCap(i))
+            Member grpCap, 3, SEC_CAP, CapN(i, yk(k), zTop(i) - capYc), CapN(i, yk(k - 1), zTop(i) - capYc)
         Next k
-        top = CapN(i, 0, zCap(i) - capDrop)
-        Rigid CapN(i, 0, zCap(i)), CStr(top)
+        ' pier top = cap bottom (owner 2026-11-09), rigid to the cap centroid node
+        top = CapN(i, 0, zTop(i) - capS(1))
+        Rigid CapN(i, 0, zTop(i) - capYc), CStr(top)
         a = top
         nEl = -Int(-pH(i) / MAX_PIER_EL + 0.000000001)
         If nEl < N_PIER_EL Then nEl = N_PIER_EL
         For k = 1 To nEl
-            b = CapN(i, 0, zCap(i) - capDrop - pH(i) * k / nEl)
+            b = CapN(i, 0, zTop(i) - capS(1) - pH(i) * k / nEl)
             Member grpPier, 3, pSec(i), a, b
             pierAng(CStr(eCnt)) = -phiA(i)
             a = b
@@ -1016,7 +1078,12 @@ Private Sub BuildPayloads()
     For i = 1 To nDk
         s = s & DbSect(SlabSec(i), "DOSEME" & IIf(i = 1, "", "_" & i), SectHead2("CT", 0, 0), "SB", JN(tc) & "," & JN(tW(i)) & ",0,0,0,0,0,0,0,0") & ","
     Next i
-    s = s & DbSect(SEC_CAP, "BASLIK", SectHead2("CT", 1, capOff), "UDT", JN(capS(1)) & "," & JN(capS(2)) & "," & JN(capS(3)) & "," & JN(capS(4)) & "," & JN(capS(5)) & ",0,0,0,0,0")
+    ' cap nodes sit at the cap centroid (owner 2026-11-09), so the section is centred on them
+    If capRect Then
+        s = s & DbSect(SEC_CAP, "BASLIK", SectHead2("CC", 0, 0), "SB", JN(capS(1)) & "," & JN(capS(4)) & ",0,0,0,0,0,0,0,0")
+    Else
+        s = s & DbSect(SEC_CAP, "BASLIK", SectHead2("CC", 0, 0), "UDT", JN(capS(1)) & "," & JN(capS(2)) & "," & JN(capS(3)) & "," & JN(capS(4)) & "," & JN(capS(5)) & ",0,0,0,0,0")
+    End If
     For i = 1 To nPS
         If psTyp(i) = "SR" Then
             sz = JN(psEn(i)) & ",0,0,0,0,0,0,0,0,0"
@@ -1158,6 +1225,17 @@ Private Function ModelOk(ByRef msg As String) As Boolean
     ModelOk = False
 End Function
 
+Private Function AxisBearingText() As String
+    Dim i As Long, mn As Double, mx As Double
+    If nSp < 2 Then AxisBearingText = "-": Exit Function
+    mn = ePier(1): mx = ePier(1)
+    For i = 2 To nSp - 1
+        If ePier(i) < mn Then mn = ePier(i)
+        If ePier(i) > mx Then mx = ePier(i)
+    Next i
+    AxisBearingText = Format(mn, "0.000") & IIf(mx - mn > 0.0005, " - " & Format(mx, "0.000"), "") & " m (calculated)"
+End Function
+
 Private Function Summary() As String
     Dim s As String, i As Long, f As Long, tot As Double
     For i = 1 To nSp
@@ -1167,7 +1245,8 @@ Private Function Summary() As String
     s = SCRIPT_ID & " " & SCRIPT_VERSION & vbCrLf & bridgeName & ": " & nSp & " spans, length " & Format(tot, "0.00") & " m, " & nSp - 1 & " piers" & vbCrLf & _
         dkLog & "Slab " & Format(tc, "0.000") & " m, sarkiklik " & sark & " m; concrete " & clsG & " / " & clsS & " / " & clsO & IIf(rtiMode, " (MIDAS EN04 database, Ecm)", " (AASHTO Ec " & Format(eG, "0") & " / " & Format(eS, "0") & " / " & Format(eO, "0") & " MPa)") & vbCrLf & _
         "Bearings: kv " & Format(kEB, "0") & ", free ky " & Format(kyB, "0.0") & ", kh " & Format(kFix, "0") & ", link " & linkLen & " m; " & f & " spans fixed left, " & nSp - f & " right" & vbCrLf & _
-        "Cap " & capL & " m, pier top " & capDrop & " m below cap top; " & nPS & " pier section(s)" & vbCrLf & _
+        "Cap " & IIf(capRect, "rectangle " & capS(1) & " x " & capS(4), "inverted T H " & capS(1)) & ", length " & capL & " m, centroid " & Format(capYc, "0.000") & " m below its top, pier top at the cap bottom; " & nPS & " pier section(s)" & vbCrLf & _
+        "Axis to bearing " & AxisBearingText() & IIf(capRect, "", ", seat on the " & IIf(seatOnLedge(1), "ledges", "web")) & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
         IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & _
         IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _

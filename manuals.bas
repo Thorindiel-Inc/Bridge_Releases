@@ -8,7 +8,7 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-07a"
+Private Const SCRIPT_VERSION As String = "2026-11-09c"
 Private Const SCRIPT_CHANGELOG As String = "Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
@@ -102,7 +102,7 @@ Private Function P1_1() As String
     s = s & "</nav>" & vbLf
     s = s & "<main>" & vbLf
     s = s & "<h1 id=""midas_kopru-reference-manual"">MIDAS_KOPRU - reference manual</h1>" & vbLf
-    s = s & "<p>Macro <code>scripts/midas/MIDAS_KOPRU.bas</code>, version <strong>2026-11-06m</strong> (SCRIPT_ID <code>midas-bridge-build</code>)." & vbLf
+    s = s & "<p>Macro <code>scripts/midas/MIDAS_KOPRU.bas</code>, version <strong>2026-11-09a</strong> (SCRIPT_ID <code>midas-bridge-build</code>)." & vbLf
     s = s & "It builds the whole-bridge model (deck, bearings, caps, piers) in <strong>MIDAS Civil NX</strong> through the" & vbLf
     s = s & "MAPI REST API. You run it from <code>global/1-7_YHT_XXXXX_INT-LDS-DYN-RTI-KDME.xlsm</code>. The layout follows" & vbLf
     s = s & "<code>models/ALTYAPI.mct</code>, but every value comes from the workbooks, not from that file.</p>" & vbLf
@@ -270,7 +270,7 @@ Private Function P1_2() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Substructure</td>" & vbLf
-    s = s & "<td><code>G_AYAK_TABLOSU</code>, <code>G_BASLIK_KESIT</code>, <code>G_BASLIK_BOYU</code>, <code>G_BASLIK_OFSET</code>, <code>G_KOLON_BAGLANTI</code>, <code>G_AKS_MESNET</code></td>" & vbLf
+    s = s & "<td><code>G_AYAK_TABLOSU</code>, <code>G_BASLIK_KESIT</code>, <code>G_BASLIK_BOYU</code>, <code>G_MESNET_ENI</code> / <code>G_MESNET_BOYU</code> (cap checks only)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Plan</td>" & vbLf
@@ -407,7 +407,7 @@ Private Function P1_2() As String
     s = s & "<td>-(H + tc) - link length</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
-    s = s & "<td>Cap top node</td>" & vbLf
+    s = s & "<td>Bearing seat</td>" & vbLf
     P1_2 = s
 End Function
 
@@ -416,15 +416,29 @@ Private Function P1_3() As String
     s = s & "<td>The lower bearing bottom of the two spans at that pier</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
+    s = s & "<td>Cap top</td>" & vbLf
+    s = s & "<td>Bearing seat; for an inverted T with the bearings on its ledges, seat + (H - tf)</td>" & vbLf
+    s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
+    s = s & "<td>Cap nodes</td>" & vbLf
+    s = s & "<td>Cap top - centroid depth (section offset CC)</td>" & vbLf
+    s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
     s = s & "<td>Pier top</td>" & vbLf
-    s = s & "<td>Cap top - <code>G_KOLON_BAGLANTI</code></td>" & vbLf
+    s = s & "<td>Cap bottom = cap top - H, rigid link to the cap node</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Pier base</td>" & vbLf
-    s = s & "<td>Pier top - pier height</td>" & vbLf
+    s = s & "<td>Pier top - pier height (table height = foundation top to cap bottom)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
+    s = s & "<p>Since 2026-11-09 (owner) the macro calculates what were the inputs Kesit Ofseti, Kolon Ba&#287;lant&#305; Derinli&#287;i and" & vbLf
+    s = s & "Aks - Mesnet Mesafesi; their <code>G_</code> names are gone and INPUT rows 219-221 show the calculated values. Cap" & vbLf
+    s = s & "shape: <code>G_BASLIK_KESIT</code> H, B1, B2, tw, tf; B1 = B2 = 0 = rectangle H x tw, otherwise MIDAS invert-T (UDT)" & vbLf
+    s = s & "with web tw on top and a bottom flange tf with outstands B1 / B2 (outstand reading taken from the MIDAS shape" & vbLf
+    s = s & "table, not verified in Civil NX). Bearings sit on the web (or the rectangle) when e is within tw / 2, else on" & vbLf
+    s = s & "the ledges.</p>" & vbLf
     s = s & "<p><strong>Along each span</strong> (X from the left axis):</p>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
     s = s & "<thead>" & vbLf
@@ -453,7 +467,11 @@ Private Function P1_3() As String
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
     s = s & "<ul>" & vbLf
-    s = s & "<li>A1 bearing line is at X = 0. Bearing lines at piers are <code>G_AKS_MESNET</code> from the pier axis. A2 is at the axis.</li>" & vbLf
+    s = s & "<li>A1 bearing line is at X = 0. Bearing lines at piers are e from the pier axis, e = (axis spacing - Hesap" & vbLf
+    s = s & "  A&#231;&#305;kl&#305;&#287;&#305;) / 2 for inner spans and axis spacing - Hesap A&#231;&#305;kl&#305;&#287;&#305; for end spans. A2 is at the axis. If the two" & vbLf
+    s = s & "  spans at a pier give e more than 0.02 m apart, or an axis spacing is shorter than its Hesap A&#231;&#305;kl&#305;&#287;&#305;, the" & vbLf
+    s = s & "  macro stops. Warnings: bearing (e &#177; bearing length / 2) off the web or ledge, outer bearing (&#177; bearing" & vbLf
+    s = s & "  width / 2) beyond the cap length.</li>" & vbLf
     s = s & "<li>Half of (joint spacing - Hesap A&#231;&#305;kl&#305;&#287;&#305;) sets the end of each span. Joint spacing = the cell of the same" & vbLf
     s = s & "  Hesap A&#231;&#305;kl&#305;&#287;&#305; in <code>G_GENLESME_DERZ_ARALIGI</code>, or the first cell if that is empty.</li>" & vbLf
     s = s & "<li>If bearing-to-bearing length differs from Hesap A&#231;&#305;kl&#305;&#287;&#305; by over 0.01 m, the summary warns.</li>" & vbLf
@@ -519,7 +537,7 @@ Private Function P1_3() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>3</td>" & vbLf
-    s = s & "<td>Cap <code>BASLIK</code>, <code>G_BASLIK_KESIT</code> as DB user UDT, offset <code>G_BASLIK_OFSET</code></td>" & vbLf
+    s = s & "<td>Cap <code>BASLIK</code>, <code>G_BASLIK_KESIT</code> as DB user UDT, or SB H x tw when B1 = B2 = 0; offset CC</td>" & vbLf
     s = s & "<td>3 (other concrete)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
@@ -575,6 +593,11 @@ Private Function P1_3() As String
     s = s & "<tr>" & vbLf
     s = s & "<td>A, Iyy, Izz, centroid</td>" & vbLf
     s = s & "<td>From the girder outlines and the slab, slab scaled by E slab / E girder of that model (AASHTO Ec, or Ecm in the RTI model)</td>" & vbLf
+    P1_3 = s
+End Function
+
+Private Function P1_4() As String
+    Dim s As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>J</td>" & vbLf
@@ -593,11 +616,6 @@ Private Function P1_3() As String
     s = s & "<h2 id=""7-loads"">7. Loads</h2>" & vbLf
     s = s & "<p>Deck loads are per metre of deck, from the per-girder values &#215; the girder count n, on all deck elements.</p>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
-    P1_3 = s
-End Function
-
-Private Function P1_4() As String
-    Dim s As String
     s = s & "<thead>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<th>Case</th>" & vbLf
@@ -760,6 +778,11 @@ Private Function P1_4() As String
     s = s & "</thead>" & vbLf
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
+    P1_4 = s
+End Function
+
+Private Function P1_5() As String
+    Dim s As String
     s = s & "<td>IVME, TU, FREN</td>" & vbLf
     s = s & "<td>Envelopes of the single cases</td>" & vbLf
     s = s & "</tr>" & vbLf
@@ -778,11 +801,6 @@ Private Function P1_4() As String
     s = s & "<tr>" & vbLf
     s = s & "<td>ENV_SER, ENV_STR, ENV_ALL</td>" & vbLf
     s = s & "<td>Envelopes</td>" & vbLf
-    P1_4 = s
-End Function
-
-Private Function P1_5() As String
-    Dim s As String
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
@@ -965,7 +983,7 @@ Private Function P2_1() As String
     s = s & "</nav>" & vbLf
     s = s & "<main>" & vbLf
     s = s & "<h1 id=""midas_ustyapi-reference-manual"">MIDAS_USTYAPI - reference manual</h1>" & vbLf
-    s = s & "<p>Macro <code>scripts/midas/MIDAS_USTYAPI.bas</code>, version <strong>2026-11-06e</strong> (SCRIPT_ID <code>midas-ustyapi-build</code>)." & vbLf
+    s = s & "<p>Macro <code>scripts/midas/MIDAS_USTYAPI.bas</code>, version <strong>2026-11-09b</strong> (SCRIPT_ID <code>midas-ustyapi-build</code>)." & vbLf
     s = s & "It builds the superstructure grillage model of one span in <strong>MIDAS Civil NX</strong> through the MAPI" & vbLf
     s = s & "REST API. You run it from the 1-2 workbook (<code>global/1-7_YHT_XXXXX_INT-LDS-DYN-RTI-KDME.xlsm</code>).</p>" & vbLf
     s = s & "<p>This page explains what the macro builds and how each value is calculated. When this page and" & vbLf
@@ -1298,6 +1316,12 @@ Private Function P2_3() As String
     s = s & "centre line is 0.2375 m further out (ignored: Hambly, member on the line where it connects; about 6 kNm per" & vbLf
     s = s & "girder at the bearing). Beyond its ends the thin end strip (section 5) runs on to the deck edge. Its weight" & vbLf
     s = s & "(about 268 kN per end) and mass now come from the members (they were missing before).</p>" & vbLf
+    s = s & "<p><strong>No outer end beam (2026-11-09a):</strong> type <strong>0</strong> in <code>G_DIS_ENLEME_KALINLIGI</code> or <code>G_DIS_ENLEME_BOYU</code> (INPUT" & vbLf
+    s = s & "B136 / B138) when a bridge has none. The girder-end lines X = 0 and X = L are then only the thin end slab strip" & vbLf
+    s = s & "(section 5, tc x sarkiklik/2) from deck edge to deck edge, which ties the girder ends; section 15 is left out" & vbLf
+    s = s & "of the section and colour tables and the summary says ""end beam: none"". A negative value, or a thickness over" & vbLf
+    s = s & "2 m, still stops the macro. The same 0 makes 2_YUKLER ""Enleme Yuku - 2"" zero, so <code>G_YUK_ENLEME</code> (used by" & vbLf
+    s = s & "MIDAS_KOPRU at the bearing lines) drops the outer part too.</p>" & vbLf
     s = s & "<p><strong>Live-load stations (2026-11-03s):</strong> the girder also gets a node at every 4-7 Tablo 27 station (1_RAPOR, the" & vbLf
     s = s & "rows under the 'Yeri' / 'V (kN)' header, column K = m from the bearing), at bearing + K and mirrored at" & vbLf
     s = s & "L &#8722; bearing &#8722; K, unless a node is already within 0.5 mm. MAK_LL (4-7) reads its results at these nodes." & vbLf
@@ -1442,17 +1466,17 @@ Private Function P2_3() As String
     s = s & "<h2 id=""6-static-loads-beam-line-loads-dbbmld"">6. Static loads (beam line loads, db/BMLD)</h2>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
     s = s & "<thead>" & vbLf
+    P2_3 = s
+End Function
+
+Private Function P2_4() As String
+    Dim s As String
     s = s & "<tr>" & vbLf
     s = s & "<th>Case</th>" & vbLf
     s = s & "<th>Load</th>" & vbLf
     s = s & "<th>Where</th>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</thead>" & vbLf
-    P2_3 = s
-End Function
-
-Private Function P2_4() As String
-    Dim s As String
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>DC</td>" & vbLf
@@ -1515,10 +1539,16 @@ Private Function P2_4() As String
     s = s & "<ul>" & vbLf
     s = s & "<li><strong>Lanes</strong>: one lane per track, defined on the girder nearest the track centre, with" & vbLf
     s = s & "  eccentricity = girder Y - track Y. LANE2 = track 1 and LANE1 = track 2 (names as in the reference model).</li>" & vbLf
-    s = s & "<li><strong>Vehicles (Eurocode)</strong>: Load Model 71 with &#945; from 2_YUKLER; HSLM-A8 (12 coaches, 25 m, 190 kN);" & vbLf
-    s = s & "  ""Load Model 71 - a=1"".</li>" & vbLf
-    s = s & "<li><strong>Moving-load cases</strong>: LM71 - S and HSLM-A 8 - S (single track), LM71 and HSLM-A 8 (both tracks)," & vbLf
-    s = s & "  LM71 - a=1. The HSLM cases use the HSLM vehicle; the reference model wrongly used LM71.</li>" & vbLf
+    s = s & "<li><strong>Vehicles (Eurocode)</strong>: Load Model 71 with &#945; from 2_YUKLER; ""Load Model 71 - a=1"" with the LM71 - a=1 case.</li>" & vbLf
+    s = s & "<li><strong>Moving-load cases</strong> (owner 2026-11-09): LM71 on both tracks always; the combinations and MAK_LL use it." & vbLf
+    s = s & "  LM71 - S (single track) and LM71 - a=1 (vehicle ""Load Model 71 - a=1"") are always in the dynamic model and" & vbLf
+    s = s & "  in the staged model when the window field ""Tek hat ve &#945;=1 LM71 (a&#351;amal&#305;)"" is Evet (default Hay&#305;r). They are in no" & vbLf
+    s = s & "  combination. Scripted entries: optional argument extraCases (default False).</li>" & vbLf
+    s = s & "<li><strong>No HSLM (owner 2026-11-09, version 2026-11-09b):</strong> the bridge gets no dynamic analysis; the dynamic" & vbLf
+    s = s & "  factors come from EN 1991-2 Annex F (tables F1 / F2). The HSLM-A8 cases copied from the reference model" & vbLf
+    s = s & "  were in no combination and are removed. If a dynamic analysis is needed later, add HSLM-A back with the" & vbLf
+    s = s & "  critical train of Annex E (lambda_v = 1.2 V / n0; A1 for the current bridge today) or all A1 to A10, and" & vbLf
+    s = s & "  update the workbook with it.</li>" & vbLf
     s = s & "<li><strong>Dynamic factor</strong> &#934;3 = 2.16 / (&#8730;L&#966; - 0.2) + 0.73, limited to 1.00 &#8804; &#934;3 &#8804; 2.00, with L&#966; = Lc" & vbLf
     s = s & "  (EN 1991-2 6.4.5.2).</li>" & vbLf
     s = s & "<li><strong>Damping</strong> (owner 2026-11-03): the materials carry 5 % (concrete). The macro does not build the" & vbLf
@@ -1621,6 +1651,11 @@ Private Function P2_4() As String
     s = s & "<ol>" & vbLf
     s = s & "<li><strong>Clean pass</strong>: DELETE every table the macro writes, in reverse order (combinations first," & vbLf
     s = s & "   materials last). Then GET each one: it must be empty. Leftovers get a second and third pass, deleted by key." & vbLf
+    P2_4 = s
+End Function
+
+Private Function P2_5() As String
+    Dim s As String
     s = s & "   If anything is still there, the macro <strong>stops and writes nothing</strong>." & vbLf
     s = s & "   Reason: a PUT into a filled model <em>adds</em> beam loads (they would double).</li>" & vbLf
     s = s & "<li><strong>MCT import</strong> of the composite sections 7-12. Then a check that 6 composite sections exist." & vbLf
@@ -1633,11 +1668,6 @@ Private Function P2_4() As String
     s = s & "<p>Only tables the macro writes are cleaned. Anything you added by hand in other tables stays.</p>" & vbLf
     s = s & "<hr />" & vbLf
     s = s & "<h2 id=""11-not-built-and-not-verified"">11. Not built and not verified</h2>" & vbLf
-    P2_4 = s
-End Function
-
-Private Function P2_5() As String
-    Dim s As String
     s = s & "<ul>" & vbLf
     s = s & "<li><strong>Not built</strong> (no API endpoint): PSC design parameters, DynaGen, load contribution for nonlinear case, perform-analysis entries.</li>" & vbLf
     s = s & "<li><strong>Not verified</strong>:</li>" & vbLf

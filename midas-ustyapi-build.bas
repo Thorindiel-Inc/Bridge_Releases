@@ -38,12 +38,12 @@ Option Explicit
 '  node at sarkiklik + H/2 from each girder end.
 '  Constants below that are NOT inputs of the workbooks (taken from the
 '  reference model; change here if needed): WL_ECC, NOSING_Q, NOSING_LEN,
-'  NOSING_ECC, RAIL_HALF_GAUGE, HSLM data.
+'  NOSING_ECC, RAIL_HALF_GAUGE.
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-07b"
-Private Const SCRIPT_CHANGELOG As String = "Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-09b"
+Private Const SCRIPT_CHANGELOG As String = "HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -90,6 +90,7 @@ Private spanNo As Long, Lc As Double, nG As Long, sG As Double, Hg As Double
 Private kSol As Double, h1 As Double, h2 As Double, kSag As Double
 Private tc As Double, tMin As Double, enlB As Double, enlH As Double
 Private disB As Double, disL As Double   ' outer end beam (dis enleme) beyond the girder ends (1-2 G_DIS_ENLEME_*)
+Private noDis As Boolean                 ' True when G_DIS_ENLEME_KALINLIGI or _BOYU is 0: no outer end beam, slab strip only (owner 2026-11-09)
 Private eG As Double, eS As Double, clsG As String, clsS As String
 Private denG As Double, denS As Double   ' unit weights for the staged model's user materials (kN/m3)
 Private qBal As Double, qKor As Double, qBor As Double, qKork As Double, qCep As Double, qRay As Double
@@ -110,6 +111,7 @@ Private warnText As String
 ' dynamic model (owner 2026-11-05): no stages, no tendons; without CSCS MIDAS drops the Hambly option and uses the
 ' merged-section J, so the build measures it on cantilevers and sets a SECF factor per girder section
 Private dynMode As Boolean, askUser As Boolean
+Private extraMV As Boolean   ' staged model: also LM71 - S and LM71 - a=1 (window field "mvek", owner 2026-11-09)
 Private jMer(7 To 12) As Double, jHam(7 To 12) As Double, jFac(7 To 12) As Double
 Private Const DYN_TAG As String = "@@GIRDER_SECF@@"
 ' asked values + geometry derived from them (owner 2026-11-03)
@@ -149,20 +151,21 @@ Public Sub MIDAS_USTYAPI_OLUSTUR()
     RunBuild 0, "", False
 End Sub
 
-Public Sub MIDAS_USTYAPI_PAYLOAD(ByVal spanIndex As Long, ByVal outDir As String, Optional ByVal dynamicModel As Boolean = False)
-    RunBuild spanIndex, outDir, True, dynamicModel
+Public Sub MIDAS_USTYAPI_PAYLOAD(ByVal spanIndex As Long, ByVal outDir As String, Optional ByVal dynamicModel As Boolean = False, Optional ByVal extraCases As Boolean = False)
+    RunBuild spanIndex, outDir, True, dynamicModel, extraCases
 End Sub
 
 ' No dialogs: writes into the open model at once and saves it, report text to reportFile.
 ' For a scripted run; the key is passed in memory only (never stored).
 Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal reportFile As String, Optional ByVal apiKey As String = "", Optional ByVal saveModel As Boolean = True, _
-                              Optional ByVal stripSpacing As Double = DEF_STRIP_DX, Optional ByVal linkLength As Double = DEF_LINK_LEN, Optional ByVal fixedSpring As Double = DEF_K_FIX, Optional ByVal dynamicModel As Boolean = False)
+                              Optional ByVal stripSpacing As Double = DEF_STRIP_DX, Optional ByVal linkLength As Double = DEF_LINK_LEN, Optional ByVal fixedSpring As Double = DEF_K_FIX, Optional ByVal dynamicModel As Boolean = False, _
+                              Optional ByVal extraCases As Boolean = False)
     Dim rep As String
     On Error GoTo Fail
     If apiKey <> "" Then mKey = apiKey
     warnText = ""
     stripDx = stripSpacing: linkLen = linkLength: kFix = fixedSpring
-    dynMode = dynamicModel: askUser = False
+    dynMode = dynamicModel: askUser = False: extraMV = extraCases
     spanNo = spanIndex
     ReadInputs ThisWorkbook
     BuildModel
@@ -178,7 +181,8 @@ Fail:
     WriteText reportFile, "FAIL: " & d
 End Sub
 
-Private Sub RunBuild(ByVal spanIndex As Long, ByVal outDir As String, ByVal dry As Boolean, Optional ByVal dynamicModel As Boolean = False)
+Private Sub RunBuild(ByVal spanIndex As Long, ByVal outDir As String, ByVal dry As Boolean, Optional ByVal dynamicModel As Boolean = False, _
+                     Optional ByVal extraCases As Boolean = False)
     Dim wb12 As Workbook, msg As String, rep As String
     On Error GoTo Fail
     warnText = ""
@@ -186,6 +190,8 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal outDir As String, ByVal dry 
     Set wb12 = ThisWorkbook
     dynMode = dynamicModel: askUser = Not dry
     If Not dry Then dynMode = (UiIdx("model", 1) = 2)
+    extraMV = extraCases
+    If Not dry Then extraMV = (UiIdx("mvek", 1) = 2)
 
     If spanIndex = 0 Then spanIndex = UiIdx("span", 0)
     If spanIndex = 0 Then spanIndex = AskSpan(wb12)
@@ -308,7 +314,8 @@ Private Sub ReadInputs(wb12 As Workbook)
     enlH = ReadEnlemeH(wb12)
     disB = Num(NmRange(wb12, "G_DIS_ENLEME_KALINLIGI").Cells(1).Value, "G_DIS_ENLEME_KALINLIGI")
     disL = Num(NmRange(wb12, "G_DIS_ENLEME_BOYU").Cells(1).Value, "G_DIS_ENLEME_BOYU")
-    If disB <= 0 Or disB > 2 Or disL <= 0 Then Err.Raise vbObjectError + 13, , "Dis enleme " & disB & " x " & disL & " m is out of range."
+    noDis = (disB = 0 Or disL = 0)
+    If disB < 0 Or disB > 2 Or disL < 0 Then Err.Raise vbObjectError + 13, , "Dis enleme " & disB & " x " & disL & " m is out of range (0 = no outer end beam)."
     ' cross-beam heights in 1-2 are measured from the deck top with the minimum slab G_MIN_DOSEME_KALINLIGI (0.25);
     ' the girders carry the averaged slab tc (0.28375), so both beams get the slab difference added: their bottom
     ' then stays where 1-2 puts it (owner 2026-11-03). The OUTER end beam is deeper: deck top down to the bearing
@@ -704,14 +711,16 @@ Private Sub EndLine(ByVal x As Double, ysIn As Object, ByVal yMid As Double)
     Dim ys As Object, k As Variant, v As Variant, i As Long, e As Long, a As Long, b As Long, y1 As Double, y2 As Double, ym As Double
     Set ys = CreateObject("Scripting.Dictionary")
     For Each k In ysIn.Keys: AddX ys, CDbl(ysIn(k)): Next k
-    y1 = yMid - disL / 2: y2 = yMid + disL / 2
-    If y1 > yL + 0.001 Then AddX ys, y1 Else y1 = yL
-    If y2 < yR - 0.001 Then AddX ys, y2 Else y2 = yR
+    If Not noDis Then
+        y1 = yMid - disL / 2: y2 = yMid + disL / 2
+        If y1 > yL + 0.001 Then AddX ys, y1 Else y1 = yL
+        If y2 < yR - 0.001 Then AddX ys, y2 Else y2 = yR
+    End If
     v = SortedKeys(ys)
     For i = 1 To UBound(v) - 1
         a = AddNode(x, v(i), 0): b = AddNode(x, v(i + 1), 0)
         ym = (v(i) + v(i + 1)) / 2
-        If ym > y1 And ym < y2 Then e = AddElem(2, 15, a, b) Else e = AddElem(3, 5, a, b)
+        If Not noDis And ym > y1 And ym < y2 Then e = AddElem(2, 15, a, b) Else e = AddElem(3, 5, a, b)
         crossE = crossE & IIf(crossE = "", "", ",") & e
         crossN(a) = 1: crossN(b) = 1
         DeckElem e
@@ -921,7 +930,7 @@ Private Sub BuildPayloads()
     Dim fl As Double: fl = diaW: If fl > 0.3 * sG Then fl = 0.3 * sG
     Add "db/SECT", "{""Assign"":{" & IIf(fl > enlB + 0.001, TSect(2, "ENLEME", enlH, fl, enlB, tc), SbSect(2, "ENLEME", enlH, enlB)) & "," & SbSect(3, "DUMMY1", tc, dxAct) & "," & SbSect(4, "DUMMY2", 0.001, 0.001) & "," & _
         SbSect(5, "DUMMY3", tc, endStripW) & "," & PscSect(6) & "," & _
-        SbSect(13, "DUMMY4", tc, diaW) & IIf(visW > 0, "," & SbSect(14, "DUMMY1_VIS", tc, visW), "") & "," & SbSect(15, "DIS_ENLEME", DisHgt(), disB) & "}}"
+        SbSect(13, "DUMMY4", tc, diaW) & IIf(visW > 0, "," & SbSect(14, "DUMMY1_VIS", tc, visW), "") & IIf(noDis, "", "," & SbSect(15, "DIS_ENLEME", DisHgt(), disB)) & "}}"
     Add "db/CO_S", SectColorJson()
 
     s = ""
@@ -981,12 +990,20 @@ Private Sub BuildPayloads()
     s = LaneJson("LANE2", 1)
     If nTr = 2 Then s = LaneJson("LANE1", 2) & "," & s
     Add "db/LLAN", "{""Assign"":{" & RenumberTop(s) & "}}"
-    Add "db/MVHL", "{""Assign"":{" & _
-        """1"":{""MVLD_CODE"":11,""VEHICLE_LOAD_NAME"":""Load Model 71"",""VEHICLE_LOAD_NUM"":1,""VEHICLE_TYPE_NAME"":""Load Model 71"",""VEH_EUROCODE"":{""SUB_TYPE"":23,""W1"":80,""DD1"":0,""D1"":0.8,""W2"":80,""DD2"":0,""D2"":0.8,""V_LOAD_FACTOR"":" & JN(alphaLM) & ",""LONGI_DIST"":false,""ECCEN_VERT_LOAD"":false}}," & _
-        """2"":{""MVLD_CODE"":11,""VEHICLE_LOAD_NAME"":""HSLM A1 ~ HSLM A10"",""VEHICLE_LOAD_NUM"":1,""VEHICLE_TYPE_NAME"":""HSLM A1 ~ HSLM A10"",""VEH_EUROCODE"":{""SUB_TYPE"":23,""SEL_VEHICLE"":""A8"",""V_LOAD_FACTOR"":1,""LONGI_DIST"":false,""ECCEN_VERT_LOAD"":false,""HSLMA_NUM"":12,""HSLMA_LENGTH"":25,""HSLMA_SPACING"":2.5,""HSLMA_FORCE"":190,""PHI_DYN_EFF1"":0,""PHI_DYN_EFF2"":0}}," & _
-        """3"":{""MVLD_CODE"":11,""VEHICLE_LOAD_NAME"":""Load Model 71 - a=1"",""VEHICLE_LOAD_NUM"":1,""VEHICLE_TYPE_NAME"":""Load Model 71"",""VEH_EUROCODE"":{""SUB_TYPE"":23,""W1"":80,""DD1"":0,""D1"":0.8,""W2"":80,""DD2"":0,""D2"":0.8,""V_LOAD_FACTOR"":1,""LONGI_DIST"":false,""ECCEN_VERT_LOAD"":false}}}}"
-    Add "db/MVLDeu", "{""Assign"":{" & MvCase(1, "LM71 - S", "Load Model 71", False) & "," & MvCase(2, "HSLM-A 8 - S", "HSLM A1 ~ HSLM A10", False) & "," & _
-        MvCase(3, "LM71", "Load Model 71", True) & "," & MvCase(4, "HSLM-A 8", "HSLM A1 ~ HSLM A10", True) & "," & MvCase(5, "LM71 - a=1", "Load Model 71 - a=1", False) & "}}"
+    ' LM71 on both tracks always (the combinations and MAK_LL use it); LM71 - S (single track) and LM71 - a=1
+    ' always in the dynamic model, in the staged model only when the window gate asks for them (owner 2026-11-09)
+    s = """1"":{""MVLD_CODE"":11,""VEHICLE_LOAD_NAME"":""Load Model 71"",""VEHICLE_LOAD_NUM"":1,""VEHICLE_TYPE_NAME"":""Load Model 71"",""VEH_EUROCODE"":{""SUB_TYPE"":23,""W1"":80,""DD1"":0,""D1"":0.8,""W2"":80,""DD2"":0,""D2"":0.8,""V_LOAD_FACTOR"":" & JN(alphaLM) & ",""LONGI_DIST"":false,""ECCEN_VERT_LOAD"":false}}"
+    If dynMode Or extraMV Then s = s & "," & """2"":{""MVLD_CODE"":11,""VEHICLE_LOAD_NAME"":""Load Model 71 - a=1"",""VEHICLE_LOAD_NUM"":1,""VEHICLE_TYPE_NAME"":""Load Model 71"",""VEH_EUROCODE"":{""SUB_TYPE"":23,""W1"":80,""DD1"":0,""D1"":0.8,""W2"":80,""DD2"":0,""D2"":0.8,""V_LOAD_FACTOR"":1,""LONGI_DIST"":false,""ECCEN_VERT_LOAD"":false}}"
+    Add "db/MVHL", "{""Assign"":{" & s & "}}"
+    ' HSLM cases removed (owner 2026-11-09): no dynamic analysis, dynamic factors from EN 1991-2 Annex F
+    ' tables F1 / F2, and no combination or MAK_LL default used them. If a dynamic analysis is needed later, add
+    ' HSLM-A back with the critical train of Annex E (today A1) or A1 to A10, and update the workbook with it.
+    If dynMode Or extraMV Then
+        Add "db/MVLDeu", "{""Assign"":{" & MvCase(1, "LM71 - S", "Load Model 71", False) & "," & _
+            MvCase(2, "LM71", "Load Model 71", True) & "," & MvCase(3, "LM71 - a=1", "Load Model 71 - a=1", False) & "}}"
+    Else
+        Add "db/MVLDeu", "{""Assign"":{" & MvCase(1, "LM71", "Load Model 71", True) & "}}"
+    End If
     Add "db/DYFG", "{""Assign"":{""1"":{""INPUT_TYPE"":0,""LENGTH"":" & JN(Lc) & ",""MAINTAIN_TYPE"":1,""OPT_REDUCE_EFF"":false,""HEIGHT_COVER"":0,""DYN_FACTOR"":" & JN(Phi3(Lc)) & "}}}"
     If Not dynMode Then BuildStages
     AddCombs "db/LCOM-GEN", False
@@ -1114,7 +1131,7 @@ Private Function SectColorJson() As String
     rows = Split(SECT_COLORS, ";")
     For i = LBound(rows) To UBound(rows)
         f = Split(rows(i), "|"): c = Split(f(1), ",")
-        If f(0) <> "14" Or visW > 0 Then
+        If (f(0) <> "14" Or visW > 0) And (f(0) <> "15" Or Not noDis) Then
             For k = 1 To 3
                 v(k) = CLng(c(k - 1))
                 t(k) = CLng(v(k) + (255 - v(k)) * SECT_FILL_TINT): If t(k) > 255 Then t(k) = 255
@@ -1859,7 +1876,7 @@ Private Function Summary() As String
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & payloads.Count & " tables" & vbCrLf & _
         "Concrete " & clsG & " / " & clsS & ": " & IIf(dynMode, "Eurocode Ecm ", "AASHTO Ec ") & Format(eG, "0") & " / " & Format(eS, "0") & " MPa, ratio " & Format(eG / eS, "0.0000") & vbCrLf & _
         "Bearings: kE " & Format(kEB, "0") & ", ky " & Format(kyB, "0.0") & ", fixed " & Format(kFix, "0") & ", link " & linkLen & " m" & vbCrLf & _
-        "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & ", end beam " & disB & " x " & Format(DisHgt(), "0.000") & " x " & disL & _
+        "Strips " & Format(dxAct, "0.000") & " m (asked " & stripDx & "), end " & Format(endStripW, "0.000") & ", diaphragm " & IIf(DiaFlange() > 0, "T " & Format(DiaFlange(), "0.000"), "rect.") & ", end beam " & IIf(noDis, "none (slab strip)", disB & " x " & Format(DisHgt(), "0.000") & " x " & disL) & _
         ", edge slab " & Format(sG / 2 + ovL, "0.000") & "/" & Format(sG / 2 + ovR, "0.000") & vbCrLf & _
         "Loads/girder: ballast " & qBal & ", prot. " & qKor & "; per edge: kerb " & qBor * nG / 2 & ", railing " & qKork * nG / 2 & ", panel " & qCep * nG / 2 & vbCrLf & _
         "Wind Wg " & wG & ", Wv " & wV & "; TU " & tuPos & "/" & tuNeg & "; alpha " & alphaLM & ", Phi3 " & Format(Phi3(Lc), "0.0000") & vbCrLf & _
