@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09c"
-Private Const SCRIPT_CHANGELOG As String = "Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-09d"
+Private Const SCRIPT_CHANGELOG As String = "Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
@@ -1499,7 +1499,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     End If
     For i = 1 To payloads.Count
         p = payloads(i)
-        Prog "table " & i & "/" & payloads.Count & "  " & p(0)
+        Prog "table " & i & "/" & payloads.Count & "  " & p(0) & "  " & Format$(Len(CStr(p(1))) / 1024#, "0") & " kB"
         If Not Api("PUT", CStr(p(0)), Replace(CStr(p(1)), DYN_TAG, GirderSecf()), resp) Then
             SendAll = cleanRep & vbCrLf & "FAIL at step " & i & " (" & p(0) & "):" & vbCrLf & Left$(resp, 600) & vbCrLf & vbCrLf & "Model is incomplete; nothing saved."
             Exit Function

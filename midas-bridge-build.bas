@@ -42,8 +42,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09e"
-Private Const SCRIPT_CHANGELOG As String = "Skew per span from the span table (column R picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm"
+Private Const SCRIPT_VERSION As String = "2026-11-09f"
+Private Const SCRIPT_CHANGELOG As String = "Macro window log shows the size of each table sent; Skew per span from the span table (column R picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
@@ -1244,7 +1244,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     If InStr(resp, "USTYAPI") = 0 Then SendAll = cleanRep & vbCrLf & "FAIL: deck section USTYAPI is not in the model after the MCT import. Nothing else was written.": Exit Function
     For i = 1 To payloads.Count
         p = payloads(i)
-        Prog "table " & i & "/" & payloads.Count & "  " & p(0)
+        Prog "table " & i & "/" & payloads.Count & "  " & p(0) & "  " & Format$(Len(CStr(p(1))) / 1024#, "0") & " kB"
         If Not Api("PUT", CStr(p(0)), CStr(p(1)), resp) Then
             SendAll = cleanRep & vbCrLf & "FAIL at step " & i & " (" & p(0) & "):" & vbCrLf & Left$(resp, 600) & vbCrLf & vbCrLf & "Model is incomplete; nothing saved."
             Exit Function

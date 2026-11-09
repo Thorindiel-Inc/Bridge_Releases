@@ -36,8 +36,8 @@ Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPt
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-09d"
-Private Const SCRIPT_CHANGELOG As String = "New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari; Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases; UiChoice can preselect an item; RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons; new pop-up design: coloured header, aligned rows with tick / warning / error marks, question box, styled buttons, Kopyala; Enter follows the default button of the call"
+Private Const SCRIPT_VERSION As String = "2026-11-09e"
+Private Const SCRIPT_CHANGELOG As String = "RTI sonuclari: picture and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari; Ustyapi modeli: gate for the staged LM71 single-track and a=1 cases; UiChoice can preselect an item; RTI live load field; MAK_LL runs from the window (module and macro share a name); Kiliflama and Kayip back on their sheet buttons"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -83,6 +83,7 @@ Private inLayout As Boolean, closed As Boolean, barPct As Double, zoomNow As Dou
 Private fKey() As String, fTyp() As String, fCnt As Long
 Private vals As Object
 Private uiBtn As Long, uiText As String, uiPick As Long, pickDef As Long, running As Boolean
+Private stepTxt As String, stepT As Double, runBad As Boolean   ' live log: open step, its start, a failure was logged
 
 Private Function Tools() As Variant
     Tools = Array( _
@@ -93,7 +94,7 @@ Private Function Tools() As Variant
         "MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan", _
         "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Civil NX'te a\u00E7\u0131k sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131m oranlar\u0131n\u0131 okur, MOD sayfas\u0131na yazar. Modele bir \u015Fey yazmaz.|", _
         "MIDAS sonu\u00E7lar\u0131|Mod \u015Fekilleri|MIDAS_SEKIL_AL||Civil NX'te a\u00E7\u0131k sismik modelden iki model g\u00F6r\u00FCn\u00FC\u015F\u00FC ile X ve Y y\u00F6n\u00FCnde k\u00FCtle kat\u0131l\u0131m\u0131 en b\u00FCy\u00FCk iki\u015Fer modun \u015Feklini (MOD sayfas\u0131ndan) yakalar; Z_YATAY resimlerini ve \u015Fekil adlar\u0131n\u0131 g\u00FCnceller. Modele bir \u015Fey yazmaz, yaln\u0131zca g\u00F6r\u00FCn\u00FCm\u00FC de\u011Fi\u015Ftirir.|res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px: Civil NX penceresi her resimde ge\u00E7ici olarak de\u011Fi\u015Fir)~c~Ekran boyutu/4000 px/3000 px/2000 px/1000 px", _
-        "MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'te a\u00E7\u0131k RTI modelinden ray gerilmesini, tabliye ucu ve ray-tabliye yer de\u011Fi\u015Ftirmelerini okur, RTI_SONUC sayfas\u0131na yazar. Modele bir \u015Fey yazmaz.|", _
+        "MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'te a\u00E7\u0131k RTI modelinden ray gerilmesini, tabliye ucu ve ray-tabliye yer de\u011Fi\u015Ftirmelerini okur, RTI_SONUC sayfas\u0131na yazar; 3B_RTI_Y resimlerini de al\u0131r; 'Yaln\u0131z resimle' okumay\u0131 atlar, pencereleri RTI_SONUC'tan al\u0131r (model, ray gerilmesi N/mm\u00B2, tabliye yer de\u011Fi\u015Ftirmesi mm, belirleyici pencerelerde). Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez; resimler s\u0131ras\u0131nda birim sistemi ge\u00E7ici olarak N, mm olur.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px: Civil NX penceresi her resimde ge\u00E7ici olarak de\u011Fi\u015Fir)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
         "Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|", _
         "Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
         "Rapor|\u015Eekil ve tablo listeleri|FIG_TAB_AYARLA||\u015Eekil ve tablo listelerini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
@@ -193,6 +194,27 @@ Public Sub PANEL_TEST(ByVal row As Long, ByVal txt As String)
     UiLog txt
     UiProgress 45, "test"
 End Sub
+
+' test: fakes a run from the window and returns the time of 500 steps in ms, then the log
+Public Function PANEL_LOGTEST() As String
+    Dim i As Long, t As Double
+    PANEL_AC
+    pForm.Controls("txtLog").Text = ""
+    running = True: stepTxt = "": runBad = False
+    LogLine ChrW(9658), "Test" & FieldText(), -1
+    UiProgress 1, "table 1/3  db/NODE  12 kB"
+    UiProgress 2, "table 1/3  db/NODE  12 kB"
+    UiProgress 3, "read-back nodes"
+    UiLog "Read-back:" & vbLf & "  nodes 10 / 10" & vbLf & "  elements 9 / 10  FAIL" & vbLf & "  ! cap fit: bearing off the web" & vbLf & "  key from INPUT!T3"
+    UiProgress 4, "save"
+    UiLog "Done: 3 tables"
+    t = Timer
+    For i = 1 To 500: UiProgress 5, "table " & i & "/500  db/STAG": Next i
+    FlushStep IIf(runBad, ChrW(215), "")
+    LogLine IIf(runBad, ChrW(215), ChrW(9632)), "Bitti", -1
+    running = False
+    PANEL_LOGTEST = Format$((Timer - t) * 1000#, "0") & " ms" & vbLf & pForm.Controls("txtLog").Text
+End Function
 
 ' test: picks a row and returns the names and values of its fields; run = True presses Run and returns the log
 Public Function PANEL_PROBE(ByVal row As Long, ByVal run As Boolean) As String
@@ -489,6 +511,15 @@ Public Sub EvRun()
     If k < 0 Then Exit Sub
     p = Split(toolList(rowTool(k)), "|")
     On Error GoTo Fail
+    If StrComp(CStr(p(2)), "CheckBridgeMacroUpdates", vbTextCompare) = 0 Then
+        ' UPDATE rewrites this module too, and rewriting a module whose code is running crashed
+        ' Excel (2026-11-09). So the window hides and the updater starts from Excel's idle loop,
+        ' after this click has returned and no PANEL code runs.
+        closed = True
+        pForm.Hide
+        Application.OnTime Now, "'" & Replace(ThisWorkbook.Name, "'", "''") & "'!CheckBridgeMacroUpdates"
+        Exit Sub
+    End If
     If Not ReadFields() Then Exit Sub
     If p(3) <> "" Then
         sh = PickSheet(CStr(p(3)))
@@ -497,21 +528,27 @@ Public Sub EvRun()
     End If
     running = True
     SetBusy True
-    UiLog "--- " & U(CStr(p(1))) & "  (" & Format(Now, "hh:nn:ss") & ")"
-    UiProgress 0, U("\u00C7al\u0131\u015F\u0131yor...")
+    stepTxt = "": runBad = False
+    LogLine ChrW(9658), U(CStr(p(1))) & FieldText(), -1
+    SetBar 0, U("\u00C7al\u0131\u015F\u0131yor...")
     t = Timer
     Application.run "'" & ThisWorkbook.Name & "'!" & p(2)
-    UiProgress 100, U("Bitti: ") & Format(Timer - t, "0") & " s"
-    UiLog U("Bitti: ") & Format(Timer - t, "0") & " s" & vbLf
+    FlushStep IIf(runBad, ChrW(215), "")
+    SetBar 100, U("Bitti: ") & Format(Timer - t, "0") & " s"
+    LogLine IIf(runBad, ChrW(215), ChrW(9632)), IIf(runBad, U("Bitti, hata var: "), U("Bitti: ")) & Format(Timer - t, "0") & " s", -1
+    AddText ""
 Done:
     running = False
+    stepTxt = ""
     Set vals = Nothing
     SetBusy False
     Exit Sub
 Fail:
     msg = Err.Description
-    UiLog U("DURDU: ") & msg
-    UiProgress 0, U("Durdu")
+    FlushStep ChrW(215)
+    LogLine ChrW(215), U("DURDU: ") & msg, -1
+    AddText ""
+    SetBar 0, U("Durdu")
     Resume Done
 End Sub
 
@@ -577,17 +614,103 @@ Private Function PanelOpen() As Boolean
     PanelOpen = Not pForm Is Nothing And Not closed
 End Function
 
+' every log line: time, a mark from the start of the line (x stop / fail, triangle warning,
+' tick done, bullet otherwise), the text. Lines 2.. of one call are indented under it.
 Public Sub UiLog(ByVal txt As String)
+    Dim ln As Variant, first As Boolean, mk As String
     If Not PanelOpen() Then Exit Sub
-    With pForm.Controls("txtLog")
-        .Text = .Text & Replace(txt, vbCrLf, vbLf) & vbLf
-        .SelStart = Len(.Text)
-    End With
+    If Len(Trim$(Replace(Replace(txt, vbCr, ""), vbLf, ""))) = 0 Then AddText "": Exit Sub
+    first = True
+    For Each ln In Split(Replace(txt, vbCrLf, vbLf), vbLf)
+        mk = MarkOf(CStr(ln))
+        If mk = ChrW(215) And running Then runBad = True
+        If first Then
+            FlushStep IIf(mk = ChrW(215), mk, "")
+            LogLine IIf(mk = "", ChrW(8226), mk), CStr(ln), -1
+            first = False
+        ElseIf Len(Trim$(ln)) > 0 Then
+            AddText Space$(9) & IIf(mk = "", " ", mk) & " " & ln
+        End If
+    Next ln
     pForm.Repaint
     DoEvents
 End Sub
 
+' progress bar; during a run from the window a new step text also closes the last step in the log
 Public Sub UiProgress(ByVal pct As Double, ByVal txt As String)
+    If Not PanelOpen() Then Exit Sub
+    If running And txt <> stepTxt Then
+        FlushStep ""
+        stepTxt = txt: stepT = Timer
+    End If
+    SetBar pct, txt
+End Sub
+
+' live log: the open step with its mark (up = sent, down = read, tick = other) and its time
+Private Sub FlushStep(ByVal mark As String)
+    Dim d As Double
+    If stepTxt = "" Then Exit Sub
+    If mark = "" Then mark = StepMark(stepTxt)
+    d = Timer - stepT
+    If d < 0 Then d = d + 86400#
+    LogLine mark, stepTxt, d
+    stepTxt = ""
+End Sub
+
+Private Function StepMark(ByVal s As String) As String
+    s = LCase$(s)
+    If InStr(s, "read") > 0 Or InStr(s, "check") > 0 Or InStr(s, "oku") > 0 Then
+        StepMark = ChrW(8595)
+    ElseIf InStr(s, "table") > 0 Or InStr(s, "import") > 0 Or InStr(s, "delete") > 0 Or InStr(s, "send") > 0 Then
+        StepMark = ChrW(8593)
+    Else
+        StepMark = ChrW(8730)
+    End If
+End Function
+
+' mark of a message line, read from its start only (INPUT!T3 inside a line is no warning)
+Private Function MarkOf(ByVal s As String) As String
+    Dim u As String
+    u = UCase$(Trim$(s))
+    If Left$(u, 4) = "FAIL" Or Left$(u, 7) = "STOPPED" Or Left$(u, 5) = "DURDU" Or Left$(u, 10) = "NOT SAVED:" Or _
+       Right$(u, 4) = "FAIL" Or InStr(u, ": FAIL") > 0 Or InStr(u, "  FAIL") > 0 Then
+        MarkOf = ChrW(215)
+    ElseIf Left$(u, 1) = "!" Or Left$(u, 4) = "WARN" Or Left$(u, 5) = "UYARI" Or Left$(u, 9) = "NOT SAVED" Then
+        MarkOf = ChrW(9650)
+    ElseIf Left$(u, 4) = "DONE" Or Left$(u, 5) = "SAVED" Or Left$(u, 5) = "BITTI" Then
+        MarkOf = ChrW(8730)
+    End If
+End Function
+
+Private Sub LogLine(ByVal mark As String, ByVal txt As String, ByVal secs As Double)
+    Dim s As String
+    s = Format$(Now, "hh:nn:ss") & " " & mark & " " & txt
+    If secs >= 0 Then
+        If Len(s) < 58 Then s = s & Space$(58 - Len(s))
+        s = s & " " & Format$(secs, "0.0") & " s"
+    End If
+    AddText s
+End Sub
+
+Private Sub AddText(ByVal s As String)
+    If Not PanelOpen() Then Exit Sub
+    With pForm.Controls("txtLog")
+        .Text = .Text & s & vbLf
+        .SelStart = Len(.Text)
+    End With
+End Sub
+
+' the field values of the tool, for the start line of a run
+Private Function FieldText() As String
+    Dim i As Long, s As String
+    On Error Resume Next
+    For i = 0 To fCnt - 1
+        s = s & IIf(s = "", "", ", ") & pForm.Controls("q_" & fKey(i)).Caption & " " & pForm.Controls("p_" & fKey(i)).Text
+    Next i
+    If s <> "" Then FieldText = "  (" & s & ")"
+End Function
+
+Private Sub SetBar(ByVal pct As Double, ByVal txt As String)
     If Not PanelOpen() Then Exit Sub
     If pct < 0 Then pct = 0
     If pct > 100 Then pct = 100
@@ -615,6 +738,22 @@ Public Function UiMsg(ByVal prompt As String, Optional ByVal buttons As Long = v
         Case vbYesNoCancel: UiMsg = Choose(uiBtn + 1, vbCancel, vbYes, vbNo, vbCancel)
         Case vbOKCancel: UiMsg = IIf(uiBtn = 1, vbOK, vbCancel)
         Case Else: UiMsg = vbOK
+    End Select
+    If kind <> vbOKOnly And PanelOpen() Then LogLine "?", FirstLine(prompt) & "  -> " & AnswerText(UiMsg), -1
+End Function
+
+Private Function FirstLine(ByVal s As String) As String
+    s = Replace(s, vbCr, "")
+    If InStr(s, vbLf) > 0 Then s = Left$(s, InStr(s, vbLf) - 1)
+    FirstLine = s
+End Function
+
+Private Function AnswerText(ByVal a As Long) As String
+    Select Case a
+        Case vbYes: AnswerText = "Evet"
+        Case vbNo: AnswerText = U("Hay\u0131r")
+        Case vbOK: AnswerText = "Tamam"
+        Case Else: AnswerText = U("\u0130ptal")
     End Select
 End Function
 
