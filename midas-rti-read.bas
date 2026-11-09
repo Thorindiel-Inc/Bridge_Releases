@@ -11,8 +11,7 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 '
 '  Macro window (MAKROLAR) > MIDAS sonuclari > RTI sonuclari, or MIDAS_RTI_OKU.
 '  Reads the model OPEN in Civil NX through the MAPI, read only: GET db/PJCF, GRUP,
-'  NODE, ELEM, STAG and post/TABLE. The results are not changed; for the pictures it changes the
-'  view and, while the result pictures are taken, the unit system (N, mm; set back after).
+'  NODE, ELEM, STAG and post/TABLE. The results are not changed; the pictures change the view.
 '
 '  What it reads (groups made by MIDAS_KOPRU 2026-11-09b and later):
 '     SG_RAY_t  rail elements and rail nodes of track t,  SG_IZ_t  track nodes,
@@ -37,8 +36,9 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 '  Column E = where, F = which window / case. B3 = model and time stamp.
 '
 '  Window field 'islem': read + pictures (default), pictures only (no read: the windows and places
-'  come from RTI_SONUC E / F, whose B3 stamp must name the open model), read only. Pictures: 10
-'  into 3B_RTI_Y, see PICTURES below; field 'res' = picture width (4000 / 3000 / 2000 px or screen).
+'  come from RTI_SONUC E / F, whose B3 stamp must name the open model), read only. Pictures: 2
+'  model views into 3B_RTI_Y and 5 places for pictures pasted by hand, see PICTURES below; field
+'  'res' = picture width (4000 / 3000 / 2000 px or screen).
 '  MAPI key: INPUT!T3 (G_MAPI_KEY), else MIDAS_MAPI_KEY, else asked.
 '  Tests: MIDAS_RTI_RECORD <folder> runs live and saves every answer to the folder;
 '  MIDAS_RTI_TEST <folder> replays a saved run without Civil NX; with pictures True it only lists
@@ -46,8 +46,8 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-09e"
-Private Const SCRIPT_CHANGELOG As String = "Pictures: LM71 strip over the whole bridge with Civil NX zoom fit and a diagram scale field (olcek); LM71 values MinMax Only, Min & Max, Limit Scale 0.01 % (as the GUI); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, LM71 diagram at half scale, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times; reads shown step by step in the macro window log; new: rail stress, deck end and rail-deck movements of the RTI model into sheet RTI_SONUC"
+Private Const SCRIPT_VERSION As String = "2026-11-09f"
+Private Const SCRIPT_CHANGELOG As String = "Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times; reads shown step by step in the macro window log; new: rail stress, deck end and rail-deck movements of the RTI model into sheet RTI_SONUC"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_RTI"
@@ -105,7 +105,7 @@ Private gDbAx As String, gDbWin As String, gDhAx As String, gDaAx As String, gDa
 Private mPics As Boolean, mOnly As Boolean, mResW As Long, mLastMode As String, mAspect As Double, mPlanLog As String
 Private mWm As Double, mHm As Double, mD As Double
 Private mNoLimit As Boolean   ' Civil NX refused LIMIT_SCALE as a decimal: sent without it
-Private mDiag As Double       ' diagram scale of the rail stress strip (window field olcek, default 1)
+Private mDiag As Double       ' diagram scale of a rail stress capture (1; page 3 is pasted by hand since 09f)
 
 ' ============================================================================
 Public Sub MIDAS_RTI_OKU()
@@ -115,8 +115,7 @@ Public Sub MIDAS_RTI_OKU()
     ' field islem: 1 read + pictures, 2 pictures only (windows from RTI_SONUC), 3 read only
     mPics = (UiIdx("islem", 1) <> 3): mOnly = (UiIdx("islem", 1) = 2)
     mResW = ResWidth(UiIdx("res", 1))
-    mDiag = UiNum("olcek", 1)
-    If mDiag <= 0 Then mDiag = 1
+    mDiag = 1
     msg = RunAll(True)
     UiMsg msg, IIf(Left$(msg, 4) = "Done", vbInformation, vbExclamation), MSG_TITLE
     Exit Sub
@@ -181,7 +180,7 @@ Private Function RunAll(ByVal ask As Boolean) As String
     ReadStages
     If ask Then
         If UiMsg("RTI results: " & nEl & " rail elements, " & (nN) & " nodes, " & nW & " windows." & vbCrLf & _
-                 "Reading takes several minutes and keeps Civil NX busy." & IIf(mPics, vbCrLf & "Then 3 pictures go into " & FIG_SHEET & " (and 4 labelled places for the stage pictures pasted by hand): Civil NX shows each view and uses N, mm for the LM71 picture (set back after).", "") & vbCrLf & "Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
+                 "Reading takes several minutes and keeps Civil NX busy." & IIf(mPics, vbCrLf & "Then 2 model pictures go into " & FIG_SHEET & ", and 5 labelled places for the rail stress pictures pasted by hand: Civil NX shows each view.", "") & vbCrLf & "Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
             RunAll = "Stopped: nothing was written.": Exit Function
         End If
     End If
@@ -892,17 +891,14 @@ End Sub
 '  PICTURES in 3B_RTI_Y (owner 2026-11-09: one macro with the result pull)
 '  page 1  model, line view with supports, whole bridge
 '  page 2  model, solid, +-REG_SPANS spans around the axis of the largest dB
-'  page 3  5 strips of rail axial stress Sax (N/mm2): LM71 (captured: the whole rail of the track
-'          of the largest tension, Civil NX zoom fit, diagram scale from field olcek), then the
-'          window of the largest tension, the window of the
-'          largest compression, TU+, TU-: Civil NX ignores STAGE_NAME in a capture (owner's run
-'          2026-11-09), so these four get a labelled place for a picture pasted by hand
+'  page 3  5 dashed boxes for rail axial stress pictures (Sax, N/mm2) pasted by hand: LM71, the
+'          window of the largest tension, the window of the largest compression, TU+, TU-; each box
+'          says what to show (stage / case, track, whole bridge). Civil NX ignores STAGE_NAME in a
+'          capture, and the owner chose to do the LM71 one by hand too (2026-11-09)
 '  (the displacement page was removed by the owner 2026-11-09)
-'  A strip shows +-REG_SPANS spans (ACTIVE elements), side view; a label names its case.
 '  The strips fill the frame of the page (kept in the alternative text of the macro's shapes); on
 '  the first run the old pictures go only after all the new ones are in; later runs replace only
-'  the macro's own shapes, so pictures pasted by hand stay. Units N, mm for the result pictures,
-'  set back after (as the Culvert macros).
+'  the macro's own shapes, so pictures pasted by hand stay.
 ' ============================================================================
 Private Function Pictures() As String
     Dim ws As Worksheet, rows As Variant, p As Long, res As String, rep As String, nOk As Long
@@ -919,10 +915,6 @@ Private Function Pictures() As String
     PicGeometry
     rows = Split(PAGE_ROWS, ",")
     For p = 1 To 3
-        If p = 3 Then
-            uSet = UnitsTo(uOld)
-            If Not uSet Then rep = rep & vbCrLf & "  ! the unit system could not be set to N, mm: the result pictures show kN, m"
-        End If
         res = PicturePage(ws, p, CLng(rows(p - 1)), folder)
         If res = "" Then nOk = nOk + 1 Else rep = rep & vbCrLf & "  ! " & FIG_SHEET & " page " & p & ": " & res
     Next p
@@ -939,8 +931,8 @@ Fail:
     Resume Done
 End Function
 
-' one page: captures its pictures, then puts them into the frame of the page; page 3 strips 2-5
-' (stage results) get a labelled place to paste the picture by hand; when a capture fails the page
+' one page: captures its pictures, then puts them into the frame of the page; page 3 (rail stress,
+' 5 strips) gets labelled places to paste the pictures by hand; when a capture fails the page
 ' is left as it was; "" = done
 Private Function PicturePage(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, ByVal folder As String) As String
     Dim fr As Variant, n As Long, i As Long, f() As String, lbl() As String, res As String, man() As Boolean
@@ -949,7 +941,7 @@ Private Function PicturePage(ws As Worksheet, ByVal page As Long, ByVal capRow A
     n = Choose(page, 1, 1, 5)
     ReDim f(1 To n): ReDim lbl(1 To n): ReDim man(1 To n)
     For i = 1 To n
-        man(i) = (page = 3 And i > 1)
+        man(i) = (page = 3)
         If man(i) Then
             lbl(i) = SlotText(i)
             mPlanLog = mPlanLog & vbLf & "page " & page & ", strip " & i & " / " & n & ": by hand: " & Replace(lbl(i), vbLf, " / ")
@@ -1023,9 +1015,9 @@ Private Function CaptureStrip(ByVal page As Long, ByVal i As Long, ByVal n As Lo
         asp = frameAsp
     End If
     zoom = ZoomFor(asp, frameAsp)
-    ' side view of the flat rail: Civil NX's own zoom fit (the computed zoom 181 showed about 65 m
-    ' instead of the planned 120 m in the owner's run 2026-11-09)
-    If kind = "stress" Then zoom = 100
+    ' the computed zoom also holds for the side view of the whole rail: zoom 100 (Civil NX fit) left the
+    ' rail at 17 % of the strip width (owner's run 2026-11-09), i.e. the fit height is 0.627 x the 3D
+    ' diagonal of the active elements, as on the 3D model views
     mPlanLog = mPlanLog & vbLf & "page " & page & ", strip " & i & " / " & n & ": " & kind & " " & cType & " " & stg & ", " & cnt & " elements, direction " & JNum(Round(axDeg, 2)) & " deg, frame " & JNum(Round(frameAsp, 2)) & ":1, zoom " & zoom & IIf(w > 0, ", " & w & " x " & h & " px", "") & ", label: " & lbl
     ' Civil NX drops ZOOM_LEVEL on the capture that switches between model and result view
     ' (MIDAS_SEKIL, measured 2026-11-09): that capture is sent once more
@@ -1074,7 +1066,6 @@ Private Function CaptureStrip(ByVal page As Long, ByVal i As Long, ByVal n As Lo
         If Not PngSize(f, pw, ph) Then Exit For
         mAspect = pw / ph
         z2 = ZoomFor(mAspect, frameAsp)
-        If kind = "stress" Then z2 = 100
         If z2 = zoom Then Exit For
         zoom = z2
     Next pass
@@ -1448,11 +1439,12 @@ Private Sub AddSlot(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal 
     End With
 End Sub
 
-' text of a place for a stage picture pasted by hand (page 3, strips 2-5)
+' text of a place for a rail stress picture pasted by hand (page 3, strips 1-5)
 Private Function SlotText(ByVal i As Long) As String
     Dim e As Long, stg As String, what As String, cx As Double, cy As Double, trk As Long, axn As String, bb As String
     bb = "en b" & ChrW(252) & "y" & ChrW(252) & "k "
     Select Case i
+        Case 1: e = gTenE: stg = "PostCS": what = "LM71"
         Case 2: e = gTenE: stg = gTenWin: what = "Fren + ivme, " & stg & " (" & bb & ChrW(231) & "ekme)"
         Case 3: e = gCmpE: stg = gCmpWin: what = "Fren + ivme, " & stg & " (" & bb & "bas" & ChrW(305) & "n" & ChrW(231) & ")"
         Case 4: e = gTenE: stg = "TU+": what = "TU+"
@@ -1461,7 +1453,7 @@ Private Function SlotText(ByVal i As Long) As String
     ElemPoint e, cx, cy, trk
     axn = AxisNear(cx, cy)        ' the governing rail element is near this axis
     SlotText = what & ", hat " & trk & ", Sax (N/mm" & ChrW(178) & ")" & vbLf & _
-        "Elle: Civil NX'te a" & ChrW(351) & "ama " & stg & ", CS Summation, Beam Stresses Diagram Sax, hat " & trk & " ray" & ChrW(305) & ", t" & ChrW(252) & "m k" & ChrW(246) & "pr" & ChrW(252) & " (belirleyici eleman aks " & axn & " yak" & ChrW(305) & "n" & ChrW(305) & "nda)" & _
+        "Elle: Civil NX'te a" & ChrW(351) & "ama " & stg & IIf(i = 1, ", MV LM71 (MinMax Only: Min & Max)", ", CS Summation") & ", Beam Stresses Diagram Sax, hat " & trk & " ray" & ChrW(305) & ", t" & ChrW(252) & "m k" & ChrW(246) & "pr" & ChrW(252) & " (belirleyici eleman aks " & axn & " yak" & ChrW(305) & "n" & ChrW(305) & "nda)" & _
         "; resmi bu kutunun yerine yap" & ChrW(305) & ChrW(351) & "t" & ChrW(305) & "r" & ChrW(305) & "n."
 End Function
 
@@ -1653,8 +1645,8 @@ Private Function PicturesOnly(ByVal ask As Boolean, ByVal pj As String) As Strin
         If UiMsg(msg & vbCrLf & vbCrLf & "Take the pictures with these windows anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
     End If
     If ask Then
-        If UiMsg("Pictures only: 3 pictures and 4 places for stage pictures go into " & FIG_SHEET & ", windows and places from " & OUT_SHEET & " (" & gTenWin & ", " & gCmpWin & ", " & gDbWin & ")." & vbCrLf & _
-                 "Civil NX shows each view and uses N, mm for the result pictures (set back after). Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
+        If UiMsg("Pictures only: 2 model pictures and 5 places for the rail stress pictures go into " & FIG_SHEET & ", windows and places from " & OUT_SHEET & " (" & gTenWin & ", " & gCmpWin & ", " & gDbWin & ")." & vbCrLf & _
+                 "Civil NX shows each view. Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
     End If
     Set mDeK = DeckEnds()
     r = Pictures()
