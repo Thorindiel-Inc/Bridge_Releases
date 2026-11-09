@@ -17,6 +17,8 @@ Private Declare PtrSafe Function FindWindowW Lib "user32" (ByVal c As LongPtr, B
 Private Declare PtrSafe Function SetWindowPos Lib "user32" (ByVal h As LongPtr, ByVal a As LongPtr, ByVal x As Long, ByVal y As Long, ByVal cx As Long, ByVal cy As Long, ByVal f As Long) As Long
 Private Declare PtrSafe Function MonitorFromWindow Lib "user32" (ByVal h As LongPtr, ByVal f As Long) As LongPtr
 Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPtr, ByRef i As MONINFO) As Long
+Private Declare PtrSafe Function GetActiveWindow Lib "user32" () As LongPtr
+Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVal h As LongPtr) As LongPtr
 ' ============================================================================
 '  PANEL - the macro window of the workbook. The button MAKROLAR on INPUT opens it (PANEL_AC).
 '  Left: every tool, by group. Right: what it does, its input fields, Run, progress, results log.
@@ -36,8 +38,8 @@ Private Declare PtrSafe Function GetMonitorInfoW Lib "user32" (ByVal m As LongPt
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-09h"
-Private Const SCRIPT_CHANGELOG As String = "Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: Islem and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook); chapter 8 tools: Degerleri cagir, Modal analiz sonuclari"
+Private Const SCRIPT_VERSION As String = "2026-11-09i"
+Private Const SCRIPT_CHANGELOG As String = "Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: Islem and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook)"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -85,6 +87,9 @@ Private vals As Object
 Private uiBtn As Long, uiText As String, uiPick As Long, pickDef As Long, running As Boolean
 Private stepTxt As String, stepT As Double, runBad As Boolean   ' live log: open step, its start, a failure was logged
 Private stopReq As Boolean, stopRaised As Boolean, runBack As Long   ' Durdur: asked, raised once; colour of the Run button
+Private pHwnd As LongPtr   ' window handle of the macro window (FitWindow)
+Private logBounce As Boolean   ' a question box was shown: the log needs its focus again
+Private reActs As Long   ' times the macro window took the activation back (for the tests)
 
 Private Function Tools() As Variant
     Tools = Array( _
@@ -293,6 +298,22 @@ Public Sub PANEL_ASKTEST()
     UiLog "pick " & UiChoice("Hangi?", Array("Bir", "Iki"), "Deneme")
 End Sub
 
+' test: a fake run that first asks a question, as Kopru genel modeli does (the closed question box
+' leaves the activation on another Excel window), then 300 steps; answer, focus and caret
+Public Function PANEL_ASKRUNTEST() As String
+    Dim i As Long, a As Long
+    PANEL_AC
+    pForm.Controls("txtLog").Text = ""
+    running = True: stepTxt = "": runBad = False: stopReq = False: stopRaised = False: reActs = 0
+    LogLine ChrW(9658), "Test" & FieldText(), -1
+    a = UiMsg("Test: the open model is deleted. Continue?", vbYesNo + vbQuestion, "Test")
+    For i = 1 To 300: UiProgress 5, "table " & i & "/300  db/STAG": Next i
+    FlushStep ""
+    LogLine ChrW(9632), "Bitti", -1
+    running = False
+    PANEL_ASKRUNTEST = "answer " & a & IIf(GetActiveWindow() = pHwnd, ", macro window active", ", another window active") & ", activation taken back " & reActs & " times" & vbLf & LogState()
+End Function
+
 ' test: state of the window
 Public Function PANEL_STATE() As String
     If PanelOpen() Then
@@ -313,6 +334,7 @@ Private Sub FitWindow()
     pForm.Caption = tmp
     h = FindWindowW(StrPtr("ThunderDFrame"), StrPtr(tmp))
     pForm.Caption = cap
+    pHwnd = h
     If h = 0 Then Exit Sub
     s = GetWindowLongPtrW(h, -16)
     SetWindowLongPtrW h, -16, s Or &H40000 Or &H10000
@@ -786,18 +808,30 @@ Private Sub AddText(ByVal s As String)
 End Sub
 
 ' last line in view: an MSForms text box scrolls to its caret, and shows the scroll bar of text
-' set by code, only while it has the focus (owner 2026-11-09: the log stayed at its first lines,
-' no scroll bar). During a run the log takes the focus and keeps it, so the wheel and the keys
-' scroll it during and after the run; outside a run a field the user is in keeps the focus.
+' set by code, only while it has the focus and its window is the active one in Excel (owner
+' 2026-11-09: the log stayed at its first lines, no scroll bar; with 09h it stopped after the
+' question of Kopru genel modeli, because a closed question box leaves the activation on the
+' workbook window, and the log keeps the focus but no longer scrolls to its caret, measured
+' 2026-11-09). During a run the macro window takes the activation back (SetFocus acts in Excel's
+' own thread: it does not bring Excel in front of Civil NX); after a question box the focus goes
+' to Kopyala and back, which makes the log scroll again; the log keeps the focus, so the wheel
+' and the keys scroll it during and after the run; outside a run a field the user is in keeps
+' the focus.
 Private Sub LogToEnd()
     Dim had As String
     On Error Resume Next
     had = pForm.ActiveControl.Name
-    With pForm.Controls("txtLog")
-        If had <> "txtLog" Then
-            If Left$(had, 2) = "p_" And Not running Then Exit Sub
-            .SetFocus
+    If running Then
+        If pHwnd <> 0 Then
+            If GetActiveWindow() <> pHwnd Then ApiSetFocus pHwnd: logBounce = True: reActs = reActs + 1
         End If
+    ElseIf Left$(had, 2) = "p_" Then
+        Exit Sub
+    End If
+    With pForm.Controls("txtLog")
+        If logBounce And had = "txtLog" Then pForm.Controls("cmdCopy").SetFocus
+        logBounce = False
+        If running Or had <> "txtLog" Then .SetFocus
         .SelStart = Len(.Text)
     End With
 End Sub
@@ -984,6 +1018,7 @@ Private Sub AskDialog(ByVal prompt As String, ByVal title As String, ByVal kind 
     uiBtn = 0: uiText = "": uiPick = 0
     f.Show vbModal
     Unload f
+    logBounce = True
 End Sub
 
 ' 0 question, 1 information, 2 finished, 3 warning, 4 error
