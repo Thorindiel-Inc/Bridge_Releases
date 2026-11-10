@@ -46,8 +46,8 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-10b"
-Private Const SCRIPT_CHANGELOG As String = "Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip); Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times"
+Private Const SCRIPT_VERSION As String = "2026-11-10c"
+Private Const SCRIPT_CHANGELOG As String = "Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip); Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_RTI"
@@ -148,6 +148,20 @@ Fail:
     mPlay = ""
     Application.StatusBar = False
     MIDAS_RTI_TEST = "STOPPED: " & Err.Description
+End Function
+
+' test: puts an image file as the picture of page 1 or 2 through the same path as a capture
+' (frame, crop, border, name, rerun rule); "placed" when done
+Public Function MIDAS_RTI_PLACETEST(ByVal page As Long, ByVal img As String) As String
+    Dim ws As Worksheet, fr As Variant, capRow As Long, res As String
+    Dim f(1 To 1) As String, lbl(1 To 1) As String, man(1 To 1) As Boolean, rgt(1 To 1) As Boolean
+    Set ws = ThisWorkbook.Worksheets(FIG_SHEET)
+    capRow = CLng(Split(PAGE_ROWS, ",")(page - 1))
+    fr = PageFrame(ws, page, capRow)
+    If IsEmpty(fr) Then MIDAS_RTI_PLACETEST = "no picture frame on page " & page: Exit Function
+    f(1) = img
+    res = PlaceStrips(ws, page, capRow, fr, f, lbl, man, rgt, 1)
+    MIDAS_RTI_PLACETEST = IIf(res = "", "placed", res)
 End Function
 
 ' ============================================================================
@@ -900,6 +914,8 @@ End Sub
 '          earlier), an empty place gets a grey placeholder picture (Change Picture keeps its
 '          place, size and layer), and the labels are drawn again on every run
 '  (the displacement page was removed by the owner 2026-11-09)
+'  Every captured picture gets a thin black border (0.75 pt, solid), as the owner framed the
+'  model views by hand (2026-11-10); a run replaces the picture, so the border is set here.
 '  The strips fill the frame of the page (kept in the alternative text of the macro's shapes); on
 '  the first run the old pictures go only after all the new ones are in; later runs replace only
 '  the macro's own shapes, so pictures pasted by hand stay.
@@ -1396,6 +1412,9 @@ Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow A
             FitInto newS(i), fr(0), fr(1) + (i - 1) * hs, fr(2), hs
             newS(i).Placement = plc
             newS(i).AlternativeText = tg
+            With newS(i).Line
+                .Visible = msoTrue: .ForeColor.RGB = RGB(0, 0, 0): .Weight = 0.75: .DashStyle = msoLineSolid
+            End With
         End If
     Next i
     On Error GoTo 0
