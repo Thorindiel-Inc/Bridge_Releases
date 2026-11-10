@@ -23,9 +23,10 @@ Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVa
 '  PANEL - the macro window of the workbook. The button MAKROLAR on INPUT opens it (PANEL_AC).
 '  Left: every tool, by group. Right: what it does, its input fields, Run, progress, results log.
 '  Add a tool = add one line to Tools():
-'     Group|Title|Macro|Sheet|Description|key~label~type~default;key~label~type~default
+'     Group|Title|Macro|Sheet|Description|key~label~type~default;key~label~type~default[|Module2,Module3]
 '     Sheet: empty, or the sheet the macro runs on; ? = span letter (4?_KILIF)
 '     type: n number, c list (default = a/b/c, first entry is the default), s filled spans
+'     Module2..: more modules the macro runs; their versions are shown next to its own
 '  Fields are drawn when the tool is picked, the last values are remembered in the workbook.
 '  The window opens at a share of the monitor Excel is on and can be resized: Layout scales fonts and
 '  controls with Zoom and gives the extra room to the results log. Everything is laid out in BASE_W x BASE_H.
@@ -38,8 +39,8 @@ Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVa
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-09i"
-Private Const SCRIPT_CHANGELOG As String = "Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: Islem and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel); New tool: Mod sekilleri (MIDAS_SEKIL, model and mode-shape pictures into Z_YATAY); New tool: RTI sonuclari (MIDAS_RTI); tool list shows only the macros this workbook has (one module for the main and the chapter 8 workbook)"
+Private Const SCRIPT_VERSION As String = "2026-11-10a"
+Private Const SCRIPT_CHANGELOG As String = "Versions: the picked tool shows its macro module and version (as installed in this workbook) beside its name, and the start line of a run in the log names them; Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step; RTI row text fits; RTI sonuclari: Islem and resolution fields; live log: time, mark and duration of every step sent or read, questions and answers, fields of the run, failures marked; Makro guncellemesi: the window hides and UPDATE starts after it (UPDATE rewriting PANEL from inside the window crashed Excel)"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -98,7 +99,7 @@ Private Function Tools() As Variant
         "Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|", _
         "MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet", _
         "MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan", _
-        "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131mlar\u0131n\u0131 MOD'a okur; en b\u00FCy\u00FCk X ve Y modlar\u0131n\u0131n \u015Fekillerini Z_YATAY'a resimler. Modele bir \u015Fey yazmaz.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
+        "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131mlar\u0131n\u0131 MOD'a okur; en b\u00FCy\u00FCk X ve Y modlar\u0131n\u0131n \u015Fekillerini Z_YATAY'a resimler. Modele bir \u015Fey yazmaz.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu|MIDAS_SEKIL", _
         "MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri 3B_RTI_Y'ye yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
         "Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|", _
         "Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
@@ -121,10 +122,15 @@ Private Function Present(all As Variant) As Variant
 End Function
 
 Private Function HasMacro(ByVal m As String) As Boolean
+    HasMacro = (MacroModule(m) <> "")
+End Function
+
+' standard module that holds the macro: "" = none, "*" = no access to the VBA project
+Private Function MacroModule(ByVal m As String) As String
     Dim c As Object, cs As Object, modN As String, proc As String, p As Long, ln As Long
     On Error Resume Next
     Set cs = ThisWorkbook.VBProject.VBComponents
-    If cs Is Nothing Then HasMacro = True: Exit Function
+    If cs Is Nothing Then MacroModule = "*": Exit Function
     p = InStr(m, ".")
     If p > 0 Then modN = Left$(m, p - 1): proc = mid$(m, p + 1) Else proc = m
     For Each c In cs
@@ -132,9 +138,47 @@ Private Function HasMacro(ByVal m As String) As Boolean
             ln = 0
             Err.Clear
             ln = c.CodeModule.ProcStartLine(proc, 0)
-            If Err.Number = 0 And ln > 0 Then HasMacro = True: Exit Function
+            If Err.Number = 0 And ln > 0 Then MacroModule = c.Name: Exit Function
         End If
     Next c
+End Function
+
+' SCRIPT_VERSION of a module as it is in this workbook: "" = no such module, "?" = no version line
+Private Function ModVersion(ByVal modN As String) As String
+    Dim cm As Object, i As Long, t As String, q As Long
+    On Error Resume Next
+    Set cm = ThisWorkbook.VBProject.VBComponents(modN).CodeModule
+    If cm Is Nothing Then Exit Function
+    ModVersion = "?"
+    For i = 1 To cm.CountOfDeclarationLines
+        t = Trim$(cm.lines(i, 1))
+        If Left$(t, 1) <> "'" And InStr(1, t, "Const SCRIPT_VERSION ", vbTextCompare) > 0 Then
+            q = InStr(t, """")
+            If q > 0 Then ModVersion = mid$(t, q + 1, InStr(q + 1, t, """") - q - 1)
+            Exit Function
+        End If
+    Next i
+End Function
+
+' module and version of the tool's macro, then of the modules in part 7 of its Tools() line,
+' e.g. "MIDAS_MOD 2026-11-09b . MIDAS_SEKIL 2026-11-09b"; "" without access to the VBA project
+Private Function ToolVersions(ByVal spec As String) As String
+    Dim p As Variant, m As String, s As String, x As Variant, v As String, nm As String
+    p = Split(spec, "|")
+    m = MacroModule(CStr(p(2)))
+    If m = "" Or m = "*" Then Exit Function
+    s = m & " " & ModVersion(m)
+    If UBound(p) >= 6 Then
+        For Each x In Split(CStr(p(6)), ",")
+            nm = Trim$(CStr(x))
+            If nm <> "" Then
+                v = ModVersion(nm)
+                If v = "" Then v = "yok"
+                s = s & "  " & ChrW(183) & "  " & nm & " " & v
+            End If
+        Next x
+    End If
+    ToolVersions = s
 End Function
 
 Private Function CHK() As String
@@ -178,6 +222,7 @@ Public Sub PANEL_AC()
     pForm.Controls("cmdClear").Caption = U("Temizle")
     pForm.Controls("cmdClose").Caption = U("Kapat")
     pForm.Controls("lblLog").Caption = U("Sonu\u00E7lar")
+    AddModLabel
     FillTools
     Layout
     pForm.Show vbModeless
@@ -186,6 +231,16 @@ Public Sub PANEL_AC()
 Fail:
     MsgBox "The macro window could not open: " & Err.Description & vbCrLf & vbCrLf & _
            "File > Options > Trust Center > Macro Settings > Trust access to the VBA project object model.", vbExclamation, "PANEL"
+End Sub
+
+' module(s) and version(s) of the picked tool, grey, on the line of its name left of the Run button;
+' added at run time like the fields, so the form is not rebuilt (FORM_VERSION unchanged)
+Private Sub AddModLabel()
+    Dim x As Object
+    Set x = pForm.Controls.Add("Forms.Label.1", "lblMod", True)
+    x.BackStyle = 0: x.ForeColor = C_MUTED: x.TextAlign = 3: x.WordWrap = False
+    x.Font.Name = "Segoe UI": x.Font.Size = 10
+    x.Left = RX: x.top = 67: x.Width = BASE_W - RX - 134: x.Height = 18
 End Sub
 
 Public Sub PANEL_KUR()
@@ -292,6 +347,16 @@ Public Function PANEL_TOOLS() As String
     PANEL_TOOLS = s
 End Function
 
+' test: module versions of every tool this workbook shows (no window), then ModVersion of a name
+Public Function PANEL_VERTEST(ByVal modName As String) As String
+    Dim v As Variant, i As Long, s As String
+    v = Present(Tools())
+    For i = LBound(v) To UBound(v)
+        s = s & U(CStr(Split(v(i), "|")(1))) & " = " & ToolVersions(CStr(v(i))) & " ## "
+    Next i
+    PANEL_VERTEST = s & modName & " -> [" & ModVersion(modName) & "]"
+End Function
+
 ' test: a yes / no dialog, the answer goes to the log
 Public Sub PANEL_ASKTEST()
     UiLog "answer " & UiMsg("Test sorusu" & vbLf & String(200, "x"), vbYesNo + vbQuestion, "Deneme")
@@ -385,6 +450,7 @@ Private Sub Layout()
     Next c
     pForm.Controls("cmdClose").Left = w - 14 - 90
     PlaceFields
+    pForm.Controls("lblMod").Width = w - 14 - 110 - 10 - RX
 Done:
     inLayout = False
 End Sub
@@ -459,7 +525,13 @@ Public Sub EvRow(ByVal k As Long)
     p = Split(toolList(curTool), "|")
     pForm.Controls("lblName").Caption = U(CStr(p(1)))
     pForm.Controls("lblDesc").Caption = U(CStr(p(4)))
+    ShowVersions
     DrawFields CStr(p(5))
+End Sub
+
+Private Sub ShowVersions()
+    On Error Resume Next
+    pForm.Controls("lblMod").Caption = ToolVersions(CStr(toolList(curTool)))
 End Sub
 
 ' input fields of the tool, two per row
@@ -603,7 +675,7 @@ Public Sub EvRun()
     running = True
     SetBusy True
     stepTxt = "": runBad = False: stopReq = False: stopRaised = False
-    LogLine ChrW(9658), U(CStr(p(1))) & FieldText(), -1
+    LogLine ChrW(9658), U(CStr(p(1))) & FieldText() & VerText(toolList(rowTool(k))), -1
     SetBar 0, U("\u00C7al\u0131\u015F\u0131yor...")
     t = Timer
     Application.run "'" & ThisWorkbook.Name & "'!" & p(2)
@@ -835,6 +907,13 @@ Private Sub LogToEnd()
         .SelStart = Len(.Text)
     End With
 End Sub
+
+' the module versions of the tool, for the start line of a run
+Private Function VerText(ByVal spec As String) As String
+    Dim s As String
+    s = ToolVersions(spec)
+    If s <> "" Then VerText = "  " & s
+End Function
 
 ' the field values of the tool, for the start line of a run
 Private Function FieldText() As String

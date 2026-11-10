@@ -46,8 +46,8 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-09f"
-Private Const SCRIPT_CHANGELOG As String = "Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times; reads shown step by step in the macro window log; new: rail stress, deck end and rail-deck movements of the RTI model into sheet RTI_SONUC"
+Private Const SCRIPT_VERSION As String = "2026-11-10b"
+Private Const SCRIPT_CHANGELOG As String = "Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip); Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only; pictures into 3B_RTI_Y in the same run: model, rail stress strips (N/mm2) and deck displacement strips (mm) at the governing windows; a read without a valid answer is sent again, up to 3 times"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_RTI"
@@ -891,10 +891,14 @@ End Sub
 '  PICTURES in 3B_RTI_Y (owner 2026-11-09: one macro with the result pull)
 '  page 1  model, line view with supports, whole bridge
 '  page 2  model, solid, +-REG_SPANS spans around the axis of the largest dB
-'  page 3  5 dashed boxes for rail axial stress pictures (Sax, N/mm2) pasted by hand: LM71, the
-'          window of the largest tension, the window of the largest compression, TU+, TU-; each box
-'          says what to show (stage / case, track, whole bridge). Civil NX ignores STAGE_NAME in a
-'          capture, and the owner chose to do the LM71 one by hand too (2026-11-09)
+'  page 3  5 places for rail axial stress pictures (Sax, N/mm2) pasted by hand: LM71, the window of
+'          the largest tension, the window of the largest compression, TU+, TU-. Civil NX ignores
+'          STAGE_NAME in a capture, and the owner chose to do the LM71 one by hand too (2026-11-09).
+'          As the owner laid it out (2026-11-10): each place has only a short label, on top of the
+'          picture, in the top corner away from the governing element (A1 at the left of the
+'          picture); the macro never deletes a picture on this page (pasted by hand or captured
+'          earlier), an empty place gets a grey placeholder picture (Change Picture keeps its
+'          place, size and layer), and the labels are drawn again on every run
 '  (the displacement page was removed by the owner 2026-11-09)
 '  The strips fill the frame of the page (kept in the alternative text of the macro's shapes); on
 '  the first run the old pictures go only after all the new ones are in; later runs replace only
@@ -936,15 +940,18 @@ End Function
 ' is left as it was; "" = done
 Private Function PicturePage(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, ByVal folder As String) As String
     Dim fr As Variant, n As Long, i As Long, f() As String, lbl() As String, res As String, man() As Boolean
+    Dim rgt() As Boolean, axn As String, hand As Boolean
     fr = PageFrame(ws, page, capRow)
     If IsEmpty(fr) Then PicturePage = "no picture on the page (rows " & capRow - 27 & "-" & capRow - 1 & "), nothing captured": Exit Function
     n = Choose(page, 1, 1, 5)
-    ReDim f(1 To n): ReDim lbl(1 To n): ReDim man(1 To n)
+    ReDim f(1 To n): ReDim lbl(1 To n): ReDim man(1 To n): ReDim rgt(1 To n)
+    hand = True
     For i = 1 To n
         man(i) = (page = 3)
+        hand = hand And man(i)
         If man(i) Then
-            lbl(i) = SlotText(i)
-            mPlanLog = mPlanLog & vbLf & "page " & page & ", strip " & i & " / " & n & ": by hand: " & Replace(lbl(i), vbLf, " / ")
+            lbl(i) = SlotText(i, rgt(i), axn)
+            mPlanLog = mPlanLog & vbLf & "page " & page & ", strip " & i & " / " & n & ": by hand: " & lbl(i) & "  (label " & IIf(rgt(i), "right", "left") & ", element near " & axn & ")"
         Else
             Note 97, "picture: page " & page & IIf(n > 1, ", strip " & i & " / " & n, "")
             f(i) = folder & "\RTI_Y_" & page & "_" & i & ".png"
@@ -952,8 +959,9 @@ Private Function PicturePage(ws As Worksheet, ByVal page As Long, ByVal capRow A
             If res <> "" Then PicturePage = IIf(n > 1, "strip " & i & ": ", "") & res & "; the page was not changed": Exit Function
         End If
     Next i
-    If mPlay <> "" Then Exit Function
-    PicturePage = PlaceStrips(ws, page, capRow, fr, f, lbl, man, n)
+    ' a dry run also lays out a page made only of hand places (no image needed), so tests see it
+    If mPlay <> "" And Not hand Then Exit Function
+    PicturePage = PlaceStrips(ws, page, capRow, fr, f, lbl, man, rgt, n)
 End Function
 
 ' one capture; "" = the image file is there (dry run: the request is only listed)
@@ -1351,13 +1359,17 @@ End Function
 
 ' the page's new pictures and hand-paste places stacked in the frame, then the old ones deleted:
 ' the macro's own shapes always, the other pictures of the page only on the first run (the original
-' layout); a picture pasted by hand over a place is kept and that place is not drawn again
-Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, fr As Variant, f() As String, lbl() As String, man() As Boolean, ByVal n As Long) As String
+' layout). A page made only of hand places (page 3) never loses a picture: a picture covering a
+' place stays (pasted by hand, a placeholder or an earlier capture), an empty place gets a grey
+' placeholder picture, and the short labels are drawn again on top
+Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow As Long, fr As Variant, f() As String, lbl() As String, man() As Boolean, rgt() As Boolean, ByVal n As Long) As String
     Dim i As Long, shp As Shape, newS() As Shape, hs As Double, old As New Collection, plc As Long, r As Long
-    Dim firstRun As Boolean, tg As String
+    Dim firstRun As Boolean, tg As String, hand As Boolean, cov As Shape
     hs = fr(3) / n
     plc = 1
     tg = FrameTag(fr)
+    hand = True
+    For i = 1 To n: hand = hand And man(i): Next i
     firstRun = True
     For Each shp In ws.Shapes
         If IsOurs(shp.Name, page) Then firstRun = False: Exit For
@@ -1368,10 +1380,12 @@ Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow A
         r = shp.TopLeftCell.Row
         On Error GoTo 0
         If IsOurs(shp.Name, page) Then
-            old.Add shp
+            If Not (hand And IsPic(shp)) Then old.Add shp
             If Left$(shp.Name, Len(PIC_PREFIX)) = PIC_PREFIX Then plc = shp.Placement
-        ElseIf firstRun And (shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup) And r >= capRow - 27 And r < capRow Then
-            old.Add shp: plc = shp.Placement
+        ElseIf firstRun And IsPic(shp) And r >= capRow - 27 And r < capRow Then
+            ' a page of hand places keeps strip pictures pasted by hand: only a picture of the
+            ' original layout (taller than 1.5 strips) goes
+            If Not hand Or shp.Height > 1.5 * hs Then old.Add shp: plc = shp.Placement
         End If
     Next shp
     ReDim newS(1 To n)
@@ -1390,10 +1404,22 @@ Private Function PlaceStrips(ws As Worksheet, ByVal page As Long, ByVal capRow A
     Next shp
     For i = 1 To n
         If man(i) Then
-            If Not HandPicture(ws, page, fr(0) + fr(2) / 2, fr(1) + (i - 0.5) * hs) Then AddSlot ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs, fr(2), hs, tg
+            If CoverPicture(ws, fr(0) + fr(2) / 2, fr(1) + (i - 0.5) * hs) Is Nothing Then AddPlaceholder ws, page, i, fr(0), fr(1) + (i - 1) * hs, fr(2), hs, tg
         Else
             newS(i).Name = PIC_PREFIX & page & "_" & i
-            If n > 1 Then AddLabel ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs
+        End If
+    Next i
+    ' labels last, so they lie on top of the pictures: at the picture that covers the place
+    For i = 1 To n
+        If man(i) Then
+            Set cov = CoverPicture(ws, fr(0) + fr(2) / 2, fr(1) + (i - 0.5) * hs)
+            If cov Is Nothing Then
+                AddLabel ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs, fr(2), rgt(i), tg
+            Else
+                AddLabel ws, page, i, lbl(i), cov.Left, cov.Top, cov.Width, rgt(i), tg
+            End If
+        ElseIf n > 1 Then
+            AddLabel ws, page, i, lbl(i), fr(0), fr(1) + (i - 1) * hs, fr(2), False, tg
         End If
     Next i
     Exit Function
@@ -1405,43 +1431,58 @@ Bad:
     Next i
 End Function
 
-' a picture the macro did not make covering the point (pasted by hand)
-Private Function HandPicture(ws As Worksheet, ByVal page As Long, ByVal px As Double, ByVal py As Double) As Boolean
-    Dim shp As Shape
+' topmost picture covering the point: pasted by hand, a placeholder or an earlier capture
+Private Function CoverPicture(ws As Worksheet, ByVal px As Double, ByVal py As Double) As Shape
+    Dim shp As Shape, z As Long
     For Each shp In ws.Shapes
-        If Not IsOurs(shp.Name, page) Then
-            If shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup Then
-                If px >= shp.Left And px <= shp.Left + shp.Width And py >= shp.Top And py <= shp.Top + shp.Height Then HandPicture = True: Exit Function
+        If IsPic(shp) Then
+            If px >= shp.Left And px <= shp.Left + shp.Width And py >= shp.Top And py <= shp.Top + shp.Height Then
+                If shp.ZOrderPosition > z Then z = shp.ZOrderPosition: Set CoverPicture = shp
             End If
         End If
     Next shp
 End Function
 
-' dashed box with the text of what to capture by hand
-Private Sub AddSlot(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal txt As String, ByVal bl As Double, ByVal bt As Double, ByVal bw As Double, ByVal bh As Double, ByVal tg As String)
+Private Function IsPic(shp As Shape) As Boolean
+    IsPic = (shp.Type = msoPicture Or shp.Type = msoLinkedPicture Or shp.Type = msoGroup)
+End Function
+
+' grey placeholder picture with a dashed border where a picture is pasted by hand: right-click >
+' Change Picture swaps it and keeps its place, size and layer, so the label stays on top
+Private Sub AddPlaceholder(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal bl As Double, ByVal bt As Double, ByVal bw As Double, ByVal bh As Double, ByVal tg As String)
     Dim sh As Shape
-    Set sh = ws.Shapes.AddShape(1, bl, bt, bw, bh)
+    Set sh = ws.Shapes.AddPicture(PlaceholderFile(), msoFalse, msoTrue, bl, bt, bw, bh)
     With sh
         .Name = SLOT_PREFIX & page & "_" & i
         .Placement = 1
         .AlternativeText = tg
-        .Fill.ForeColor.RGB = RGB(248, 248, 248)
+        .Line.Visible = msoTrue
         .Line.ForeColor.RGB = RGB(150, 150, 150): .Line.Weight = 0.75: .Line.DashStyle = 4
-        With .TextFrame2
-            .WordWrap = msoTrue
-            .VerticalAnchor = 3
-            .TextRange.Text = txt
-            .TextRange.ParagraphFormat.Alignment = 2
-            .TextRange.Font.Size = 8
-            .TextRange.Font.Name = "Calibri"
-            .TextRange.Font.Fill.ForeColor.RGB = RGB(70, 70, 70)
-        End With
     End With
 End Sub
 
-' text of a place for a rail stress picture pasted by hand (page 3, strips 1-5)
-Private Function SlotText(ByVal i As Long) As String
-    Dim e As Long, stg As String, what As String, cx As Double, cy As Double, trk As Long, axn As String, bb As String
+' a 1 x 1 pixel light grey bitmap in the picture folder, stretched to the place
+Private Function PlaceholderFile() As String
+    Dim b(0 To 57) As Byte, v As Variant, i As Long, fn As Integer, p As String
+    p = Environ$("TEMP") & "\Bridge_RTI_Y"
+    If Len(Dir(p, vbDirectory)) = 0 Then MkDir p
+    p = p & "\yer.bmp"
+    v = Array(66, 77, 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0, 40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0, _
+        0, 0, 0, 0, 4, 0, 0, 0, 19, 11, 0, 0, 19, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 245, 245, 245, 0)
+    For i = 0 To 57: b(i) = v(i): Next i
+    If Len(Dir(p)) > 0 Then Kill p
+    fn = FreeFile
+    Open p For Binary Access Write As #fn
+    Put #fn, 1, b
+    Close #fn
+    PlaceholderFile = p
+End Function
+
+' short label of a place for a rail stress picture pasted by hand (page 3, strips 1-5); onRight =
+' the label goes to the right corner, away from the governing element (A1 at the left of the
+' picture, as in the owner's layout 2026-11-10); axn = the axis near the governing element
+Private Function SlotText(ByVal i As Long, ByRef onRight As Boolean, ByRef axn As String) As String
+    Dim e As Long, stg As String, what As String, cx As Double, cy As Double, trk As Long, bb As String
     bb = "en b" & ChrW(252) & "y" & ChrW(252) & "k "
     Select Case i
         Case 1: e = gTenE: stg = "PostCS": what = "LM71"
@@ -1452,9 +1493,24 @@ Private Function SlotText(ByVal i As Long) As String
     End Select
     ElemPoint e, cx, cy, trk
     axn = AxisNear(cx, cy)        ' the governing rail element is near this axis
-    SlotText = what & ", hat " & trk & ", Sax (N/mm" & ChrW(178) & ")" & vbLf & _
-        "Elle: Civil NX'te a" & ChrW(351) & "ama " & stg & IIf(i = 1, ", MV LM71 (MinMax Only: Min & Max)", ", CS Summation") & ", Beam Stresses Diagram Sax, hat " & trk & " ray" & ChrW(305) & ", t" & ChrW(252) & "m k" & ChrW(246) & "pr" & ChrW(252) & " (belirleyici eleman aks " & axn & " yak" & ChrW(305) & "n" & ChrW(305) & "nda)" & _
-        "; resmi bu kutunun yerine yap" & ChrW(305) & ChrW(351) & "t" & ChrW(305) & "r" & ChrW(305) & "n."
+    onRight = (FromStart(cx, cy) < 0.5)
+    SlotText = what & ", hat " & trk & ", Sax (N/mm" & ChrW(178) & ")"
+End Function
+
+' share of the bridge length from the first deck end (an axis with deck only ahead of it) to the
+' last one; 1 when the ends are not known (the label then goes left)
+Private Function FromStart(ByVal px As Double, ByVal py As Double) As Double
+    Dim key As Variant, a As Variant, x0 As Double, y0 As Double, x1 As Double, y1 As Double, s0 As Boolean, s1 As Boolean
+    FromStart = 1
+    If mDeK Is Nothing Then Exit Function
+    For Each key In mDeK.keys
+        a = mDeK(key)
+        If a(0) = 0 And a(1) > 0 Then s0 = AxisPoint(CStr(key), x0, y0)
+        If a(1) = 0 And a(0) > 0 Then s1 = AxisPoint(CStr(key), x1, y1)
+    Next key
+    If Not (s0 And s1) Then Exit Function
+    If Abs(Sta(x1, y1) - Sta(x0, y0)) < 0.001 Then Exit Function
+    FromStart = (Sta(px, py) - Sta(x0, y0)) / (Sta(x1, y1) - Sta(x0, y0))
 End Function
 
 ' label of the axis nearest to the point
@@ -1486,12 +1542,14 @@ Private Sub FitInto(shp As Shape, ByVal bl As Double, ByVal bt As Double, ByVal 
     shp.LockAspectRatio = msoTrue
 End Sub
 
-Private Sub AddLabel(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal txt As String, ByVal bl As Double, ByVal bt As Double)
+' short label in a top corner of a strip (onRight: the right one), on top of its picture
+Private Sub AddLabel(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal txt As String, ByVal bl As Double, ByVal bt As Double, ByVal bw As Double, ByVal onRight As Boolean, ByVal tg As String)
     Dim tb As Shape
     Set tb = ws.Shapes.AddTextbox(1, bl + 2, bt + 2, 300, 12)
     With tb
         .Name = LBL_PREFIX & page & "_" & i
         .Placement = 1
+        .AlternativeText = tg
         .Line.Visible = msoFalse
         .Fill.ForeColor.RGB = RGB(255, 255, 255)
         .Fill.Transparency = 0.2
@@ -1504,6 +1562,7 @@ Private Sub AddLabel(ws As Worksheet, ByVal page As Long, ByVal i As Long, ByVal
             .TextRange.Font.Name = "Calibri"
             .TextRange.Font.Fill.ForeColor.RGB = RGB(0, 0, 0)
         End With
+        If onRight Then .Left = bl + bw - .Width - 2
     End With
 End Sub
 
