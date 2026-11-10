@@ -19,8 +19,8 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-11-06d"
-Private Const SCRIPT_CHANGELOG As String = "PANEL (macro window) is now optional: without it messages use a plain box, so the module also runs in workbooks that have only buttons"
+Private Const SCRIPT_VERSION As String = "2026-11-10a"
+Private Const SCRIPT_CHANGELOG As String = "Hidden sheets are skipped (report sheets and landscape link targets), so a hidden sheet set (e.g. the unused foundation type of an abutment) is neither listed nor linked"
 
 Private Const COL_CODE As Long = 26      ' Z  caption code on the report sheets
 Private Const COL_HEAD As Long = 30      ' AD heading code
@@ -226,7 +226,7 @@ Private Function ElsewhereOr(code As String, fallback As String) As String
     ElsewhereOr = fallback
     For Each ws In ThisWorkbook.Worksheets
         If Not IsReportName(ws.Name) And ws.Name <> "ICINDEKILER" And ws.Name <> "FIG_TAB" _
-           And ws.Name <> "INPUT" Then
+           And ws.Name <> "INPUT" And ws.Visible = xlSheetVisible Then
             Set hit = ws.UsedRange.Find(What:=code, LookIn:=xlValues, LookAt:=xlWhole, MatchCase:=True)
             If Not hit Is Nothing Then
                 ElsewhereOr = "'" & ws.Name & "'!B" & hit.Row
@@ -578,11 +578,11 @@ Private Function IsReportName(shName As String) As Boolean
     IsReportName = True
 End Function
 
-' Sheets named <number>_<text> (1_GIRIS, 2_YUKLER, 1_RAPOR, ...), in tab order.
+' Visible sheets named <number>_<text> (1_GIRIS, 2_YUKLER, 1_RAPOR, ...), in tab order; hidden ones are skipped.
 Private Function ReportSheets() As Collection
     Dim ws As Worksheet
     Set ReportSheets = New Collection
     For Each ws In ThisWorkbook.Worksheets
-        If IsReportName(ws.Name) Then ReportSheets.Add ws
+        If IsReportName(ws.Name) And ws.Visible = xlSheetVisible Then ReportSheets.Add ws
     Next ws
 End Function
