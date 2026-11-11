@@ -44,6 +44,9 @@ Option Explicit
 '  (FV [kh fPEQ-Y, kh fPEQ-X, -fDC]; a second record in one case makes the analysis fail, T6). Combinations (owner M22): only the 'Envelope' rows
 '  (ENV_SER, ENV_STR, ENV_DEP over the factored cases, ENV_ALL over those), LCOM-GEN. Boundary change: cases
 '  with TKDY in the name on EQ (cracked), the others on ST, THRSEV on EQ.
+'  Seat node count (owner 2026-11-11): a live build writes the mesh count into KA_MESNET_NOKTA
+'  (1_RAPOR AH190, the divisor of the report's per-node seat values) unless that cell holds a
+'  formula; a dry run only warns when they differ.
 '  Loads (M1, M2, M7): seat value x girders / seat nodes on the stem-top nodes between the wing
 '  walls' inner faces; fill inertia only in PEQ-X; transverse soil pressure on the +x wing wall.
 '  Entries: MIDAS_KENARAYAK_OLUSTUR (macro window; asks the transverse direction on a skewed abutment),
@@ -53,8 +56,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-abutment-build"
-Private Const SCRIPT_VERSION As String = "2026-11-10a"
-Private Const SCRIPT_CHANGELOG As String = "New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
+Private Const SCRIPT_VERSION As String = "2026-11-11a"
+Private Const SCRIPT_CHANGELOG As String = "A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KENARAYAK"
@@ -176,6 +179,7 @@ Private Sub RunBuild(ByVal outDir As String, ByVal dry As Boolean)
     askUser = Not dry
     PrepareModel
     If dry Then
+        SeatWarnDry
         WritePayloads outDir
         Application.StatusBar = False
         Exit Sub
@@ -185,6 +189,7 @@ Private Sub RunBuild(ByVal outDir As String, ByVal dry As Boolean)
           "NO = only write the JSON payloads (MIDAS\payload_kenarayak)."
     Select Case UiMsg(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
         Case vbNo
+            SeatWarnDry
             WritePayloads ThisWorkbook.Path & "\MIDAS\payload_kenarayak"
             UiMsg "Payloads written to " & ThisWorkbook.Path & "\MIDAS\payload_kenarayak", vbInformation, MSG_TITLE
             Application.StatusBar = False
@@ -756,6 +761,32 @@ Private Sub GrowE()
     eNds = a
 End Sub
 
+' dry run: the workbook is not written, only the difference is reported
+Private Sub SeatWarnDry()
+    If nSeatWant <> nSeat Then Warn "Seat nodes: the mesh has " & nSeat & " stem-top nodes between the wing walls, KA_MESNET_NOKTA (1_RAPOR AH190) says " & nSeatWant & "; the loads are split over " & nSeat & ". A build writes " & nSeat & " into KA_MESNET_NOKTA."
+End Sub
+
+' live build (owner 2026-11-11): the report's per-node seat values follow the mesh; a formula in the cell is left alone
+Private Function SeatWrite() As String
+    Dim c As Range, was As String
+    On Error GoTo Fail
+    Set c = NmRange(ThisWorkbook, "KA_MESNET_NOKTA").Cells(1, 1)
+    was = CStr(c.Value)
+    If c.HasFormula Then
+        If nSeatWant <> nSeat Then Warn "Seat nodes: the mesh has " & nSeat & ", KA_MESNET_NOKTA holds a formula giving " & was & "; not overwritten."
+        SeatWrite = "  seat nodes " & nSeat & " (KA_MESNET_NOKTA is a formula, not written)" & vbCrLf
+    ElseIf nSeatWant = nSeat Then
+        SeatWrite = "  seat nodes " & nSeat & " = KA_MESNET_NOKTA (1_RAPOR AH190)" & vbCrLf
+    Else
+        c.Value = nSeat
+        SeatWrite = "  seat nodes " & nSeat & " written to KA_MESNET_NOKTA (1_RAPOR AH190, was " & was & "); save the workbook" & vbCrLf
+    End If
+    Exit Function
+Fail:
+    Warn "Seat nodes: could not write " & nSeat & " into KA_MESNET_NOKTA (" & Err.Description & ")."
+    SeatWrite = ""
+End Function
+
 ' seat nodes: stem top between the wing walls' inner faces
 Private Sub FindSeat()
     Dim i As Long, nd As Long
@@ -767,7 +798,6 @@ Private Sub FindSeat()
         End If
     Next i
     If nSeat = 0 Then Err.Raise vbObjectError + 55, , "No stem-top node between the wing walls."
-    If nSeatWant > 0 And nSeatWant <> nSeat Then Warn "Seat nodes: the mesh has " & nSeat & " stem-top nodes between the wing walls, KA_MESNET_NOKTA says " & nSeatWant & "; the loads are split over " & nSeat & " (the 1_RAPOR seat values per node use " & nSeatWant & ")."
 End Sub
 
 ' piles: node / element 14000 + nP s + p, p = nPy * column + row
@@ -1380,7 +1410,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
             End If
         End If
     Next i
-    rep = ReadBack()
+    rep = ReadBack() & SeatWrite()
     If softRep <> "" Then Warn "Optional tables not accepted:" & vbCrLf & softRep
     Prog "save"
     If InStr(rep, "FAIL") > 0 Then
