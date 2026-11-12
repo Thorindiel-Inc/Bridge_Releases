@@ -39,21 +39,18 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 '  come from RTI_SONUC E / F, whose B3 stamp must name the open model), read only. Pictures: 2
 '  model views into 3B_RTI_Y and 5 places for pictures pasted by hand, see PICTURES below; field
 '  'res' = picture width (4000 / 3000 / 2000 px or screen).
-'  MAPI key: INPUT!T3 (G_MAPI_KEY), else MIDAS_MAPI_KEY, else asked.
+'  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 '  Tests: MIDAS_RTI_RECORD <folder> runs live and saves every answer to the folder;
 '  MIDAS_RTI_TEST <folder> replays a saved run without Civil NX; with pictures True it only lists
 '  the picture requests (picture_plan.txt in the folder).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-10c"
-Private Const SCRIPT_CHANGELOG As String = "Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip); Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures; window field Islem: read + pictures, pictures only (windows from RTI_SONUC), read only"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip); Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
-Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_RTI"
-Private Const KEY_SHEET As String = "INPUT"
-Private Const KEY_CELL As String = "T3"
-Private Const KEY_NAME As String = "G_MAPI_KEY"
 Private Const OUT_SHEET As String = "RTI_SONUC"
 Private Const CHUNK_ROWS As Long = 30000
 Private Const BIG As Double = 1E+300
@@ -80,8 +77,6 @@ Private Const LIMIT_PCT As Double = 0.01             ' values: MinMax Only, Min 
 Private Const SLOT_PREFIX As String = "RTI_YER_"     ' place for a stage picture pasted by hand
 Private Const FRAME_TAG As String = "RTI_FRAME"      ' frame of a page, kept in the alternative text
 
-Private mKey As String
-Private http As Object
 Private mRec As String, mPlay As String, mSeq As Long
 
 ' rail element ends: index k = (element index - 1) * 2 + 1 (end I) or + 2 (end J)
@@ -807,7 +802,7 @@ End Function
 
 ' ---- API (live, record or replay) ----
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
-    Dim f As String, req As String, tries As Long, side As Boolean
+    Dim f As String, req As String, side As Boolean
     ' picture calls (view/, db/UNIT) are not numbered or recorded; a replay only lists them
     side = (Left$(ep, 5) = "view/" Or ep = "db/UNIT")
     req = method & " " & ep & vbLf & body
@@ -826,80 +821,19 @@ Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As S
         Api = (InStr(1, resp, """error""", vbTextCompare) = 0)
         Exit Function
     End If
-    ' the MAPI goes through the MIDAS relay server: a large answer can arrive broken
-    ' ('invalid or unrecognized response', owner 2026-11-09), so a read without a valid
-    ' answer is sent again, up to 3 times
-Again:
-    On Error GoTo Bad
-    If http Is Nothing Then Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open method, API_BASE & ep, False
-    http.SetTimeouts 30000, 60000, 900000, 900000
-    http.SetRequestHeader "MAPI-Key", mKey
-    http.SetRequestHeader "Content-Type", "application/json"
-    If method = "GET" Then http.Send Else http.Send body
-    resp = http.ResponseText
-    If http.Status >= 500 And tries < 2 Then
-        tries = tries + 1
-        RetryNote ep, "HTTP " & http.Status, tries
-        GoTo Again
-    End If
-    If http.Status = 404 Then mKey = ""
-    Api = (http.Status >= 200 And http.Status < 300 And InStr(1, resp, """error""", vbTextCompare) = 0)
-    If mRec <> "" And Not side Then
+    ' live: up to 3 tries on a broken relay answer (MIDAS_CORE)
+    Api = McApi(method, ep, body, resp, 3, 900000, mRec <> "")
+    If McStatus() = 404 Then McForgetKey
+    If mRec <> "" And Not side And McStatus() <> 0 Then      ' no answer at all: nothing to record
         f = mRec & "\" & Format$(mSeq, "000")
         WriteUtf8 f & ".req", req
         WriteUtf8 f & ".json", resp
     End If
-    Exit Function
-Bad:
-    resp = "HTTP error: " & Err.Description
-    Set http = Nothing
-    If tries < 2 Then
-        tries = tries + 1
-        RetryNote ep, Err.Description, tries
-        Resume Again
-    End If
-    Api = False
 End Function
-
-Private Sub RetryNote(ByVal ep As String, ByVal why As String, ByVal tries As Long)
-    If mPlay = "" And mRec = "" Then UiLog "! " & ep & ": no valid answer (" & why & "), sent again (" & (tries + 1) & " / 3)"
-    Application.Wait Now + TimeSerial(0, 0, 3 * tries)
-End Sub
 
 Private Function GetKey() As Boolean
-    Dim cellKey As String
-    On Error Resume Next
-    cellKey = Trim$(CStr(ThisWorkbook.Names(KEY_NAME).RefersToRange.Cells(1, 1).Value))
-    If cellKey = "" Then cellKey = Trim$(CStr(ThisWorkbook.Worksheets(KEY_SHEET).Range(KEY_CELL).Value))
-    On Error GoTo 0
-    If cellKey <> "" Then mKey = cellKey
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" And mRec = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
-    GetKey = (mKey <> "")
+    GetKey = McGetKey(ThisWorkbook, mRec = "", MSG_TITLE)
 End Function
-
-Private Function ReadUtf8(ByVal path As String) As String
-    Dim st As Object
-    Set st = CreateObject("ADODB.Stream")
-    st.Type = 2
-    st.Charset = "utf-8"
-    st.Open
-    st.LoadFromFile path
-    ReadUtf8 = st.ReadText
-    st.Close
-End Function
-
-Private Sub WriteUtf8(ByVal path As String, ByVal txt As String)
-    Dim st As Object
-    Set st = CreateObject("ADODB.Stream")
-    st.Type = 2
-    st.Charset = "utf-8"
-    st.Open
-    st.WriteText txt
-    st.SaveToFile path, 2
-    st.Close
-End Sub
 
 ' ============================================================================
 '  PICTURES in 3B_RTI_Y (owner 2026-11-09: one macro with the result pull)
@@ -1634,30 +1568,6 @@ Private Function ResWidth(ByVal choice As Long) As Long
     If choice >= 1 And choice <= UBound(v) + 1 Then ResWidth = CLng(v(choice - 1))
 End Function
 
-Private Function WaitForFile(ByVal f As String, ByVal secs As Long) As Boolean
-    Dim t0 As Single, n1 As Long, n2 As Long
-    t0 = Timer
-    Do
-        If Len(Dir(f)) > 0 Then
-            n1 = FileLen(f)
-            Pause 0.5
-            n2 = FileLen(f)
-            If n1 > 0 And n1 = n2 Then WaitForFile = True: Exit Function
-        End If
-        If Timer < t0 Then t0 = t0 - 86400!
-        If Timer - t0 > secs Then Exit Function
-        Pause 0.2
-    Loop
-End Function
-
-Private Sub Pause(ByVal s As Single)
-    Dim t0 As Single
-    t0 = Timer
-    Do While Timer - t0 < s And Timer >= t0
-        DoEvents
-    Loop
-End Sub
-
 ' width and height of a PNG file from its IHDR header
 Private Function PngSize(ByVal f As String, ByRef w As Long, ByRef h As Long) As Boolean
     Dim fn As Integer, b(0 To 23) As Byte
@@ -1685,14 +1595,6 @@ Private Function Atan2(ByVal y As Double, ByVal x As Double) As Double
     Else
         Atan2 = IIf(y > 0, PI / 2, IIf(y < 0, -PI / 2, 0))
     End If
-End Function
-
-Private Function JNum(ByVal v As Double) As String
-    Dim s As String
-    s = Trim$(Str$(Round(v, 6)))
-    If Left$(s, 1) = "." Then s = "0" & s
-    If Left$(s, 2) = "-." Then s = "-0" & Mid$(s, 2)
-    JNum = s
 End Function
 
 Private Function QJ(ByVal s As String) As String

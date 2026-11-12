@@ -52,14 +52,14 @@ Option Explicit
 '  Entries: MIDAS_KENARAYAK_OLUSTUR (macro window; asks the transverse direction on a skewed abutment),
 '  MIDAS_KENARAYAK_PAYLOAD outDir [, transverseSign] (dry run, no HTTP), MIDAS_KENARAYAK_BUILD reportFile,
 '  apiKey [, saveModel [, transverseSign]] (scripted, no dialogs); transverseSign +1 = +X (template), -1 = -X.
-'  MAPI key: name G_MAPI_KEY (INPUT!T3), else MIDAS_MAPI_KEY, else asked (memory only).
+'  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-abutment-build"
-Private Const SCRIPT_VERSION As String = "2026-11-11a"
-Private Const SCRIPT_CHANGELOG As String = "A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
-Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KENARAYAK"
 Private Const PILE0 As Long = 14000
 Private Const GRAV_STYP As Double = 9.806
@@ -119,8 +119,6 @@ Private seatN() As Long, nSeat As Long
 Private springJson As String, nSpring As Long
 
 Private payloads As Collection
-Private mKey As String
-Private http As Object
 Private progStep As Long, progTotal As Long
 
 ' ============================================================================
@@ -144,7 +142,7 @@ Public Sub MIDAS_KENARAYAK_BUILD(ByVal reportFile As String, ByVal apiKey As Str
     askUser = False
     trSign = IIf(transverseSign < 0, -1, 1)
     PrepareModel
-    mKey = apiKey
+    McSetKey apiKey
     rep = SendAll(saveModel)
     WriteText reportFile, rep
     Application.StatusBar = False
@@ -1386,7 +1384,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Dim rep As String, i As Long, p As Variant, resp As String, t0 As Single, cleanRep As String, n As Long, softRep As String
     t0 = Timer
     If Not GetKey() Then SendAll = "FAIL: no MAPI key.": Exit Function
-    Set http = Nothing
+    McCloseHttp
     If Not Api("GET", "db/NODE", "", resp) Then SendAll = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300): Exit Function
     If Not ModelOk(rep) Then SendAll = rep: Exit Function
     rep = ""
@@ -1775,114 +1773,13 @@ Private Sub Prog(ByVal stepName As String)
     DoEvents
 End Sub
 
-Private Function TopKeys(ByVal resp As String) As String
-    Dim i As Long, n As Long, ch As String, depth As Long, j As Long, out As String, expectKey As Boolean
-    n = Len(resp)
-    i = 1
-    Do While i <= n
-        ch = Mid$(resp, i, 1)
-        If ch = """" Then
-            j = i + 1
-            Do While j <= n
-                If Mid$(resp, j, 1) = "\" Then
-                    j = j + 2
-                ElseIf Mid$(resp, j, 1) = """" Then
-                    Exit Do
-                Else
-                    j = j + 1
-                End If
-            Loop
-            If depth = 2 And expectKey Then out = out & IIf(out = "", "", ",") & Mid$(resp, i, j - i + 1)
-            expectKey = False
-            i = j + 1
-        Else
-            Select Case ch
-                Case "{": depth = depth + 1: expectKey = (depth = 2)
-                Case "}": depth = depth - 1
-                Case ",": expectKey = (depth = 2)
-                Case "[": depth = depth + 1
-                Case "]": depth = depth - 1
-            End Select
-            i = i + 1
-        End If
-    Loop
-    TopKeys = out
-End Function
-
-Private Function TableHasRecords(ByVal resp As String, ByVal tbl As String) As Boolean
-    TableHasRecords = (InStr(1, resp, """" & tbl & """:{""", vbBinaryCompare) > 0)
-End Function
-
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
-    On Error GoTo Bad
-    If http Is Nothing Then Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open method, API_BASE & ep, False
-    http.SetTimeouts 30000, 60000, 600000, 600000
-    http.SetRequestHeader "MAPI-Key", mKey
-    http.SetRequestHeader "Content-Type", "application/json"
-    If method = "GET" Then http.Send Else http.Send body
-    resp = http.ResponseText
-    If http.Status = 404 And Left$(ep, 4) = "doc/" Then mKey = ""
-    Api = (http.Status >= 200 And http.Status < 300 And InStr(1, resp, """error""", vbTextCompare) = 0)
-    Exit Function
-Bad:
-    resp = "HTTP error: " & Err.Description
-    Set http = Nothing
-    Api = False
+    Api = McApi(method, ep, body, resp)
+    If McStatus() = 404 And Left$(ep, 4) = "doc/" Then McForgetKey
 End Function
 
 Private Function GetKey() As Boolean
-    If mKey = "" Then mKey = NSOr("G_MAPI_KEY")
-    mKey = Trim$(mKey)
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" And askUser Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
-    GetKey = (mKey <> "")
-End Function
-
-Private Function CountOf(ByVal s As String, ByVal what As String) As Long
-    CountOf = (Len(s) - Len(Replace(s, what, ""))) / Len(what)
-End Function
-
-Private Function NmRange(wb As Workbook, ByVal nm As String) As Range
-    On Error Resume Next
-    Set NmRange = wb.Names(nm).RefersToRange
-    On Error GoTo 0
-    If NmRange Is Nothing Then Err.Raise vbObjectError + 20, , "Name " & nm & " missing in " & wb.Name & "."
-End Function
-
-Private Function Num(ByVal v As Variant, ByVal what As String) As Double
-    If IsError(v) Then Err.Raise vbObjectError + 21, , what & ": error value."
-    If IsEmpty(v) Or Not IsNumeric(v) Then Err.Raise vbObjectError + 21, , what & ": not a number ('" & CStr(v) & "')."
-    Num = CDbl(v)
-End Function
-
-Private Function NumOr0(ByVal v As Variant) As Double
-    If IsError(v) Then Exit Function
-    If IsNumeric(v) And Not IsEmpty(v) Then NumOr0 = CDbl(v)
-End Function
-
-Private Function JN(ByVal x As Double) As String
-    Dim s As String
-    If Abs(x) < 0.000000000001 Then JN = "0": Exit Function
-    s = Trim$(Str$(x))
-    If Left$(s, 1) = "." Then s = "0" & s
-    If Left$(s, 2) = "-." Then s = "-0" & Mid$(s, 2)
-    JN = s
-End Function
-
-Private Function QS(ByVal s As String) As String
-    Dim i As Long, c As Long, o As String
-    For i = 1 To Len(s)
-        c = AscW(Mid$(s, i, 1)) And &HFFFF&
-        Select Case c
-            Case 34: o = o & "\"""
-            Case 92: o = o & "\\"
-            Case Is < 32: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Is > 126: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Else: o = o & ChrW(c)
-        End Select
-    Next i
-    QS = """" & o & """"
+    GetKey = McGetKey(ThisWorkbook, askUser, MSG_TITLE)
 End Function
 
 Private Function Pj(ByVal s As String) As String
@@ -1894,14 +1791,3 @@ Private Function Pj(ByVal s As String) As String
     Next i
     Pj = Left$(o, 80)
 End Function
-
-Private Sub MakeDir(ByVal p As String)
-    If Len(Dir$(p, vbDirectory)) = 0 Then MkDir p
-End Sub
-
-Private Sub WriteText(ByVal p As String, ByVal txt As String)
-    Dim f As Integer: f = FreeFile
-    Open p For Output As #f
-    Print #f, txt;
-    Close #f
-End Sub

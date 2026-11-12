@@ -50,21 +50,18 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 '  mesh lines fill the deck.
 '  Model check: db/PJCF of a MIDAS_KOPRU seismic model ends with SEISMIC; any other
 '  model is read only after a yes in the question box.
-'  MAPI key: INPUT!T3 (G_MAPI_KEY, pulled by DEGER CAGIR), else MIDAS_MAPI_KEY, else asked.
+'  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 '  Test entries: MIDAS_MOD_TEST <saved post/TABLE answer .json> (no Civil NX), MIDAS_MOD_PLAN
 '  (modes, target pictures, request bodies; nothing is sent), MIDAS_MOD_PLACETEST <page> <image>,
 '  MIDAS_MOD_PICTEST [width] (live captures without dialogs).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-modal-read"
-Private Const SCRIPT_VERSION As String = "2026-11-10a"
-Private Const SCRIPT_CHANGELOG As String = "One module with the pictures: MIDAS_SEKIL merged in (same pages, modes, zoom, border and captions), the retired MIDAS_SEKIL module is emptied by the update; One tool with the mode-shape pictures: window field Islem = read + pictures, pictures only, read only; field res = picture width (pictures by MIDAS_SEKIL); new: periods, frequencies, mass participation and factors of the seismic model into sheet MOD"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; One module with the pictures: MIDAS_SEKIL merged in (same pages, modes, zoom, border and captions), the retired MIDAS_SEKIL module is emptied by the update; One tool with the mode-shape pictures: window field Islem = read + pictures, pictures only, read only; field res = picture width (pictures by MIDAS_SEKIL); new: periods, frequencies, mass participation and factors of the seismic model into sheet MOD"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
-Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_MOD"
-Private Const KEY_SHEET As String = "INPUT"
-Private Const KEY_CELL As String = "T3"
-Private Const KEY_NAME As String = "G_MAPI_KEY"
 Private Const OUT_SHEET As String = "MOD"
 Private Const N_MAX As Long = 100
 Private Const R_EIG As Long = 6, R_PCT As Long = 109, R_MAS As Long = 211, R_FAC As Long = 314, R_DIR As Long = 417
@@ -87,12 +84,10 @@ Private Const FILL As Double = 0.92             ' share of the picture the bridg
 Private Const K_FIT As Double = 0.627           ' visible height at zoom 100 / 3D diagonal of the model
 Private Const ZOOM_RATE As Double = 0.0203      ' ln(scale) per zoom step
 
-Private mKey As String
 Private mResW As Long                           ' 0 = screen size
 Private mWm As Double, mHm As Double, mD As Double ' projected width, height, 3D diagonal (m)
 Private mAspect As Double                       ' picture width / height at screen size, 0 = not known yet
 Private mLastMode As String                     ' SET_MODE of the last capture ("" at the start of a run)
-Private http As Object
 
 ' ============================================================================
 Public Sub MIDAS_MOD_OKU()
@@ -375,136 +370,13 @@ End Function
 
 ' ---- API ----
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
-    On Error GoTo Bad
-    If http Is Nothing Then Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open method, API_BASE & ep, False
-    http.SetTimeouts 30000, 60000, 600000, 600000
-    http.SetRequestHeader "MAPI-Key", mKey
-    http.SetRequestHeader "Content-Type", "application/json"
-    If method = "GET" Then http.Send Else http.Send body
-    resp = http.ResponseText
-    If http.Status = 404 Then mKey = ""
-    Api = (http.Status >= 200 And http.Status < 300 And InStr(1, resp, """error""", vbTextCompare) = 0)
-    Exit Function
-Bad:
-    resp = "HTTP error: " & Err.Description
-    Set http = Nothing
-    Api = False
+    Api = McApi(method, ep, body, resp)
+    If McStatus() = 404 Then McForgetKey
 End Function
 
 Private Function GetKey() As Boolean
-    Dim cellKey As String
-    On Error Resume Next
-    cellKey = Trim$(CStr(ThisWorkbook.Names(KEY_NAME).RefersToRange.Cells(1, 1).Value))
-    If cellKey = "" Then cellKey = Trim$(CStr(ThisWorkbook.Worksheets(KEY_SHEET).Range(KEY_CELL).Value))
-    On Error GoTo 0
-    If cellKey <> "" Then mKey = cellKey
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
-    GetKey = (mKey <> "")
+    GetKey = McGetKey(ThisWorkbook, True, MSG_TITLE)
 End Function
-
-Private Function ReadUtf8(ByVal path As String) As String
-    Dim st As Object
-    Set st = CreateObject("ADODB.Stream")
-    st.Type = 2
-    st.Charset = "utf-8"
-    st.Open
-    st.LoadFromFile path
-    ReadUtf8 = st.ReadText
-    st.Close
-End Function
-
-' ---- minimal JSON parser (from MAK_LL): objects -> Scripting.Dictionary, arrays -> 1-based Variant(),
-'      numbers -> Double (Val), strings -> String, true/false/null -> Boolean/Null ----
-Private Function ParseJson(ByVal s As String) As Object
-    Dim p As Long, v As Variant
-    p = 1
-    SkipWs s, p
-    If Mid$(s, p, 1) <> "{" Then Exit Function
-    ParseValue s, p, v
-    Set ParseJson = v
-End Function
-
-Private Sub ParseValue(ByRef s As String, ByRef p As Long, ByRef v As Variant)
-    Dim ch As String
-    SkipWs s, p
-    ch = Mid$(s, p, 1)
-    Select Case ch
-        Case "{"
-            Dim d As Object, k As String, item As Variant
-            Set d = CreateObject("Scripting.Dictionary")
-            p = p + 1: SkipWs s, p
-            If Mid$(s, p, 1) = "}" Then p = p + 1: Set v = d: Exit Sub
-            Do
-                SkipWs s, p
-                k = ParseString(s, p)
-                SkipWs s, p
-                p = p + 1                       ' :
-                ParseValue s, p, item
-                If IsObject(item) Then Set d(k) = item Else d(k) = item
-                SkipWs s, p
-                ch = Mid$(s, p, 1): p = p + 1
-                If ch = "}" Then Exit Do
-            Loop
-            Set v = d
-        Case "["
-            Dim arr() As Variant, n As Long, el As Variant
-            p = p + 1: SkipWs s, p
-            If Mid$(s, p, 1) = "]" Then p = p + 1: v = Empty: Exit Sub
-            Do
-                ParseValue s, p, el
-                n = n + 1
-                ReDim Preserve arr(1 To n)
-                If IsObject(el) Then Set arr(n) = el Else arr(n) = el
-                SkipWs s, p
-                ch = Mid$(s, p, 1): p = p + 1
-                If ch = "]" Then Exit Do
-            Loop
-            v = arr
-        Case """"
-            v = ParseString(s, p)
-        Case "t": v = True: p = p + 4
-        Case "f": v = False: p = p + 5
-        Case "n": v = Null: p = p + 4
-        Case Else
-            Dim st As Long
-            st = p
-            Do While p <= Len(s) And InStr(1, "+-0123456789.eE", Mid$(s, p, 1), vbBinaryCompare) > 0: p = p + 1: Loop
-            v = Val(Mid$(s, st, p - st))
-    End Select
-End Sub
-
-Private Function ParseString(ByRef s As String, ByRef p As Long) As String
-    Dim o As String, ch As String
-    p = p + 1                                   ' opening quote
-    Do While p <= Len(s)
-        ch = Mid$(s, p, 1)
-        If ch = """" Then p = p + 1: Exit Do
-        If ch = "\" Then
-            p = p + 1: ch = Mid$(s, p, 1)
-            Select Case ch
-                Case "n": o = o & vbLf
-                Case "t": o = o & vbTab
-                Case "u": o = o & ChrW(CLng("&H" & Mid$(s, p + 1, 4))): p = p + 4
-                Case Else: o = o & ch
-            End Select
-        Else
-            o = o & ch
-        End If
-        p = p + 1
-    Loop
-    ParseString = o
-End Function
-
-Private Sub SkipWs(ByRef s As String, ByRef p As Long)
-    Do While p <= Len(s)
-        Select Case Mid$(s, p, 1)
-            Case " ", vbTab, vbCr, vbLf: p = p + 1
-            Case Else: Exit Do
-        End Select
-    Loop
-End Sub
 
 ' ============================================================================
 ' ---- pictures (Z_YATAY): from MIDAS_SEKIL 2026-11-10a ----
@@ -517,12 +389,8 @@ Public Function MIDAS_MOD_PICTEST(Optional ByVal resWidth As Long = 0) As String
     If Not PicLayoutOk(msg) Then MIDAS_MOD_PICTEST = msg: Exit Function
     modes = PickModes(msg)
     If IsEmpty(modes) Then MIDAS_MOD_PICTEST = msg: Exit Function
-    mKey = ""
-    On Error Resume Next
-    mKey = Trim$(CStr(ThisWorkbook.Names(KEY_NAME).RefersToRange.Cells(1, 1).Value))
-    On Error GoTo Fail
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then MIDAS_MOD_PICTEST = "STOPPED: no MAPI key": Exit Function
+    McForgetKey
+    If Not McGetKey(ThisWorkbook, False, MSG_TITLE) Then MIDAS_MOD_PICTEST = "STOPPED: no MAPI key": Exit Function
     If Not Api("GET", "db/PJCF", "", pj) Then MIDAS_MOD_PICTEST = "STOPPED: Civil NX: " & Left$(pj, 200): Exit Function
     If InStr(1, pj, " SEISMIC", vbBinaryCompare) = 0 Then MIDAS_MOD_PICTEST = "STOPPED: not a seismic model": Exit Function
     If Not ModMatches(pj, msg) Then MIDAS_MOD_PICTEST = "STOPPED: " & msg: Exit Function
@@ -810,30 +678,6 @@ Private Sub SetCaption(ByVal capRow As Long, ByVal mode As Long)
     ThisWorkbook.Worksheets(FIG_SHEET).Range(CAP_COL & capRow).Value = "Mod " & ChrW(350) & "ekli - " & mode
 End Sub
 
-Private Function WaitForFile(ByVal f As String, ByVal secs As Long) As Boolean
-    Dim t0 As Single, n1 As Long, n2 As Long
-    t0 = Timer
-    Do
-        If Len(Dir(f)) > 0 Then
-            n1 = FileLen(f)
-            Pause 0.5
-            n2 = FileLen(f)
-            If n1 > 0 And n1 = n2 Then WaitForFile = True: Exit Function
-        End If
-        If Timer < t0 Then t0 = t0 - 86400!
-        If Timer - t0 > secs Then Exit Function
-        Pause 0.2
-    Loop
-End Function
-
-Private Sub Pause(ByVal s As Single)
-    Dim t0 As Single
-    t0 = Timer
-    Do While Timer - t0 < s And Timer >= t0
-        DoEvents
-    Loop
-End Sub
-
 ' ---- bridge direction: principal axis of the node plan, degrees from +X ----
 Private Function BridgeAxis() As Double
     Dim resp As String, re As Object, m As Object, mc As Object, n As Long, i As Long
@@ -979,12 +823,4 @@ Private Function PicLayoutOk(ByRef msg As String) As Boolean
     On Error GoTo 0
     If ws Is Nothing Then msg = "STOPPED: no sheet " & FIG_SHEET & " in this workbook.": Exit Function
     PicLayoutOk = True
-End Function
-
-Private Function JNum(ByVal v As Double) As String
-    Dim s As String
-    s = Trim$(Str$(Round(v, 6)))
-    If Left$(s, 1) = "." Then s = "0" & s
-    If Left$(s, 2) = "-." Then s = "-0" & Mid$(s, 2)
-    JNum = s
 End Function

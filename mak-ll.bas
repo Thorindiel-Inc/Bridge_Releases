@@ -18,17 +18,15 @@ Option Explicit
 '  table + run info on sheet LL. The old pasted MIDAS table and its helper
 '  columns are cleared on the first run (owner 2026-11-03: new clean layout).
 '  Bearing x = 4-7 G_SARKIKLIK (cm from the girder end).
-'  MAPI key: 4-7 INPUT!T3, else environment variable MIDAS_MAPI_KEY, else asked.
+'  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "mak-ll"
-Private Const SCRIPT_VERSION As String = "2026-11-06f"
-Private Const SCRIPT_CHANGELOG As String = "Refuses the DYNAMIC model; Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Refuses the DYNAMIC model; Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
-Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MAK_LL"
-Private Const KEY_SHEET As String = "INPUT"
-Private Const KEY_CELL As String = "T3"
 Private Const LL_TOP As Long = 72          ' title row of the table on the 4<letter>_KILIF sheet
 Private Const OUT_ROW As Long = 75          ' first station row of X (M) / Y (V), read by 1_RAPOR
 Private Const COL_M As Long = 15           ' X
@@ -36,8 +34,6 @@ Private Const COL_V As Long = 16           ' Y
 Private Const TOL As Double = 0.001        ' node position tolerance (m)
 Private Const DEF_CASE As String = "LM71"  ' preselected moving-load case
 
-Private mKey As String
-Private http As Object
 
 ' station data
 Private nSt As Long, stName() As String, stK() As Double, stX1() As Double, stX2() As Double
@@ -67,7 +63,7 @@ End Sub
 Public Sub MAK_LL_RUN(ByVal caseName As String, ByVal reportFile As String, Optional ByVal apiKey As String = "", Optional ByVal llSheet As String = "4A_KILIF")
     Dim msg As String
     On Error GoTo Fail
-    If apiKey <> "" Then mKey = apiKey
+    If apiKey <> "" Then McSetKey apiKey
     msg = RunEnvelope(ThisWorkbook, ThisWorkbook.Worksheets(llSheet), caseName, reportFile)
     Application.StatusBar = False
     Application.Calculation = xlCalculationAutomatic
@@ -80,7 +76,7 @@ Fail:
 End Sub
 
 Public Sub MAK_LL_FORGET_KEY()
-    mKey = ""
+    McForgetKey
 End Sub
 
 ' ============================================================================
@@ -97,8 +93,8 @@ Private Function RunEnvelope(wb As Workbook, ws As Worksheet, ByVal caseName As 
     sark = Num(NmRange(wb, "G_SARKIKLIK").Cells(1).Value, "4-7 G_SARKIKLIK") / 100#
     If sark <= 0 Or sark > 2 Then Err.Raise vbObjectError + 1, , "4-7 G_SARKIKLIK = " & sark * 100 & " cm is out of range."
 
-    If Not GetKey(wb) Then RunEnvelope = "Stopped: no MAPI key (4-7 INPUT!T3, MIDAS_MAPI_KEY or the prompt).": Exit Function
-    Set http = Nothing
+    If Not GetKey(wb) Then RunEnvelope = "Stopped: no MAPI key (G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY or the prompt).": Exit Function
+    McCloseHttp
     Application.StatusBar = "MAK_LL: reading the model from Civil NX..."
     If IsDynamicModel() Then
         RunEnvelope = "Stopped: the model open in Civil NX is the DYNAMIC model. Its supports hold X at slab level and give false moments at the bearings." & vbCrLf & "Open the staged model and run MAK_LL again. The table was not changed."
@@ -345,124 +341,13 @@ Private Function TableGet(ByVal t As String) As Object
 End Function
 
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
-    On Error GoTo Bad
-    If http Is Nothing Then Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open method, API_BASE & ep, False
-    http.SetTimeouts 30000, 60000, 600000, 600000
-    http.SetRequestHeader "MAPI-Key", mKey
-    http.SetRequestHeader "Content-Type", "application/json"
-    If method = "GET" Then http.Send Else http.Send body
-    resp = http.ResponseText
-    If http.Status = 404 Then mKey = ""
-    Api = (http.Status >= 200 And http.Status < 300 And InStr(1, resp, """error""", vbTextCompare) = 0)
-    Exit Function
-Bad:
-    resp = "HTTP error: " & Err.Description
-    Set http = Nothing
-    Api = False
+    Api = McApi(method, ep, body, resp)
+    If McStatus() = 404 Then McForgetKey
 End Function
 
 Private Function GetKey(wb As Workbook) As Boolean
-    Dim cellKey As String
-    On Error Resume Next
-    cellKey = Trim$(CStr(wb.Worksheets(KEY_SHEET).Range(KEY_CELL).Value))
-    On Error GoTo 0
-    If cellKey <> "" Then mKey = cellKey
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
-    GetKey = (mKey <> "")
+    GetKey = McGetKey(wb, True, MSG_TITLE)
 End Function
-
-' ---- minimal JSON parser: objects -> Scripting.Dictionary, arrays -> 1-based Variant(), numbers -> Double (Val),
-'      strings -> String, true/false/null -> Boolean/Null ----
-Private Function ParseJson(ByVal s As String) As Object
-    Dim p As Long, v As Variant
-    p = 1
-    SkipWs s, p
-    If Mid$(s, p, 1) <> "{" Then Exit Function
-    ParseValue s, p, v
-    Set ParseJson = v
-End Function
-
-Private Sub ParseValue(ByRef s As String, ByRef p As Long, ByRef v As Variant)
-    Dim ch As String
-    SkipWs s, p
-    ch = Mid$(s, p, 1)
-    Select Case ch
-        Case "{"
-            Dim d As Object, k As String, item As Variant
-            Set d = CreateObject("Scripting.Dictionary")
-            p = p + 1: SkipWs s, p
-            If Mid$(s, p, 1) = "}" Then p = p + 1: Set v = d: Exit Sub
-            Do
-                SkipWs s, p
-                k = ParseString(s, p)
-                SkipWs s, p
-                p = p + 1                       ' :
-                ParseValue s, p, item
-                If IsObject(item) Then Set d(k) = item Else d(k) = item
-                SkipWs s, p
-                ch = Mid$(s, p, 1): p = p + 1
-                If ch = "}" Then Exit Do
-            Loop
-            Set v = d
-        Case "["
-            Dim arr() As Variant, n As Long, el As Variant
-            p = p + 1: SkipWs s, p
-            If Mid$(s, p, 1) = "]" Then p = p + 1: v = Empty: Exit Sub
-            Do
-                ParseValue s, p, el
-                n = n + 1
-                ReDim Preserve arr(1 To n)
-                If IsObject(el) Then Set arr(n) = el Else arr(n) = el
-                SkipWs s, p
-                ch = Mid$(s, p, 1): p = p + 1
-                If ch = "]" Then Exit Do
-            Loop
-            v = arr
-        Case """"
-            v = ParseString(s, p)
-        Case "t": v = True: p = p + 4
-        Case "f": v = False: p = p + 5
-        Case "n": v = Null: p = p + 4
-        Case Else
-            Dim st As Long
-            st = p
-            Do While p <= Len(s) And InStr(1, "+-0123456789.eE", Mid$(s, p, 1), vbBinaryCompare) > 0: p = p + 1: Loop
-            v = Val(Mid$(s, st, p - st))
-    End Select
-End Sub
-
-Private Function ParseString(ByRef s As String, ByRef p As Long) As String
-    Dim o As String, ch As String
-    p = p + 1                                   ' opening quote
-    Do While p <= Len(s)
-        ch = Mid$(s, p, 1)
-        If ch = """" Then p = p + 1: Exit Do
-        If ch = "\" Then
-            p = p + 1: ch = Mid$(s, p, 1)
-            Select Case ch
-                Case "n": o = o & vbLf
-                Case "t": o = o & vbTab
-                Case "u": o = o & ChrW(CLng("&H" & Mid$(s, p + 1, 4))): p = p + 4
-                Case Else: o = o & ch
-            End Select
-        Else
-            o = o & ch
-        End If
-        p = p + 1
-    Loop
-    ParseString = o
-End Function
-
-Private Sub SkipWs(ByRef s As String, ByRef p As Long)
-    Do While p <= Len(s)
-        Select Case Mid$(s, p, 1)
-            Case " ", vbTab, vbCr, vbLf: p = p + 1
-            Case Else: Exit Do
-        End Select
-    Loop
-End Sub
 
 ' ---- helpers ----
 Private Function GetField(o As Variant, ByVal f As String) As Variant
@@ -478,19 +363,6 @@ Private Function NodeVal(nodes As Object, ByVal n As Long, ByVal f As String) As
     NodeVal = CDbl(nodes(CStr(n))(f))
 End Function
 
-Private Function NmRange(wb As Workbook, ByVal nm As String) As Range
-    On Error Resume Next
-    Set NmRange = wb.Names(nm).RefersToRange
-    On Error GoTo 0
-    If NmRange Is Nothing Then Err.Raise vbObjectError + 6, , "Name " & nm & " not found in " & wb.Name & "."
-End Function
-
-Private Function Num(ByVal v As Variant, ByVal what As String) As Double
-    If IsError(v) Then Err.Raise vbObjectError + 7, , what & ": error value."
-    If IsEmpty(v) Or Not IsNumeric(v) Then Err.Raise vbObjectError + 7, , what & ": not a number ('" & CStr(v) & "')."
-    Num = CDbl(v)
-End Function
-
 Private Function Txt(ByVal v As Variant) As String
     If IsError(v) Then Exit Function
     Txt = Trim$(CStr(v))
@@ -501,20 +373,6 @@ Private Function MaxOf(a() As Double) As Double
     For i = 1 To nSt
         If a(i) > MaxOf Then MaxOf = a(i)
     Next i
-End Function
-
-Private Function QS(ByVal s As String) As String
-    Dim i As Long, c As Long, o As String
-    For i = 1 To Len(s)
-        c = AscW(Mid$(s, i, 1)) And &HFFFF&
-        Select Case c
-            Case 34: o = o & "\"""
-            Case 92: o = o & "\\"
-            Case Is < 32, Is > 126: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Else: o = o & ChrW(c)
-        End Select
-    Next i
-    QS = """" & o & """"
 End Function
 
 Private Sub WriteText(ByVal path As String, ByVal txtOut As String)

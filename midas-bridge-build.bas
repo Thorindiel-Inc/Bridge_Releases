@@ -38,17 +38,15 @@ Option Explicit
 '  bisector of the two chords, piers and bearing links turned with them; model X = chord A1 to A2.
 '  Empty table = straight. Level deck.
 '  Numbers stay below 10500 so the rail layer (RTI) can be added later.
-'  MAPI key: INPUT!T3, else MIDAS_MAPI_KEY, else asked (memory only).
+'  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09f"
-Private Const SCRIPT_CHANGELOG As String = "Macro window log shows the size of each table sent; Skew per span from the span table (column R picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings; Static and seismic models use AASHTO Ec, RTI Eurocode Ecm"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew per span from the span table (column R picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged; Cap at its centroid, pier from the cap bottom, rectangle cap when B1 = B2 = 0, axis to bearing distance calculated, cap fit warnings"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
-Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
-Private Const KEY_SHEET As String = "INPUT"
-Private Const KEY_CELL As String = "T3"
 Private Const DEF_MESH As Double = 1.5          ' deck element length (m)
 Private Const DEF_LINK_LEN As Double = 0.35     ' bearing link length (m)
 Private Const DEF_K_FIX As Double = 100000#     ' fixed horizontal bearing stiffness kh (kN/m)
@@ -141,8 +139,6 @@ Private nFW As Long, fwA() As Long, fwB() As Long
 Private loadItems As Object, loadIds As Object, hasCF As Boolean, nCfSpans As Long, cfMax As Double, combNo As Long
 
 Private payloads As Collection
-Private mKey As String
-Private http As Object
 Private progStep As Long, progTotal As Long
 Private Const PROG_BAR_WIDTH As Long = 24
 
@@ -163,7 +159,7 @@ Public Sub MIDAS_KOPRU_BUILD(ByVal reportFile As String, ByVal apiKey As String,
     seisMode = seismicModel: rtiMode = rtiModel: rtiNL = rtiNonlinear
     meshDx = DEF_MESH: linkLen = DEF_LINK_LEN: kFix = DEF_K_FIX
     PrepareModel
-    mKey = apiKey
+    McSetKey apiKey
     askUser = False
     rep = SendAll(saveModel)
     WriteText reportFile, rep
@@ -1218,7 +1214,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Dim rep As String, i As Long, p As Variant, resp As String, t0 As Single, cleanRep As String, mctPath As String, a As Double
     t0 = Timer
     If Not GetKey() Then SendAll = "FAIL: no MAPI key.": Exit Function
-    Set http = Nothing
+    McCloseHttp
     If Not Api("GET", "db/NODE", "", resp) Then SendAll = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300): Exit Function
     If Not ModelOk(rep) Then SendAll = rep: Exit Function
     If Not ModelTypeOk(rep) Then SendAll = rep: Exit Function
@@ -2661,71 +2657,13 @@ Private Sub Prog(ByVal stepName As String)
     DoEvents
 End Sub
 
-Private Function TopKeys(ByVal resp As String) As String
-    Dim i As Long, n As Long, ch As String, depth As Long, j As Long, out As String, expectKey As Boolean
-    n = Len(resp)
-    i = 1
-    Do While i <= n
-        ch = Mid$(resp, i, 1)
-        If ch = """" Then
-            j = i + 1
-            Do While j <= n
-                If Mid$(resp, j, 1) = "\" Then
-                    j = j + 2
-                ElseIf Mid$(resp, j, 1) = """" Then
-                    Exit Do
-                Else
-                    j = j + 1
-                End If
-            Loop
-            If depth = 2 And expectKey Then out = out & IIf(out = "", "", ",") & Mid$(resp, i, j - i + 1)
-            expectKey = False
-            i = j + 1
-        Else
-            Select Case ch
-                Case "{": depth = depth + 1: expectKey = (depth = 2)
-                Case "}": depth = depth - 1
-                Case ",": expectKey = (depth = 2)
-                Case "[": depth = depth + 1
-                Case "]": depth = depth - 1
-            End Select
-            i = i + 1
-        End If
-    Loop
-    TopKeys = out
-End Function
-
-Private Function TableHasRecords(ByVal resp As String, ByVal tbl As String) As Boolean
-    TableHasRecords = (InStr(1, resp, """" & tbl & """:{""", vbBinaryCompare) > 0)
-End Function
-
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
-    On Error GoTo Bad
-    If http Is Nothing Then Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open method, API_BASE & ep, False
-    http.SetTimeouts 30000, 60000, 600000, 600000
-    http.SetRequestHeader "MAPI-Key", mKey
-    http.SetRequestHeader "Content-Type", "application/json"
-    If method = "GET" Then http.Send Else http.Send body
-    resp = http.ResponseText
-    If http.Status = 404 Then mKey = ""
-    Api = (http.Status >= 200 And http.Status < 300 And InStr(1, resp, """error""", vbTextCompare) = 0)
-    Exit Function
-Bad:
-    resp = "HTTP error: " & Err.Description
-    Set http = Nothing
-    Api = False
+    Api = McApi(method, ep, body, resp)
+    If McStatus() = 404 Then McForgetKey
 End Function
 
 Private Function GetKey() As Boolean
-    Dim cellKey As String
-    On Error Resume Next
-    cellKey = Trim$(CStr(ThisWorkbook.Worksheets(KEY_SHEET).Range(KEY_CELL).Value))
-    On Error GoTo 0
-    If cellKey <> "" Then mKey = cellKey
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
-    GetKey = (mKey <> "")
+    GetKey = McGetKey(ThisWorkbook, True, MSG_TITLE)
 End Function
 
 Private Function SectArea(ByVal resp As String, ByVal key As String) As Double
@@ -2736,10 +2674,6 @@ Private Function SectArea(ByVal resp As String, ByVal key As String) As Double
     If p = 0 Then Exit Function
     q = p + 7
     SectArea = Val(Mid$(resp, q, 30))
-End Function
-
-Private Function CountOf(ByVal s As String, ByVal what As String) As Long
-    CountOf = (Len(s) - Len(Replace(s, what, ""))) / Len(what)
 End Function
 
 Private Function FitBox(ByVal txt As String, ByVal tag As String, ByVal reserve As Long) As String
@@ -2758,24 +2692,6 @@ Private Function FitBox(ByVal txt As String, ByVal tag As String, ByVal reserve 
     FitBox = Left$(txt, lim - Len(p) - 30) & " ..." & vbCrLf & "(full text: " & p & ")"
 End Function
 
-Private Function NmRange(wb As Workbook, ByVal nm As String) As Range
-    On Error Resume Next
-    Set NmRange = wb.Names(nm).RefersToRange
-    On Error GoTo 0
-    If NmRange Is Nothing Then Err.Raise vbObjectError + 20, , "Name " & nm & " missing in " & wb.Name & "."
-End Function
-
-Private Function Num(ByVal v As Variant, ByVal what As String) As Double
-    If IsError(v) Then Err.Raise vbObjectError + 21, , what & ": error value."
-    If IsEmpty(v) Or Not IsNumeric(v) Then Err.Raise vbObjectError + 21, , what & ": not a number ('" & CStr(v) & "')."
-    Num = CDbl(v)
-End Function
-
-Private Function NumOr0(ByVal v As Variant) As Double
-    If IsError(v) Then Exit Function
-    If IsNumeric(v) And Not IsEmpty(v) Then NumOr0 = CDbl(v)
-End Function
-
 Private Function FindLabel(ws As Worksheet, ByVal col As Long, ByVal startText As String, Optional ByVal fromRow As Long = 1) As Range
     Dim r As Long, last As Long, t As String
     last = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
@@ -2788,30 +2704,6 @@ End Function
 
 Private Function LabelValue(ws As Worksheet, ByVal col As Long, ByVal startText As String, ByVal valCol As Long) As Variant
     LabelValue = ws.Cells(FindLabel(ws, col, startText).Row, valCol).Value
-End Function
-
-Private Function JN(ByVal x As Double) As String
-    Dim s As String
-    If Abs(x) < 0.000000000001 Then JN = "0": Exit Function
-    s = Trim$(Str$(x))
-    If Left$(s, 1) = "." Then s = "0" & s
-    If Left$(s, 2) = "-." Then s = "-0" & Mid$(s, 2)
-    JN = s
-End Function
-
-Private Function QS(ByVal s As String) As String
-    Dim i As Long, c As Long, o As String
-    For i = 1 To Len(s)
-        c = AscW(Mid$(s, i, 1)) And &HFFFF&
-        Select Case c
-            Case 34: o = o & "\"""
-            Case 92: o = o & "\\"
-            Case Is < 32: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Is > 126: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Else: o = o & ChrW(c)
-        End Select
-    Next i
-    QS = """" & o & """"
 End Function
 
 Private Function Pj(ByVal s As String) As String
@@ -2830,15 +2722,4 @@ Private Function Pj(ByVal s As String) As String
     Next i
     Pj = Left$(o, 80)
 End Function
-
-Private Sub MakeDir(ByVal p As String)
-    If Len(Dir$(p, vbDirectory)) = 0 Then MkDir p
-End Sub
-
-Private Sub WriteText(ByVal p As String, ByVal txt As String)
-    Dim f As Integer: f = FreeFile
-    Open p For Output As #f
-    Print #f, txt;
-    Close #f
-End Sub
 

@@ -30,8 +30,7 @@ Option Explicit
 '  of Sarkiklik (cm from the girder end).
 '  Not built (no API endpoint): PSC design parameters, DynaGen, load
 '  contribution for nonlinear case (LOADCONST), perform-analysis entries.
-'  MAPI key: cell INPUT!T3 of this workbook (owner 2026-11-03), else environment
-'  variable MIDAS_MAPI_KEY, else asked once per Excel session (InputBox, memory only).
+'  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 '
 '  Asked in pop-ups (button macro): strip spacing, link length, fixed-spring
 '  stiffness. From geometry: end strip width = sarkiklik/2, extra girder
@@ -42,13 +41,11 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-09d"
-Private Const SCRIPT_CHANGELOG As String = "Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
-Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
-Private Const KEY_SHEET As String = "INPUT"   ' MAPI key cell (owner 2026-11-03)
-Private Const KEY_CELL As String = "T3"
 
 ' asked in pop-ups by the button macro (owner 2026-11-03); these are the proposed defaults
 Private Const DEF_STRIP_DX As Double = 1.5      ' nominal spacing of transverse slab strips (m)
@@ -141,8 +138,6 @@ Private Lg As Double, yL As Double, yR As Double, nTr As Long, tr(1 To 2) As Dou
 Private rigdJson As String, elnkJson As String, consJson As String, nsprJson As String
 
 Private payloads As Collection
-Private mKey As String
-Private http As Object
 Private progStep As Long, progTotal As Long   ' status-bar progress bar (like the culvert build)
 Private Const PROG_BAR_WIDTH As Long = 24
 
@@ -162,7 +157,7 @@ Public Sub MIDAS_USTYAPI_BUILD(ByVal spanIndex As Long, ByVal reportFile As Stri
                               Optional ByVal extraCases As Boolean = False)
     Dim rep As String
     On Error GoTo Fail
-    If apiKey <> "" Then mKey = apiKey
+    If apiKey <> "" Then McSetKey apiKey
     warnText = ""
     stripDx = stripSpacing: linkLen = linkLength: kFix = fixedSpring
     dynMode = dynamicModel: askUser = False: extraMV = extraCases
@@ -1456,7 +1451,7 @@ Private Function SendAll(Optional ByVal saveModel As Boolean = True) As String
     Dim rep As String, i As Long, p As Variant, resp As String, ok As Boolean, path As String, area As Double, t0 As Single
     t0 = Timer
     If Not GetKey() Then SendAll = "FAIL: no MAPI key.": Exit Function
-    Set http = Nothing
+    McCloseHttp
     ' writes into the model open in Civil NX (no doc/NEW) and saves that file (doc/SAVE).
     If Not Api("GET", "db/NODE", "", resp) Then SendAll = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300): Exit Function
     ' two models per bridge (owner 2026-11-05): do not wipe the other model by mistake
@@ -1745,59 +1740,18 @@ Private Sub Prog(ByVal stepName As String)
     DoEvents
 End Sub
 
-' Record keys of a GET answer {"<TABLE>":{"<key>":{...},"<key>":{...}}} as "k1","k2",...
-' (keys at depth 2; strings and escapes skipped so braces inside text do not count).
-Private Function TopKeys(ByVal resp As String) As String
-    Dim i As Long, n As Long, ch As String, depth As Long, j As Long, out As String, expectKey As Boolean
-    n = Len(resp)
-    i = 1
-    Do While i <= n
-        ch = Mid$(resp, i, 1)
-        If ch = """" Then
-            j = i + 1
-            Do While j <= n
-                If Mid$(resp, j, 1) = "\" Then
-                    j = j + 2
-                ElseIf Mid$(resp, j, 1) = """" Then
-                    Exit Do
-                Else
-                    j = j + 1
-                End If
-            Loop
-            If depth = 2 And expectKey Then out = out & IIf(out = "", "", ",") & Mid$(resp, i, j - i + 1)
-            expectKey = False
-            i = j + 1
-        Else
-            Select Case ch
-                Case "{": depth = depth + 1: expectKey = (depth = 2)
-                Case "}": depth = depth - 1
-                Case ",": expectKey = (depth = 2)
-                Case "[": depth = depth + 1
-                Case "]": depth = depth - 1
-            End Select
-            i = i + 1
-        End If
-    Loop
-    TopKeys = out
-End Function
-
-' An empty table answers {"message":""}; a filled one {"<TABLE>":{"<key>":{...}}}.
-Private Function TableHasRecords(ByVal resp As String, ByVal tbl As String) As Boolean
-    TableHasRecords = (InStr(1, resp, """" & tbl & """:{""", vbBinaryCompare) > 0)
-End Function
-
 ' Button / scripted: only the clean pass, no build (like CleanCulvertModel).
 Public Sub MIDAS_USTYAPI_TEMIZLE(Optional ByVal reportFile As String = "", Optional ByVal apiKey As String = "")
     Dim rep As String, resp As String
     On Error GoTo Fail
-    If apiKey <> "" Then mKey = apiKey
+    If apiKey <> "" Then McSetKey apiKey
     If reportFile = "" Then
         If UiMsg("DELETE every table of the model open in Civil NX (nodes, elements, sections, loads, stages, combinations)?", _
                   vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then Exit Sub
     End If
     If Not GetKey() Then rep = "FAIL: no MAPI key."
     If rep = "" Then
-        Set http = Nothing
+        McCloseHttp
         If Not Api("GET", "db/NODE", "", resp) Then
             rep = "FAIL: Civil NX does not answer (db/NODE): " & Left$(resp, 300)
         Else
@@ -1814,36 +1768,16 @@ Fail:
 End Sub
 
 Private Function Api(ByVal method As String, ByVal ep As String, ByVal body As String, ByRef resp As String) As Boolean
-    On Error GoTo Bad
-    If http Is Nothing Then Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
-    http.Open method, API_BASE & ep, False
-    http.SetTimeouts 30000, 60000, 600000, 600000
-    http.SetRequestHeader "MAPI-Key", mKey
-    http.SetRequestHeader "Content-Type", "application/json"
-    If method = "GET" Then http.Send Else http.Send body
-    resp = http.ResponseText
-    If http.Status = 404 Then mKey = ""
-    Api = (http.Status >= 200 And http.Status < 300 And InStr(1, resp, """error""", vbTextCompare) = 0)
-    Exit Function
-Bad:
-    resp = "HTTP error: " & Err.Description
-    Set http = Nothing
-    Api = False
+    Api = McApi(method, ep, body, resp)
+    If McStatus() = 404 Then McForgetKey
 End Function
 
 Private Function GetKey() As Boolean
-    Dim cellKey As String
-    On Error Resume Next
-    cellKey = Trim$(CStr(ThisWorkbook.Worksheets(KEY_SHEET).Range(KEY_CELL).Value))
-    On Error GoTo 0
-    If cellKey <> "" Then mKey = cellKey
-    If mKey = "" Then mKey = Environ$("MIDAS_MAPI_KEY")
-    If mKey = "" Then mKey = UiInputS("MIDAS MAPI key (kept in memory for this Excel session only):", MSG_TITLE)
-    GetKey = (mKey <> "")
+    GetKey = McGetKey(ThisWorkbook, True, MSG_TITLE)
 End Function
 
 Public Sub MIDAS_USTYAPI_FORGET_KEY()
-    mKey = ""
+    McForgetKey
 End Sub
 
 Private Function SectArea(ByVal resp As String, ByVal key As String) As Double
@@ -1863,10 +1797,6 @@ Private Function SectField(ByVal resp As String, ByVal key As String, ByVal fld 
     p = InStr(p, resp, """" & fld & """:")
     If p = 0 Then Exit Function
     SectField = Val(Mid$(resp, p + Len(fld) + 3, 30))
-End Function
-
-Private Function CountOf(ByVal s As String, ByVal what As String) As Long
-    CountOf = (Len(s) - Len(Replace(s, what, ""))) / Len(what)
 End Function
 
 Private Function Summary() As String
@@ -1914,24 +1844,6 @@ End Function
 ' ============================================================================
 '  HELPERS
 ' ============================================================================
-Private Function NmRange(wb As Workbook, ByVal nm As String) As Range
-    On Error Resume Next
-    Set NmRange = wb.Names(nm).RefersToRange
-    On Error GoTo 0
-    If NmRange Is Nothing Then Err.Raise vbObjectError + 20, , "Name " & nm & " missing in " & wb.Name & "."
-End Function
-
-Private Function Num(ByVal v As Variant, ByVal what As String) As Double
-    If IsError(v) Then Err.Raise vbObjectError + 21, , what & ": error value."
-    If IsEmpty(v) Or Not IsNumeric(v) Then Err.Raise vbObjectError + 21, , what & ": not a number ('" & CStr(v) & "')."
-    Num = CDbl(v)
-End Function
-
-Private Function NumOr0(ByVal v As Variant) As Double
-    If IsError(v) Then Exit Function
-    If IsNumeric(v) And Not IsEmpty(v) Then NumOr0 = CDbl(v)
-End Function
-
 Private Function FindLabel(ws As Worksheet, ByVal col As Long, ByVal startText As String, Optional ByVal fromRow As Long = 1) As Range
     Dim r As Long, last As Long, t As String
     last = ws.Cells(ws.Rows.Count, col).End(xlUp).Row
@@ -1993,32 +1905,6 @@ Private Function SortedKeysL(d As Object) As Variant
     SortedKeysL = a
 End Function
 
-' JSON number, always with a dot (Str ignores the Turkish decimal comma)
-Private Function JN(ByVal x As Double) As String
-    Dim s As String
-    If Abs(x) < 0.000000000001 Then JN = "0": Exit Function
-    s = Trim$(Str$(x))
-    If Left$(s, 1) = "." Then s = "0" & s
-    If Left$(s, 2) = "-." Then s = "-0" & Mid$(s, 2)
-    JN = s
-End Function
-
-' JSON string, non-ASCII as \uXXXX
-Private Function QS(ByVal s As String) As String
-    Dim i As Long, c As Long, o As String
-    For i = 1 To Len(s)
-        c = AscW(Mid$(s, i, 1)) And &HFFFF&
-        Select Case c
-            Case 34: o = o & "\"""
-            Case 92: o = o & "\\"
-            Case Is < 32: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Is > 126: o = o & "\u" & Right$("000" & Hex$(c), 4)
-            Case Else: o = o & ChrW(c)
-        End Select
-    Next i
-    QS = """" & o & """"
-End Function
-
 ' project-information text: Turkish letters -> ASCII, other non-ASCII -> "?", at most 80 characters
 Private Function Pj(ByVal s As String) As String
     Dim i As Long, c As Long, o As String, tr As Variant, k As Long
@@ -2045,14 +1931,3 @@ Private Function SafeName(ByVal s As String) As String
     Next i
     SafeName = o
 End Function
-
-Private Sub MakeDir(ByVal p As String)
-    If Len(Dir$(p, vbDirectory)) = 0 Then MkDir p
-End Sub
-
-Private Sub WriteText(ByVal p As String, ByVal txt As String)
-    Dim f As Integer: f = FreeFile
-    Open p For Output As #f
-    Print #f, txt;
-    Close #f
-End Sub
