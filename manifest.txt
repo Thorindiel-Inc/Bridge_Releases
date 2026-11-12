@@ -2,7 +2,7 @@
 # id|version|changelog   (blank lines and # comments are ignored;
 # changelog may be empty)
 abutment-sheets|2026-11-10a|New: shows the sheet set of the abutment's foundation type (KAZIKLI / YUZEYSEL), hides the other set, rebuilds the lists
-bridge-macro-updater|2026-10-30a|Strips Attribute lines (VB_Name) from downloaded modules before writing them in
+bridge-macro-updater|2026-11-12a|Adds a module that an installed module needs (e.g. the shared MIDAS_CORE) before the modules that call it are replaced
 chapter-manager|2026-11-09a|RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets
 dxf-alignment|2026-11-06d|Inputs and messages through the macro window; Span radius in the column next to G_AKS_XY (centrifugal load of MIDAS_KOPRU); G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked
 input-pull|2026-10-30b|Third optional file for G_ names that are not in the 1-2 workbook (e.g. G_PHI3 from 3A)

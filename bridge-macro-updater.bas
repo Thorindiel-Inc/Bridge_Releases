@@ -28,6 +28,9 @@ Option Explicit
 '                                         line still works, just with
 '                                         nothing to show.
 '    <UPDATE_BASE_URL>/<id>.bas          the full module text for that id
+'  An optional 4th field lists the ids a module needs, separated by commas:
+'    midas-bridge-build|2026-11-12a|...|midas-core
+'  (written by make_manifest.py from the module's SCRIPT_NEEDS constant).
 '  e.g.
 '    global-input-pull|2026-10-27a|Pulls INPUT values by key from GLOBAL_INPUT.
 '    bridge-macro-updater|2026-10-27a|Adapted from the Culvert updater.
@@ -49,6 +52,16 @@ Option Explicit
 '     minutes after a publish
 '   * a module NEWER than the server's copy is listed as AHEAD and never
 '     replaced, so the updater cannot downgrade anything
+'
+'  MODULES THAT ARE ADDED
+'  A module a workbook does not have is never added on its own: each workbook
+'  keeps its own set. The exception is a module that an INSTALLED module
+'  needs (4th manifest field), e.g. the shared MIDAS_CORE: it is listed as
+'  MISSING and added, before the modules that call it are replaced. Its name
+'  in the project is the VB_Name of the published file. A workbook whose
+'  updater is older than 2026-11-12a replaces the callers first and the
+'  updater last; the new updater then finds the missing module and asks once
+'  more.
 '
 '  HOW THIS MODULE UPDATES ITSELF
 '  Rewriting a module while one of its own procedures is on the call stack
@@ -87,11 +100,11 @@ Option Explicit
 '  CONFIG
 ' ---------------------------------------------------------------------------
 
-Private Const SCRIPT_VERSION As String = "2026-10-30a"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
 
 ' One-line summary of what changed in THIS version, shown when the updater
 ' finds itself stale. One physical line, no "|".
-Private Const SCRIPT_CHANGELOG As String = "Strips Attribute lines (VB_Name) from downloaded modules before writing them in"
+Private Const SCRIPT_CHANGELOG As String = "Adds a module that an installed module needs (e.g. the shared MIDAS_CORE) before the modules that call it are replaced"
 
 ' Identifies this module to the updater regardless of what it was
 ' named when pasted into Excel - these files carry no VB_Name, so the
@@ -124,6 +137,12 @@ Private Const BOOTSTRAP_MODULE As String = "BridgeUpdaterBootstrap"
 ' the VBIDE library is needed.
 Private Const STD_MODULE As Long = 1
 
+' Scripted run (BridgeMacroUpdateSilent): no dialogs, the reports go to
+' mSilentLog. mBaseUrl replaces UPDATE_BASE_URL for that run only.
+Private mSilent As Boolean
+Private mSilentLog As String
+Private mBaseUrl As String
+
 
 
 ' ===========================================================================
@@ -139,16 +158,22 @@ Public Sub CheckBridgeMacroUpdates()
     Dim okLog As String, staleLog As String, skipLog As String, aheadLog As String
     Dim okCount As Long, staleCount As Long
     Dim staleNames As String
+    Dim installedIds As String
+    Dim addNames As String, addLog As String, addCount As Long
     Dim selfStale As Boolean, selfCompName As String, selfLog As String, selfLatest As String
     Dim trustMsg As String
     Dim answer As VbMsgBoxResult
     Dim report As String
     Dim prompt As String
 
-    If Not FetchText(UPDATE_BASE_URL & "/manifest.txt", manifest) Then
-        MsgBox "Could not reach the update server." & vbCrLf & vbCrLf & _
-               manifest & vbCrLf & vbCrLf & _
-               "URL: " & UPDATE_BASE_URL & "/manifest.txt", vbCritical
+    If Not FetchText(BaseUrl() & "/manifest.txt", manifest) Then
+        If mSilent Then
+            mSilentLog = mSilentLog & "FAIL: could not reach the update server: " & manifest & vbCrLf
+        Else
+            MsgBox "Could not reach the update server." & vbCrLf & vbCrLf & _
+                   manifest & vbCrLf & vbCrLf & _
+                   "URL: " & BaseUrl() & "/manifest.txt", vbCritical
+        End If
         Exit Sub
     End If
 
@@ -166,6 +191,7 @@ Public Sub CheckBridgeMacroUpdates()
         For Each comp In ThisWorkbook.VBProject.VBComponents
             code = ComponentCode(comp)
             thisId = ConstValue(code, "SCRIPT_ID")
+            If Len(thisId) > 0 Then installedIds = installedIds & "|" & LCase$(thisId)
             If StrComp(thisId, SCRIPT_ID, vbTextCompare) = 0 Then
                 ' This module. Never handed to InstallUpdates - it is
                 ' replaced last, by BeginSelfUpdate. Uses the constant, not
@@ -216,10 +242,14 @@ Public Sub CheckBridgeMacroUpdates()
                 End If
             End If
         Next comp
+
+        ' Modules the installed ones need and this workbook does not have.
+        addNames = MissingNeeds(manifest, installedIds & "|", addLog, addCount)
     End If
 
-    ' The module lists. Stale first - they are what the question is about;
-    ' MsgBox cuts a long text off at the bottom.
+    ' The module lists. Missing and stale first - they are what the question
+    ' is about; MsgBox cuts a long text off at the bottom.
+    If addCount > 0 Then report = report & "MISSING, WILL BE ADDED (" & addCount & "):" & vbCrLf & addLog & vbCrLf
     If staleCount > 0 Then report = report & "OUT OF DATE (" & staleCount & "):" & vbCrLf & staleLog & vbCrLf
     If selfStale Then report = report & "UPDATER ITSELF (replaced last):" & vbCrLf & selfLog & vbCrLf
     If Len(aheadLog) > 0 Then report = report & "AHEAD OF SERVER (left alone):" & vbCrLf & aheadLog & vbCrLf
@@ -230,16 +260,16 @@ Public Sub CheckBridgeMacroUpdates()
              String(46, "-") & vbCrLf & report
 
     If Len(trustMsg) > 0 Then
-        Call ShowReport("CANNOT CHECK:" & vbCrLf & trustMsg & vbCrLf & vbCrLf & report, False)
+        Call Tell("CANNOT CHECK:" & vbCrLf & trustMsg & vbCrLf & vbCrLf & report, False)
         Exit Sub
     End If
 
-    If staleCount = 0 And Not selfStale Then
+    If staleCount = 0 And addCount = 0 And Not selfStale Then
         If okCount = 0 And Len(aheadLog) = 0 Then
-            Call ShowReport("No Bridge modules found in this workbook." & vbCrLf & vbCrLf & _
-                            report, True)
+            Call Tell("No Bridge modules found in this workbook." & vbCrLf & vbCrLf & _
+                      report, True)
         Else
-            Call ShowReport("OK - nothing to update." & vbCrLf & vbCrLf & report, True)
+            Call Tell("OK - nothing to update." & vbCrLf & vbCrLf & report, True)
         End If
         Exit Sub
     End If
@@ -247,8 +277,9 @@ Public Sub CheckBridgeMacroUpdates()
     ' The question and its warnings FIRST: with every module stale after a
     ' release, the list alone runs past what a MsgBox can show, and the
     ' question used to be cut off.
-    prompt = "Replace the " & (staleCount + IIf(selfStale, 1, 0)) & _
-             " out-of-date module(s)?" & vbCrLf & vbCrLf & _
+    prompt = "Replace the " & (staleCount + IIf(selfStale, 1, 0)) & " out-of-date module(s)"
+    If addCount > 0 Then prompt = prompt & " and add the " & addCount & " missing module(s)"
+    prompt = prompt & "?" & vbCrLf & vbCrLf & _
              "No local backup is taken - any per-workbook edit to a managed " & _
              "module is lost. Save your work before continuing." & vbCrLf & vbCrLf
     If selfStale Then
@@ -258,11 +289,21 @@ Public Sub CheckBridgeMacroUpdates()
     End If
     prompt = prompt & report
 
+    If mSilent Then
+        ' scripted run: no question, and the updater never rewrites itself
+        mSilentLog = mSilentLog & report & vbCrLf
+        If staleCount + addCount > 0 Then Call InstallUpdates(addNames & staleNames)
+        If selfStale Then mSilentLog = mSilentLog & "NOTE: the updater itself is out of date; a scripted run leaves it alone." & vbCrLf
+        Exit Sub
+    End If
+
     answer = MsgBox(FitReport(prompt, SCRIPT_ID), vbYesNo + vbQuestion, "Bridge macro updater")
 
     If answer <> vbYes Then Exit Sub
 
-    If staleCount > 0 Then Call InstallUpdates(staleNames)
+    ' Missing modules first: a module that calls them must never be in the
+    ' project without them.
+    If staleCount + addCount > 0 Then Call InstallUpdates(addNames & staleNames)
     If selfStale Then Call BeginSelfUpdate(selfCompName, selfLatest)
 
 End Sub
@@ -272,7 +313,8 @@ End Sub
 '  INSTALL
 ' ===========================================================================
 
-' staleList is "moduleName|scriptId|expectedVersion;" repeated. Each module's code is
+' staleList is "moduleName|scriptId|expectedVersion;" repeated. A row with an
+' empty moduleName is a module to ADD (see MissingNeeds). Each module's code is
 ' replaced IN PLACE, with no backup taken first (see the header comment's
 ' NO LOCAL BACKUP note) - the component is never removed and re-imported,
 ' so the module keeps its name and any references to it.
@@ -286,14 +328,17 @@ Private Sub InstallUpdates(ByVal staleList As String)
     Dim installedChangelog As String
     Dim doneLog As String, failLog As String
     Dim doneCount As Long, failCount As Long
+    Dim adding As Boolean, why As String
 
     rows = Split(staleList, ";")
 
     For i = LBound(rows) To UBound(rows)
         If Len(Trim$(rows(i))) > 0 Then
             f = Split(rows(i), "|")
+            adding = (Len(f(0)) = 0)
+            If adding Then f(0) = f(1)          ' until it has a module name, show the id
 
-            If Not FetchText(UPDATE_BASE_URL & "/" & f(1) & ".bas", newCode) Then
+            If Not FetchText(BaseUrl() & "/" & f(1) & ".bas", newCode) Then
                 failCount = failCount + 1
                 failLog = failLog & "  - " & f(0) & ": download failed - " & newCode & vbCrLf
             ElseIf Len(ConstValue(newCode, "SCRIPT_ID")) = 0 Then
@@ -314,16 +359,22 @@ Private Sub InstallUpdates(ByVal staleList As String)
                           " - the release is still propagating. Try again in a few minutes." & vbCrLf
             Else
                 Set comp = Nothing
-                On Error Resume Next
-                Set comp = ThisWorkbook.VBProject.VBComponents(f(0))
-                On Error GoTo 0
+                why = "module vanished"
+                If adding Then
+                    Set comp = NewComponent(newCode, f(1), why)
+                    If Not comp Is Nothing Then f(0) = comp.Name
+                Else
+                    On Error Resume Next
+                    Set comp = ThisWorkbook.VBProject.VBComponents(f(0))
+                    On Error GoTo 0
+                End If
 
                 If comp Is Nothing Then
                     failCount = failCount + 1
-                    failLog = failLog & "  - " & f(0) & ": module vanished" & vbCrLf
+                    failLog = failLog & "  - " & f(0) & ": " & why & vbCrLf
                 ElseIf ReplaceComponentCode(comp, newCode) Then
                     doneCount = doneCount + 1
-                    doneLog = doneLog & "  - " & f(0) & "  ->  " & _
+                    doneLog = doneLog & "  - " & f(0) & IIf(adding, "  added  ", "  ->  ") & _
                               ConstValue(newCode, "SCRIPT_VERSION") & vbCrLf
                     ' Read from the DOWNLOADED code, not the manifest - this
                     ' is what actually got installed, guaranteed consistent
@@ -335,18 +386,145 @@ Private Sub InstallUpdates(ByVal staleList As String)
                 Else
                     failCount = failCount + 1
                     failLog = failLog & "  - " & f(0) & ": replace failed" & vbCrLf
+                    ' an added module that could not be filled is taken out again
+                    If adding Then
+                        On Error Resume Next
+                        ThisWorkbook.VBProject.VBComponents.Remove comp
+                        On Error GoTo 0
+                    End If
                 End If
             End If
         End If
     Next i
 
     ' Failures first - MsgBox cuts a long text off at the bottom.
-    Call ShowReport("Bridge macro update  [" & SCRIPT_VERSION & "]" & vbCrLf & String(46, "-") & vbCrLf & _
+    Call Tell("Bridge macro update  [" & SCRIPT_VERSION & "]" & vbCrLf & String(46, "-") & vbCrLf & _
            "Save the workbook to keep the updated code." & vbCrLf & vbCrLf & _
            IIf(failCount > 0, "FAILED (" & failCount & "):" & vbCrLf & failLog & vbCrLf, "") & _
            IIf(doneCount > 0, "UPDATED (" & doneCount & "):" & vbCrLf & doneLog, ""), (failCount = 0))
 
 End Sub
+
+
+' A new, empty standard module for a module this workbook lacks. Its name is
+' the VB_Name of the published file (the id in capitals when the file has
+' none). Nothing when a module of that name is already there: it would be
+' another module, since it does not carry this SCRIPT_ID.
+Private Function NewComponent(ByVal newCode As String, ByVal scriptId As String, ByRef why As String) As Object
+
+    Dim nm As String
+    Dim p As Long, q As Long
+    Dim comp As Object
+
+    p = InStr(1, newCode, "Attribute VB_Name = " & Chr$(34), vbTextCompare)
+    If p > 0 Then
+        p = p + Len("Attribute VB_Name = ") + 1
+        q = InStr(p, newCode, Chr$(34))
+        If q > p Then nm = Mid$(newCode, p, q - p)
+    End If
+    If Len(nm) = 0 Then nm = UCase$(Replace(scriptId, "-", "_"))
+
+    On Error Resume Next
+    Set comp = ThisWorkbook.VBProject.VBComponents(nm)
+    On Error GoTo 0
+    If Not comp Is Nothing Then
+        why = "a module named " & nm & " is already here without SCRIPT_ID " & scriptId & " - rename or remove it"
+        Exit Function
+    End If
+
+    On Error Resume Next
+    Set comp = ThisWorkbook.VBProject.VBComponents.Add(STD_MODULE)
+    If Not comp Is Nothing Then comp.Name = nm
+    If Err.Number <> 0 Then
+        why = "could not add the module " & nm & ": " & Err.Description
+        If Not comp Is Nothing Then ThisWorkbook.VBProject.VBComponents.Remove comp
+        Set comp = Nothing
+    End If
+    Err.Clear
+    On Error GoTo 0
+    Set NewComponent = comp
+
+End Function
+
+
+' Rows ("|scriptId|version;", module name empty) for the modules that the
+' installed ones need and the workbook lacks. installedIds is "|id|id|" in
+' lower case. A needed module can need another one: the list is walked until
+' nothing new turns up. An id that is not on the server is left out.
+Private Function MissingNeeds(ByVal manifest As String, ByVal installedIds As String, _
+                              ByRef addLog As String, ByRef addCount As Long) As String
+
+    Dim todo() As String, needs() As String
+    Dim i As Long, k As Long
+    Dim id As String, need As String, latest As String
+    Dim rows As String
+
+    todo = Split(Mid$(installedIds, 2), "|")
+    i = LBound(todo)
+    Do While i <= UBound(todo)
+        id = Trim$(todo(i))
+        If Len(id) > 0 Then
+            needs = Split(ManifestField(manifest, id, 3), ",")
+            For k = LBound(needs) To UBound(needs)
+                need = LCase$(Trim$(needs(k)))
+                If Len(need) > 0 And InStr(1, installedIds, "|" & need & "|", vbBinaryCompare) = 0 Then
+                    latest = ManifestVersion(manifest, need)
+                    If Len(latest) > 0 Then
+                        rows = rows & "|" & need & "|" & latest & ";"
+                        addCount = addCount + 1
+                        addLog = addLog & "  - " & need & "  " & latest & "  (needed by " & id & ")" & vbCrLf
+                        installedIds = installedIds & need & "|"
+                        ReDim Preserve todo(LBound(todo) To UBound(todo) + 1)
+                        todo(UBound(todo)) = need
+                    End If
+                End If
+            Next k
+        End If
+        i = i + 1
+    Loop
+    MissingNeeds = rows
+
+End Function
+
+
+' The address of the feed: UPDATE_BASE_URL, or the test address of a scripted run.
+Private Function BaseUrl() As String
+    If Len(mBaseUrl) > 0 Then BaseUrl = mBaseUrl Else BaseUrl = UPDATE_BASE_URL
+End Function
+
+
+' A report: the window, or the log of a scripted run.
+Private Sub Tell(ByVal report As String, ByVal ok As Boolean)
+    If mSilent Then
+        mSilentLog = mSilentLog & report & vbCrLf
+    Else
+        Call ShowReport(report, ok)
+    End If
+End Sub
+
+
+' Scripted entry (tests, install builds): the same check without dialogs.
+' Replaces every out-of-date module and adds the missing ones without asking;
+' never rewrites the updater itself. Returns the report. testUrl is used only
+' when it is on this computer (http://127.0.0.1:port or http://localhost:port).
+Public Function BridgeMacroUpdateSilent(Optional ByVal testUrl As String = "") As String
+
+    mSilent = True
+    mSilentLog = ""
+    mBaseUrl = ""
+    If LCase$(testUrl) Like "http://127.0.0.1:#*" Or LCase$(testUrl) Like "http://localhost:#*" Then mBaseUrl = testUrl
+    On Error GoTo Failed
+    Call CheckBridgeMacroUpdates
+    BridgeMacroUpdateSilent = mSilentLog
+Done:
+    mSilent = False
+    mBaseUrl = ""
+    Exit Function
+Failed:
+    BridgeMacroUpdateSilent = "FAIL: " & Err.Description & vbCrLf & mSilentLog
+    Resume Done
+
+End Function
 
 
 Private Function ReplaceComponentCode(ByVal comp As Object, ByVal newCode As String) As Boolean
@@ -405,7 +583,7 @@ Private Sub BeginSelfUpdate(ByVal compName As String, ByVal expectedVersion As S
         Exit Sub
     End If
 
-    If Not FetchText(UPDATE_BASE_URL & "/" & SCRIPT_ID & ".bas", newCode) Then
+    If Not FetchText(BaseUrl() & "/" & SCRIPT_ID & ".bas", newCode) Then
         MsgBox "The updater could not download its own new version:" & vbCrLf & _
                newCode, vbExclamation
         Exit Sub
@@ -536,7 +714,31 @@ Public Sub FinishBridgeSelfUpdate()
            vbCrLf & vbCrLf & SCRIPT_CHANGELOG & vbCrLf & vbCrLf & _
            "Save the workbook to keep it.", vbInformation, "Bridge macro updater"
 
+    ' An updater older than 2026-11-12a could not add modules: the modules it
+    ' just replaced may need one (e.g. MIDAS_CORE). Look once more.
+    If AnyMissingNeeds() Then Call CheckBridgeMacroUpdates
+
 End Sub
+
+' True when an installed module needs a module this workbook lacks. False
+' when the server or the VBA project cannot be read: the next check says why.
+Private Function AnyMissingNeeds() As Boolean
+
+    Dim manifest As String, ids As String, addLog As String
+    Dim addCount As Long
+    Dim comp As Object
+    Dim thisId As String
+
+    If Len(VbaTrustProblem()) > 0 Then Exit Function
+    If Not FetchText(BaseUrl() & "/manifest.txt", manifest) Then Exit Function
+    For Each comp In ThisWorkbook.VBProject.VBComponents
+        thisId = ConstValue(ComponentCode(comp), "SCRIPT_ID")
+        If Len(thisId) > 0 Then ids = ids & "|" & LCase$(thisId)
+    Next comp
+    Call MissingNeeds(manifest, ids & "|", addLog, addCount)
+    AnyMissingNeeds = (addCount > 0)
+
+End Function
 
 ' Deletes the bootstrap module if one exists. Safe whenever the bootstrap
 ' itself is not the code running.
@@ -688,6 +890,33 @@ Private Function ManifestChangelog(ByVal manifest As String, ByVal wantId As Str
                     If UBound(f) >= 2 Then ManifestChangelog = Trim$(f(2))
                     Exit Function
                 End If
+            End If
+        End If
+    Next i
+
+End Function
+
+
+' Field number index (0 = id) of the manifest line of wantId; "" when the
+' line is shorter. Index 3 = the ids the module needs, separated by commas.
+Private Function ManifestField(ByVal manifest As String, ByVal wantId As String, ByVal index As Long) As String
+
+    Dim rows() As String
+    Dim f() As String
+    Dim i As Long
+    Dim ln As String
+
+    manifest = Replace(manifest, vbCrLf, vbLf)
+    manifest = Replace(manifest, vbCr, vbLf)
+    rows = Split(manifest, vbLf)
+
+    For i = LBound(rows) To UBound(rows)
+        ln = Trim$(rows(i))
+        If Len(ln) > 0 And Left$(ln, 1) <> "#" Then
+            f = Split(ln, "|")
+            If StrComp(Trim$(f(0)), wantId, vbTextCompare) = 0 Then
+                If UBound(f) >= index Then ManifestField = Trim$(f(index))
+                Exit Function
             End If
         End If
     Next i
