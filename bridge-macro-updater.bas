@@ -100,11 +100,11 @@ Option Explicit
 '  CONFIG
 ' ---------------------------------------------------------------------------
 
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_VERSION As String = "2026-11-12b"
 
 ' One-line summary of what changed in THIS version, shown when the updater
 ' finds itself stale. One physical line, no "|".
-Private Const SCRIPT_CHANGELOG As String = "Adds a module that an installed module needs (e.g. the shared MIDAS_CORE) before the modules that call it are replaced"
+Private Const SCRIPT_CHANGELOG As String = "Report window: at most half the screen wide, long lines wrap, each module shows only its newest change; Adds a module that an installed module needs (e.g. the shared MIDAS_CORE) before the modules that call it are replaced"
 
 ' Identifies this module to the updater regardless of what it was
 ' named when pasted into Excel - these files carry no VB_Name, so the
@@ -210,7 +210,7 @@ Public Sub CheckBridgeMacroUpdates()
                               "  ->  " & latest & vbCrLf
                     latestChangelog = ManifestChangelog(manifest, thisId)
                     If Len(latestChangelog) > 0 Then
-                        selfLog = selfLog & "      " & latestChangelog & vbCrLf
+                        selfLog = selfLog & "      " & NewestEntry(latestChangelog) & vbCrLf
                     End If
                 End If
             ElseIf Len(thisId) > 0 Then
@@ -234,7 +234,7 @@ Public Sub CheckBridgeMacroUpdates()
                     staleLog = staleLog & "  - " & comp.Name & "  " & thisVer & _
                                "  ->  " & latest & vbCrLf
                     If Len(latestChangelog) > 0 Then
-                        staleLog = staleLog & "      " & latestChangelog & vbCrLf
+                        staleLog = staleLog & "      " & NewestEntry(latestChangelog) & vbCrLf
                     End If
                     ' The expected version travels with the row, so
                     ' InstallUpdates can refuse a stale CDN copy.
@@ -381,7 +381,7 @@ Private Sub InstallUpdates(ByVal staleList As String)
                     ' with it even if the manifest and the module disagree.
                     installedChangelog = ConstValue(newCode, "SCRIPT_CHANGELOG")
                     If Len(installedChangelog) > 0 Then
-                        doneLog = doneLog & "      " & installedChangelog & vbCrLf
+                        doneLog = doneLog & "      " & NewestEntry(installedChangelog) & vbCrLf
                     End If
                 Else
                     failCount = failCount + 1
@@ -501,6 +501,23 @@ Private Sub Tell(ByVal report As String, ByVal ok As Boolean)
         Call ShowReport(report, ok)
     End If
 End Sub
+
+
+' Test entry: writes the report window script (.ps1) and the report text (.txt) into folder,
+' shows nothing; returns the two paths. For checking the window size on a copy.
+Public Function BridgeReportScriptTest(ByVal folder As String, ByVal report As String) As String
+    Dim f As Integer, stm As Object
+    f = FreeFile
+    Open folder & "\report.ps1" For Output As #f
+    Print #f, ReportWindowScript(True)
+    Close #f
+    Set stm = CreateObject("ADODB.Stream")
+    stm.Type = 2: stm.Charset = "utf-8": stm.Open
+    stm.WriteText report
+    stm.SaveToFile folder & "\report.txt", 2
+    stm.Close
+    BridgeReportScriptTest = folder & "\report.ps1 | " & folder & "\report.txt"
+End Function
 
 
 ' Scripted entry (tests, install builds): the same check without dialogs.
@@ -870,6 +887,15 @@ End Function
 ' changelog) instead of the 2nd. "" when the line has no 3rd field - an
 ' older 2-field "id|version" manifest line still works, it just has
 ' nothing to show here.
+' A changelog lists the changes of every version, newest first, separated by "; ":
+' the report shows only the newest one (owner 2026-11-12: the window was too wide).
+Private Function NewestEntry(ByVal changelog As String) As String
+    Dim p As Long
+    p = InStr(1, changelog, "; ", vbBinaryCompare)
+    If p > 0 Then NewestEntry = Left$(changelog, p - 1) Else NewestEntry = changelog
+End Function
+
+
 Private Function ManifestChangelog(ByVal manifest As String, ByVal wantId As String) As String
 
     Dim rows() As String
@@ -1195,9 +1221,12 @@ Private Function ReportWindowScript(ByVal ok As Boolean) As String
     s = s & "$form.AcceptButton = $okBtn" & vbCrLf
     s = s & "$form.CancelButton = $okBtn" & vbCrLf
     s = s & "$area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea" & vbCrLf
+    ' width: the text's own width, but at most half the screen; long lines wrap and
+    ' the height is measured on the wrapped text (owner 2026-11-12: the window was too wide)
     s = s & "$need = [Windows.Forms.TextRenderer]::MeasureText($text, $bold)" & vbCrLf
-    s = s & "$w = [Math]::Max(420, [Math]::Min($need.Width + 110, [int]($area.Width * 0.8)))" & vbCrLf
-    s = s & "$h = [Math]::Min($need.Height + $bar.PreferredSize.Height + 70, [int]($area.Height * 0.8))" & vbCrLf
+    s = s & "$w = [Math]::Max(420, [Math]::Min($need.Width + 110, [int]($area.Width * 0.5)))" & vbCrLf
+    s = s & "$wrapped = [Windows.Forms.TextRenderer]::MeasureText($text, $bold, (New-Object Drawing.Size(($w - 110), 0)), [Windows.Forms.TextFormatFlags]::WordBreak)" & vbCrLf
+    s = s & "$h = [Math]::Min($wrapped.Height + $bar.PreferredSize.Height + 70, [int]($area.Height * 0.8))" & vbCrLf
     s = s & "$form.ClientSize = New-Object Drawing.Size($w, $h)" & vbCrLf
     s = s & "$form.Add_Shown({ $form.Activate(); $form.ActiveControl = $okBtn; $box.Refresh() })" & vbCrLf
     s = s & "[void]$form.ShowDialog()" & vbCrLf
