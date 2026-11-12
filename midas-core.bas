@@ -11,6 +11,7 @@ Option Private Module
 '    JSON          ParseJson, QS, JN, JNum, TopKeys, CountOf, TableHasRecords
 '    cells         NmRange, Num, NumOr0
 '    files         MakeDir, WriteText, ReadUtf8, WriteUtf8, WaitForFile, Pause
+'    anchors       McAnchor: the cells a macro reads or writes, found by an M_ name
 '
 '  A macro that uses this module declares
 '    Private Const SCRIPT_NEEDS As String = "midas-core"
@@ -27,8 +28,8 @@ Option Private Module
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-core"
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
-Private Const SCRIPT_CHANGELOG As String = "New: one shared copy of the MAPI key, HTTP, JSON, number and file helpers of the MIDAS macros"
+Private Const SCRIPT_VERSION As String = "2026-11-12b"
+Private Const SCRIPT_CHANGELOG As String = "McAnchor: macros find the cells they read and write by an M_ name, created at the old address when a workbook lacks it; New: one shared copy of the MAPI key, HTTP, JSON, number and file helpers of the MIDAS macros"
 
 Private Const API_BASE As String = "https://moa-engineers.midasit.com:443/civil/"
 Private Const KEY_NAME As String = "G_MAPI_KEY"
@@ -321,6 +322,37 @@ End Function
 Public Function NumOr0(ByVal v As Variant) As Double
     If IsError(v) Then Exit Function
     If IsNumeric(v) And Not IsEmpty(v) Then NumOr0 = CDbl(v)
+End Function
+
+' ---------------------------------------------------------------------------
+'  Anchors (owner 2026-11-12): a macro finds the cells it reads or writes by a name with
+'  the prefix M_, so a row or column the owner inserts moves the name with the cells.
+'  A workbook without the name gets it at the old fixed address on first use; the
+'  caller checks the labels there (LayoutOk and the like) before it writes.
+' ---------------------------------------------------------------------------
+' Range of the name nm on sheet ws. sheetLevel True: a name of ws only (sheets that are
+' copied per span, e.g. 4A_KDME / 4B_KDME, take it along), else a workbook name.
+' Raises an error when the name points at another sheet or at #REF!.
+Public Function McAnchor(ws As Worksheet, ByVal nm As String, ByVal defaultAddr As String, _
+                         Optional ByVal sheetLevel As Boolean = False) As Range
+    Dim n As Name, r As Range, refers As String
+    On Error Resume Next
+    If sheetLevel Then Set n = ws.Names(nm) Else Set n = ws.Parent.Names(nm)
+    On Error GoTo 0
+    If n Is Nothing Then
+        refers = "='" & Replace(ws.Name, "'", "''") & "'!" & ws.Range(defaultAddr).Address
+        If sheetLevel Then
+            Set n = ws.Names.Add(Name:=nm, RefersTo:=refers)
+        Else
+            Set n = ws.Parent.Names.Add(Name:=nm, RefersTo:=refers)
+        End If
+    End If
+    On Error Resume Next
+    Set r = n.RefersToRange
+    On Error GoTo 0
+    If r Is Nothing Then Err.Raise vbObjectError + 40, , "Name " & nm & " no longer points at cells (" & n.RefersTo & "): correct it in the Name Manager."
+    If r.Worksheet.Name <> ws.Name Then Err.Raise vbObjectError + 40, , "Name " & nm & " points at sheet " & r.Worksheet.Name & ", expected " & ws.Name & "."
+    Set McAnchor = r
 End Function
 
 ' ---------------------------------------------------------------------------

@@ -38,8 +38,10 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "input-pull"
-Private Const SCRIPT_VERSION As String = "2026-10-30b"
-Private Const SCRIPT_CHANGELOG As String = "Third optional file for G_ names that are not in the 1-2 workbook (e.g. G_PHI3 from 3A)"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Third optional file for G_ names that are not in the 1-2 workbook (e.g. G_PHI3 from 3A)"
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 20|Girdiler|De\u011Ferleri \u00E7a\u011F\u0131r|DEGER_CAGIRMA.DEGER_CAGIRMA||Ana \u00E7al\u0131\u015Fma kitab\u0131ndan G_ adl\u0131 girdileri (MAPI anahtar\u0131 dahil) ve \u00F6nceki b\u00F6l\u00FCm\u00FCn son tablo, \u015Fekil ve sayfa numaralar\u0131n\u0131 bu dosyaya \u00E7eker.|
 
 Private Const NAME_PREFIX As String = "G_"
 Private Const NUM_SOURCE As String = "G_SON_NUMARA"

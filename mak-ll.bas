@@ -22,9 +22,11 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "mak-ll"
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
-Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Refuses the DYNAMIC model; Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
+Private Const SCRIPT_VERSION As String = "2026-11-12b"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Refuses the DYNAMIC model; Syntax error in the last table line fixed; Moving-load case from a drop-down of the model cases, default LM71; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Table below the strand tables on 4<letter>_KILIF, reads 4<letter>_KDME"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 100|Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|
 
 Private Const MSG_TITLE As String = "MAK_LL"
 Private Const LL_TOP As Long = 72          ' title row of the table on the 4<letter>_KILIF sheet

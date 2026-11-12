@@ -46,9 +46,11 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
-Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip); Pictures: only the two model views are captured, page 3 = 5 labelled places for the rail stress pictures pasted by hand (LM71, windows, TU+, TU-); stage strips become labelled places for pictures pasted by hand (Civil NX ignores STAGE_NAME in a capture), no displacement page, later runs keep pasted pictures"
+Private Const SCRIPT_VERSION As String = "2026-11-12c"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip)"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 90|MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri 3B_RTI_Y'ye yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu
 
 Private Const MSG_TITLE As String = "MIDAS_RTI"
 Private Const OUT_SHEET As String = "RTI_SONUC"
@@ -542,8 +544,8 @@ Private Function Evaluate_(ByVal ballast As Boolean, ByVal tag As String) As Str
     ' write
     sTxt = Array("", "pencere min + TU+ + LM71 min", "pencere min + TU- + LM71 min", "pencere maks + LM71 maks + TU+", "pencere maks + LM71 maks + TU-")
     Set ws = ThisWorkbook.Worksheets(OUT_SHEET)
-    ws.Range("D5:F11").ClearContents
-    ws.Range("B3").Value = "MIDAS: " & tag & " / " & Format$(Now, "yyyy-mm-dd hh:nn") & " / " & nW & " pencere, " & nEl & " ray eleman" & ChrW(305)
+    ResultBlock().Range("C3:E9").ClearContents
+    ResultBlock().Cells(1, 1).Value = "MIDAS: " & tag & " / " & Format$(Now, "yyyy-mm-dd hh:nn") & " / " & nW & " pencere, " & nEl & " ray eleman" & ChrW(305)
     PutRow ws, 5, best / 1000#, EndText(bk), IIf(bj <= 2, fMinW(bk), fMaxW(bk)) & ": " & sTxt(bj)
     PutRow ws, 6, worst / 1000#, EndText(wk), IIf(wj <= 2, fMinW(wk), fMaxW(wk)) & ": " & sTxt(wj)
     PutRow ws, 7, dB * 1000#, dBe, dBw
@@ -561,11 +563,20 @@ Private Function Evaluate_(ByVal ballast As Boolean, ByVal tag As String) As Str
         IIf(ballast, "  du " & Format$(dU * 1000#, "0.000") & " mm, dabs " & Format$(dA * 1000#, "0.000") & " mm", "  Slab track: du and dabs are not checked (left empty).")
 End Function
 
+' r = row of the original layout (5..11); the block M_RTI_SONUC starts at its stamp row 3
 Private Sub PutRow(ws As Worksheet, ByVal r As Long, ByVal v As Double, ByVal where As String, ByVal what As String)
-    ws.Cells(r, 4).Value = v
-    ws.Cells(r, 5).Value = where
-    ws.Cells(r, 6).Value = what
+    With ResultBlock()
+        .Cells(r - 2, 3).Value = v
+        .Cells(r - 2, 4).Value = where
+        .Cells(r - 2, 5).Value = what
+    End With
 End Sub
+
+' the result block of RTI_SONUC (B3:F11 of the original layout): stamp in its first cell,
+' labels in its first column, values / place / window in its columns 3-5 (owner 2026-11-12)
+Private Function ResultBlock() As Range
+    Set ResultBlock = McAnchor(ThisWorkbook.Worksheets(OUT_SHEET), "M_RTI_SONUC", "B3:F11")
+End Function
 
 Private Function EndText(ByVal k As Long) As String
     Dim e As Long
@@ -755,7 +766,7 @@ Private Function LayoutOk(ByRef msg As String) As Boolean
     Set ws = ThisWorkbook.Worksheets(OUT_SHEET)
     On Error GoTo 0
     If ws Is Nothing Then msg = "STOPPED: no sheet " & OUT_SHEET & " in this workbook.": Exit Function
-    If InStr(1, CStr(ws.Range("B5").Value), "Ray gerilmesi", vbTextCompare) <> 1 Or CStr(ws.Range("B11").Value) <> ChrW(&H3B4) & "abs" Then
+    If InStr(1, CStr(ResultBlock().Cells(3, 1).Value), "Ray gerilmesi", vbTextCompare) <> 1 Or CStr(ResultBlock().Cells(9, 1).Value) <> ChrW(&H3B4) & "abs" Then
         msg = "STOPPED: sheet " & OUT_SHEET & " has another layout (B5 'Ray gerilmesi...', B11 '" & ChrW(&H3B4) & "abs' expected). Nothing was written."
         Exit Function
     End If
@@ -1617,7 +1628,7 @@ Private Function PicturesOnly(ByVal ask As Boolean, ByVal pj As String) As Strin
     Dim ws As Worksheet, msg As String, stamp As String, cm As String, r As String
     Set ws = ThisWorkbook.Worksheets(OUT_SHEET)
     If Not FromSheet(ws, msg) Then PicturesOnly = "STOPPED: " & msg: Exit Function
-    stamp = CStr(ws.Range("B3").Value)
+    stamp = CStr(ResultBlock().Cells(1, 1).Value)
     cm = JStr(pj, "COMMENT")
     If cm = "" Or InStr(1, stamp, cm, vbTextCompare) = 0 Then
         msg = OUT_SHEET & " was not read from the model open in Civil NX:" & vbCrLf & "  " & OUT_SHEET & " B3: " & IIf(stamp = "", "(no stamp)", stamp) & vbCrLf & "  Civil NX: " & IIf(cm = "", "(no project comment)", cm)
@@ -1638,14 +1649,14 @@ End Function
 Private Function FromSheet(ws As Worksheet, ByRef msg As String) As Boolean
     Dim id As Long
     gTenE = 0: gCmpE = 0
-    id = CLng(Val(After(CStr(ws.Range("E5").Value), "eleman ")))
+    id = CLng(Val(After(CStr(ResultBlock().Cells(3, 4).Value), "eleman ")))
     If elIx.Exists(id) Then gTenE = elIx(id)
-    id = CLng(Val(After(CStr(ws.Range("E6").Value), "eleman ")))
+    id = CLng(Val(After(CStr(ResultBlock().Cells(4, 4).Value), "eleman ")))
     If elIx.Exists(id) Then gCmpE = elIx(id)
-    gTenWin = WinOf(ws.Range("F5").Value): gCmpWin = WinOf(ws.Range("F6").Value)
-    gDbAx = AxOf(ws.Range("E7").Value): gDbWin = WinOf(ws.Range("F7").Value)
-    gDhAx = AxOf(ws.Range("E8").Value)
-    gDaAx = AxOf(ws.Range("E11").Value): gDaWin = WinOf(ws.Range("F11").Value)
+    gTenWin = WinOf(ResultBlock().Cells(3, 5).Value): gCmpWin = WinOf(ResultBlock().Cells(4, 5).Value)
+    gDbAx = AxOf(ResultBlock().Cells(5, 4).Value): gDbWin = WinOf(ResultBlock().Cells(5, 5).Value)
+    gDhAx = AxOf(ResultBlock().Cells(6, 4).Value)
+    gDaAx = AxOf(ResultBlock().Cells(9, 4).Value): gDaWin = WinOf(ResultBlock().Cells(9, 5).Value)
     If gTenE = 0 Or gCmpE = 0 Or gTenWin = "" Or gCmpWin = "" Or gDbAx = "" Then
         msg = OUT_SHEET & " holds no results of this model (E5:F7 empty or other rail elements): run it with " & ChrW(39) & "Oku + resimle" & ChrW(39) & " first. Nothing was captured."
         Exit Function

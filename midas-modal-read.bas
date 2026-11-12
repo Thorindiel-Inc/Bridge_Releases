@@ -57,9 +57,11 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-modal-read"
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
-Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; One module with the pictures: MIDAS_SEKIL merged in (same pages, modes, zoom, border and captions), the retired MIDAS_SEKIL module is emptied by the update; One tool with the mode-shape pictures: window field Islem = read + pictures, pictures only, read only; field res = picture width (pictures by MIDAS_SEKIL); new: periods, frequencies, mass participation and factors of the seismic model into sheet MOD"
+Private Const SCRIPT_VERSION As String = "2026-11-12c"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; One module with the pictures: MIDAS_SEKIL merged in (same pages, modes, zoom, border and captions), the retired MIDAS_SEKIL module is emptied by the update; One tool with the mode-shape pictures: window field Islem = read + pictures, pictures only, read only; field res = picture width (pictures by MIDAS_SEKIL); new: periods, frequencies, mass participation and factors of the seismic model into sheet MOD"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 80|MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131mlar\u0131n\u0131 MOD'a okur; en b\u00FCy\u00FCk X ve Y modlar\u0131n\u0131n \u015Fekillerini Z_YATAY'a resimler. Modele bir \u015Fey yazmaz.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu
 
 Private Const MSG_TITLE As String = "MIDAS_MOD"
 Private Const OUT_SHEET As String = "MOD"
@@ -238,7 +240,7 @@ Private Function WriteAll(ByVal resp As String, ByVal tag As String) As String
     WriteBlock ws, R_MAS, mas, Array(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
     WriteBlock ws, R_FAC, fac, Array(3, 4, 6, 8, 10, 12, 14)
     WriteBlock ws, R_DIR, dirf, Array(3, 4, 6, 8, 10, 12, 14)
-    ws.Range(STAMP_CELL).Value = "MIDAS: " & tag & " / " & Format$(Now, "yyyy-mm-dd hh:nn")
+    McAnchor(ws, "M_MOD_DAMGA", STAMP_CELL).Value = "MIDAS: " & tag & " / " & Format$(Now, "yyyy-mm-dd hh:nn")
     Application.Calculation = calcWas
     Application.ScreenUpdating = True
     Application.Calculate
@@ -250,7 +252,7 @@ Private Function WriteAll(ByVal resp As String, ByVal tag As String) As String
     WriteAll = "Done: " & IIf(nE > N_MAX, N_MAX, nE) & " modes written to MOD." & vbCrLf & _
         "  Mode 1: T = " & Format$(eig(1)(4), "0.0000") & " s" & vbCrLf & _
         "  Sum of mass, last mode: X " & Format$(pct(nE)(3), "0.00") & " %, Y " & Format$(pct(nE)(5), "0.00") & " %, Z " & Format$(pct(nE)(7), "0.00") & " %" & vbCrLf & _
-        "  1_RAPOR T122 Tb = " & CellText("1_RAPOR", "T122") & ", T123 Te = " & CellText("1_RAPOR", "T123") & notes
+        "  1_RAPOR " & TbTe(1).Address(False, False) & " Tb = " & TbTe(1).Text & ", " & TbTe(2).Address(False, False) & " Te = " & TbTe(2).Text & notes
 End Function
 
 Private Sub WriteBlock(ws As Worksheet, ByVal r0 As Long, data As Variant, cols As Variant)
@@ -361,6 +363,11 @@ Private Function ModelTag(ByVal pj As String) As String
     Next k
 Done:
     If ModelTag = "" Then ModelTag = "model without project data"
+End Function
+
+' Tb (k = 1) / Te (k = 2) of 1_RAPOR: name M_MOD_TBTE (T122:T123 of the original layout)
+Private Function TbTe(ByVal k As Long) As Range
+    Set TbTe = McAnchor(ThisWorkbook.Worksheets("1_RAPOR"), "M_MOD_TBTE", "T122:T123").Cells(k, 1)
 End Function
 
 Private Function CellText(ByVal sh As String, ByVal addr As String) As String
@@ -607,7 +614,7 @@ End Function
 ' ---- MOD stamp (Q1, written by the read) against the open model ----
 Private Function ModMatches(ByVal pj As String, ByRef msg As String) As Boolean
     Dim stamp As String, tag As String
-    stamp = CStr(ThisWorkbook.Worksheets(OUT_SHEET).Range(STAMP_CELL).Value)
+    stamp = CStr(McAnchor(ThisWorkbook.Worksheets(OUT_SHEET), "M_MOD_DAMGA", STAMP_CELL).Value)
     tag = ModelTag(pj)
     If InStr(1, stamp, tag, vbTextCompare) > 0 Then ModMatches = True: Exit Function
     msg = "Sheet MOD was not read from the model open in Civil NX:" & vbCrLf & _

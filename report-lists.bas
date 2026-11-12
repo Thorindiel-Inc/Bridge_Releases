@@ -19,8 +19,12 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-11-10a"
-Private Const SCRIPT_CHANGELOG As String = "Hidden sheets are skipped (report sheets and landscape link targets), so a hidden sheet set (e.g. the unused foundation type of an abutment) is neither listed nor linked"
+Private Const SCRIPT_VERSION As String = "2026-11-12b"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Hidden sheets are skipped (report sheets and landscape link targets), so a hidden sheet set (e.g. the unused foundation type of an abutment) is neither listed nor linked"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 110|Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|
+'@TOOL 120|Rapor|\u015Eekil ve tablo listeleri|FIG_TAB_AYARLA||\u015Eekil ve tablo listelerini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|
 
 Private Const COL_CODE As Long = 26      ' Z  caption code on the report sheets
 Private Const COL_HEAD As Long = 30      ' AD heading code
@@ -117,7 +121,7 @@ Private Sub ScanReports(heads() As ListEntry, nHead As Long, tabs() As ListEntry
         vAE = rep.Range(rep.Cells(1, COL_HTEXT), rep.Cells(lastRow, COL_HTEXT)).Value
         vAG = rep.Range(rep.Cells(1, COL_CTEXT), rep.Cells(lastRow, COL_CTEXT)).Value
         ReadPieces rep, pTop, pBot, nPiece
-        firstPage = RowOf(rep.Range("W45").Value)
+        firstPage = RowOf(McAnchor(rep, "M_ILK_SAYFA", "W45", True).Value)   ' name of the sheet (W45 of the original layout)
 
         For r = 1 To lastRow
             If IsError(vAD(r, 1)) Then nErr = nErr + 1

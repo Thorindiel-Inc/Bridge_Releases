@@ -26,8 +26,11 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "chapter-manager"
-Private Const SCRIPT_VERSION As String = "2026-11-09a"
-Private Const SCRIPT_CHANGELOG As String = "RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
+Private Const SCRIPT_VERSION As String = "2026-11-12b"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 40|Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|
 
 Private Const MSG_TITLE As String = "BOLUM_YONETICI"
 ' chapter types: code | suffixes (main first, ';') | heading code cells ('cell' or 'cell>code', ';') | export: cell>INPUT row (column B = span 1)
@@ -191,7 +194,7 @@ Private Sub CopySet(wb As Workbook, ByVal code As String, sfx() As String, ByVal
         If j > n - 1 Then Err.Raise vbObjectError + 5, , "Copy of '" & ws.Name & "' does not match a template sheet."
         ws.Name = Replace(CStr(names(j)), Tag(code, tmpl) & "_", Tag(code, idx) & "_", 1, 1)
         If j = 0 Then
-            ws.Range(H_IDX).Value = idx
+            Chain(ws).Cells(2, 1).Value = idx
             For Each part In Split(codeCell, ";")
                 If part <> "" Then
                     q = Split(part, ">")
@@ -292,11 +295,11 @@ Private Sub WriteChains(wb As Workbook)
     For Each ws In wb.Worksheets
         If IsReportName(ws.Name) Then
             If ManagedCode(ws.Name) <> "" And Not last Is Nothing Then
-                ws.Range("CF1:CI1").Value = Array("Span", "Prev. last table", "Prev. last figure", "Prev. last page")
-                ws.Range(H_TAB).Formula = MaxNum(prev, "T")
-                ws.Range(H_FIG).Formula = MaxNum(prev, ChrW(350))
+                Chain(ws).Rows(1).Value = Array("Span", "Prev. last table", "Prev. last figure", "Prev. last page")
+                Chain(ws).Cells(2, 2).Formula = MaxNum(prev, "T")
+                Chain(ws).Cells(2, 3).Formula = MaxNum(prev, ChrW(350))
                 ft = LastFooter(last)
-                ws.Range(H_PAGE).Formula = "=" & ft
+                Chain(ws).Cells(2, 4).Formula = "=" & ft
             End If
             prev.Add ws
             Set last = ws
@@ -304,10 +307,19 @@ Private Sub WriteChains(wb As Workbook)
     Next ws
     If last Is Nothing Then Exit Sub
     Set inp = wb.Worksheets("INPUT")
-    inp.Range("M2").Formula = MaxNum(prev, "T")
-    inp.Range("N2").Formula = MaxNum(prev, ChrW(350))
-    inp.Range("O2").Formula = "=" & LastFooter(last)
+    With McAnchor(inp, "G_SON_NUMARA", "M2:O2")    ' the numbers the next workbook (8_GEN) continues from
+        .Cells(1, 1).Formula = MaxNum(prev, "T")
+        .Cells(1, 2).Formula = MaxNum(prev, ChrW(350))
+        .Cells(1, 3).Formula = "=" & LastFooter(last)
+    End With
 End Sub
+
+' the chain cells of a chapter sheet: name M_ZINCIR of that sheet on the value row (CF2:CI2 of the
+' original layout); returned with the label row above it: row 1 labels, row 2 span index /
+' last table / last figure / last page of the chapters before
+Private Function Chain(ws As Worksheet) As Range
+    Set Chain = McAnchor(ws, "M_ZINCIR", H_IDX & ":" & H_PAGE, True).Offset(-1, 0).Resize(2, 4)
+End Function
 
 ' =MAX(IFERROR(AGGREGATE(14,6,'s'!$AF$1:$AF$5000/('s'!$AE$1:$AE$5000="T"),1),0), ...)
 Private Function MaxNum(sheets As Collection, ByVal kind As String) As String
@@ -324,8 +336,9 @@ Private Function LastFooter(ws As Worksheet) As String
     Dim pa As String, p As Variant, v As Long, bot As Long, e() As String, c() As String
     e = Split(WHOLE_END, ">")
     If ws.Name = e(0) Then
+        ' the whole-bridge chapter ends on its landscape sheet: name M_RTI_SON_SAYFA (AI95 of the original layout)
         c = Split(e(1), "!")
-        LastFooter = "'" & c(0) & "'!" & c(1)
+        LastFooter = "'" & c(0) & "'!" & McAnchor(ws.Parent.Worksheets(c(0)), "M_RTI_SON_SAYFA", c(1)).Address
         Exit Function
     End If
     pa = Replace(ws.PageSetup.PrintArea, ";", ",")

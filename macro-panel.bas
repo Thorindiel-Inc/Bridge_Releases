@@ -22,8 +22,10 @@ Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVa
 ' ============================================================================
 '  PANEL - the macro window of the workbook. The button MAKROLAR on INPUT opens it (PANEL_AC).
 '  Left: every tool, by group. Right: what it does, its input fields, Run, progress, results log.
-'  Add a tool = add one line to Tools():
-'     Group|Title|Macro|Sheet|Description|key~label~type~default;key~label~type~default[|Module2,Module3]
+'  Add a tool = add one '@TOOL line to the module that holds the macro (owner 2026-11-12), in its
+'  declaration lines; Tools() reads them. BuiltInTools() is the fallback for older modules.
+'     '@TOOL Order|Group|Title|Macro|Sheet|Description|key~label~type~default;key~label~type~default[|Module2,Module3]
+'     Order: sorts the list (10 DXF ... 140 updater; the group headings follow the order)
 '     Sheet: empty, or the sheet the macro runs on; ? = span letter (4?_KILIF)
 '     type: n number, c list (default = a/b/c, first entry is the default), s filled spans
 '     Module2..: more modules the macro runs; their versions are shown next to its own
@@ -39,8 +41,8 @@ Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVa
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-10c"
-Private Const SCRIPT_CHANGELOG As String = "New tool Kenar ayak modeli (MIDAS_KENARAYAK); New tool Temel tipine gore sayfalar (abutment workbooks, module KENAR_AYAK); Tools also start in workbooks whose file name has an apostrophe (8'6_...); Modal analiz sonuclari: one module (MIDAS_SEKIL merged into MIDAS_MOD); Versions: the picked tool shows its macro module and version (as installed in this workbook) beside its name, and the start line of a run in the log names them; Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed); Durdur: the Run button stops the running macro at its next step"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; New tool Kenar ayak modeli (MIDAS_KENARAYAK); New tool Temel tipine gore sayfalar (abutment workbooks, module KENAR_AYAK); Tools also start in workbooks whose file name has an apostrophe (8'6_...); Modal analiz sonuclari: one module (MIDAS_SEKIL merged into MIDAS_MOD); Versions: the picked tool shows its macro module and version (as installed in this workbook) beside its name, and the start line of a run in the log names them; Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed)"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -92,22 +94,77 @@ Private pHwnd As LongPtr   ' window handle of the macro window (FitWindow)
 Private logBounce As Boolean   ' a question box was shown: the log needs its focus again
 Private reActs As Long   ' times the macro window took the activation back (for the tests)
 
+' every tool row (owner 2026-11-12): the '@TOOL lines of the modules in this workbook, each module
+' brings its own row; the built-in rows below only for a macro no module declares (a module older
+' than its '@TOOL line, KILAVUZ, the updater) and for a workbook whose VBA project cannot be read.
+' A row is order|group|title|macro|sheet|text|fields[|modules]; returned sorted by order, without it.
 Private Function Tools() As Variant
-    Tools = Array( _
-        "Girdiler|DXF'ten g\u00FCzergah oku|DXF_OKU_OLUSTUR||Plan DXF dosyas\u0131ndaki eksen ve aks \u00E7izgilerini okur, aks koordinatlar\u0131n\u0131 ve a\u00E7\u0131kl\u0131k yar\u0131\u00E7aplar\u0131n\u0131 INPUT sayfas\u0131na yazar.|", _
-        "Girdiler|De\u011Ferleri \u00E7a\u011F\u0131r|DEGER_CAGIRMA.DEGER_CAGIRMA||Ana \u00E7al\u0131\u015Fma kitab\u0131ndan G_ adl\u0131 girdileri (MAPI anahtar\u0131 dahil) ve \u00F6nceki b\u00F6l\u00FCm\u00FCn son tablo, \u015Fekil ve sayfa numaralar\u0131n\u0131 bu dosyaya \u00E7eker.|", _
-        "Girdiler|Temel tipine g\u00F6re sayfalar|KENAR_AYAK.TEMEL_SAYFALARI||Kenar aya\u011F\u0131n temel tipine (KAZIKLI / Y\u00DCZEYSEL) g\u00F6re kaz\u0131kl\u0131 veya y\u00FCzeysel temel sayfalar\u0131n\u0131 g\u00F6sterir, di\u011Ferini gizler (silmez); i\u00E7indekiler ve \u015Fekil / tablo listelerini yeniler.|", _
-        "Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|", _
-        "MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet", _
-        "MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan", _
-        "MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|", _
-        "MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131mlar\u0131n\u0131 MOD'a okur; en b\u00FCy\u00FCk X ve Y modlar\u0131n\u0131n \u015Fekillerini Z_YATAY'a resimler. Modele bir \u015Fey yazmaz.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
-        "MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri 3B_RTI_Y'ye yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
-        "Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|", _
-        "Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
-        "Rapor|\u015Eekil ve tablo listeleri|FIG_TAB_AYARLA||\u015Eekil ve tablo listelerini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
-        "Yard\u0131m|K\u0131lavuzlar|KILAVUZ_AC||Makro k\u0131lavuzlar\u0131n\u0131 taray\u0131c\u0131da a\u00E7ar.|", _
-        "Yard\u0131m|Makro g\u00FCncellemesi|CheckBridgeMacroUpdates||Makrolar\u0131 yay\u0131nla kar\u015F\u0131la\u015Ft\u0131r\u0131r, yeni s\u00FCr\u00FCmleri kurar.|")
+    Dim own As Collection, all As Collection, seen As Object, r As Variant, b As Variant, i As Long, j As Long
+    Dim out() As String, key() As Double, t As String, tk As Double, n As Long
+    Set own = ModuleTools()
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    Set all = New Collection
+    For Each r In own
+        all.Add r
+        seen(CStr(Split(r, "|")(3))) = True
+    Next r
+    b = BuiltInTools()
+    For i = LBound(b) To UBound(b)
+        If Not seen.Exists(CStr(Split(b(i), "|")(3))) Then all.Add b(i)
+    Next i
+    n = all.Count
+    ReDim out(0 To n - 1): ReDim key(0 To n - 1)
+    For i = 1 To n
+        t = all(i)
+        key(i - 1) = Val(Left$(t, InStr(t, "|") - 1))
+        out(i - 1) = mid$(t, InStr(t, "|") + 1)
+    Next i
+    For i = 1 To n - 1                      ' insertion sort by order, stable
+        t = out(i): tk = key(i): j = i - 1
+        Do While j >= 0
+            If key(j) <= tk Then Exit Do
+            out(j + 1) = out(j): key(j + 1) = key(j): j = j - 1
+        Loop
+        out(j + 1) = t: key(j + 1) = tk
+    Next i
+    Tools = out
+End Function
+
+' the '@TOOL rows (order|group|...) in the declaration lines of the standard modules;
+' empty without access to the VBA project
+Private Function ModuleTools() As Collection
+    Dim c As Object, cm As Object, i As Long, t As String
+    Set ModuleTools = New Collection
+    On Error Resume Next
+    For Each c In ThisWorkbook.VBProject.VBComponents
+        If c.Type = 1 Then
+            Set cm = c.CodeModule
+            For i = 1 To cm.CountOfDeclarationLines
+                t = cm.lines(i, 1)
+                If Left$(t, 7) = "'@TOOL " Then ModuleTools.Add mid$(t, 8)
+            Next i
+        End If
+    Next c
+    Err.Clear
+End Function
+
+Private Function BuiltInTools() As Variant
+    BuiltInTools = Array( _
+        "10|Girdiler|DXF'ten g\u00FCzergah oku|DXF_OKU_OLUSTUR||Plan DXF dosyas\u0131ndaki eksen ve aks \u00E7izgilerini okur, aks koordinatlar\u0131n\u0131 ve a\u00E7\u0131kl\u0131k yar\u0131\u00E7aplar\u0131n\u0131 INPUT sayfas\u0131na yazar.|", _
+        "20|Girdiler|De\u011Ferleri \u00E7a\u011F\u0131r|DEGER_CAGIRMA.DEGER_CAGIRMA||Ana \u00E7al\u0131\u015Fma kitab\u0131ndan G_ adl\u0131 girdileri (MAPI anahtar\u0131 dahil) ve \u00F6nceki b\u00F6l\u00FCm\u00FCn son tablo, \u015Fekil ve sayfa numaralar\u0131n\u0131 bu dosyaya \u00E7eker.|", _
+        "30|Girdiler|Temel tipine g\u00F6re sayfalar|KENAR_AYAK.TEMEL_SAYFALARI||Kenar aya\u011F\u0131n temel tipine (KAZIKLI / Y\u00DCZEYSEL) g\u00F6re kaz\u0131kl\u0131 veya y\u00FCzeysel temel sayfalar\u0131n\u0131 g\u00F6sterir, di\u011Ferini gizler (silmez); i\u00E7indekiler ve \u015Fekil / tablo listelerini yeniler.|", _
+        "40|Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|", _
+        "50|MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet", _
+        "60|MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan", _
+        "70|MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|", _
+        "80|MIDAS sonu\u00E7lar\u0131|Modal analiz sonu\u00E7lar\u0131|MIDAS_MOD_OKU||Sismik modelden periyot, frekans ve k\u00FCtle kat\u0131l\u0131mlar\u0131n\u0131 MOD'a okur; en b\u00FCy\u00FCk X ve Y modlar\u0131n\u0131n \u015Fekillerini Z_YATAY'a resimler. Modele bir \u015Fey yazmaz.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
+        "90|MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri 3B_RTI_Y'ye yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu", _
+        "100|Kiri\u015F tasar\u0131m\u0131|MIDAS'tan hareketli y\u00FCk|MAK_LL.MAK_LL|4?_KILIF|Civil NX'te a\u00E7\u0131k a\u015Famal\u0131 modelden hareketli y\u00FCk kuvvetlerini okur, a\u00E7\u0131kl\u0131\u011F\u0131n LL tablosuna yazar (Tablo 27).|", _
+        "110|Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
+        "120|Rapor|\u015Eekil ve tablo listeleri|FIG_TAB_AYARLA||\u015Eekil ve tablo listelerini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|", _
+        "130|Yard\u0131m|K\u0131lavuzlar|KILAVUZ_AC||Makro k\u0131lavuzlar\u0131n\u0131 taray\u0131c\u0131da a\u00E7ar.|", _
+        "140|Yard\u0131m|Makro g\u00FCncellemesi|CheckBridgeMacroUpdates||Makrolar\u0131 yay\u0131nla kar\u015F\u0131la\u015Ft\u0131r\u0131r, yeni s\u00FCr\u00FCmleri kurar.|")
 End Function
 
 ' tools whose macro is in this workbook; without access to the VBA project every tool is kept
@@ -339,6 +396,14 @@ Public Function PANEL_PROBE(ByVal row As Long, ByVal run As Boolean) As String
         s = s & " LOG[" & pForm.Controls("txtLog").Text & "] STEP[" & pForm.Controls("lblStep").Caption & "]"
     End If
     PANEL_PROBE = s
+End Function
+
+' test: every tool row this workbook shows, decoded, one per line (A/B check of the '@TOOL rows)
+Public Function PANEL_TOOLROWS() As String
+    Dim v As Variant, i As Long, s As String
+    v = Present(Tools())
+    For i = LBound(v) To UBound(v): s = s & U(CStr(v(i))) & vbLf: Next i
+    PANEL_TOOLROWS = s
 End Function
 
 ' test: titles of the tools this workbook shows

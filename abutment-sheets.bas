@@ -11,8 +11,10 @@ Option Explicit
 ' TEMEL_SAYFALARI_SESSIZ: the same without a message box; returns the log (scripted tests).
 
 Private Const SCRIPT_ID As String = "abutment-sheets"
-Private Const SCRIPT_VERSION As String = "2026-11-10a"
-Private Const SCRIPT_CHANGELOG As String = "New: shows the sheet set of the abutment's foundation type (KAZIKLI / YUZEYSEL), hides the other set, rebuilds the lists"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; New: shows the sheet set of the abutment's foundation type (KAZIKLI / YUZEYSEL), hides the other set, rebuilds the lists"
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 30|Girdiler|Temel tipine g\u00F6re sayfalar|KENAR_AYAK.TEMEL_SAYFALARI||Kenar aya\u011F\u0131n temel tipine (KAZIKLI / Y\u00DCZEYSEL) g\u00F6re kaz\u0131kl\u0131 veya y\u00FCzeysel temel sayfalar\u0131n\u0131 g\u00F6sterir, di\u011Ferini gizler (silmez); i\u00E7indekiler ve \u015Fekil / tablo listelerini yeniler.|
 
 Private Const SET_KAZIKLI As String = "2A_KAZIK|GEO_KAZIK|KAZIK_UC|KAZIK_UC_EYL|MIDAS_CIKTISI_KAZIK"
 Private Const SET_YUZEYSEL As String = "2A_STABILITE|GEO_YUZEYSEL"

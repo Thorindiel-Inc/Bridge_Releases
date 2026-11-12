@@ -7,8 +7,9 @@ Attribute VB_Name = "KAYIP"
 Option Explicit
 
 Private Const SCRIPT_ID As String = "kayip"
-Private Const SCRIPT_VERSION As String = "2026-11-07a"
-Private Const SCRIPT_CHANGELOG As String = "Guard: _KDME sheets only, refuses an error in Z341 or a formula in N341, puts N341 back when the goal seek does not reach 0"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Guard: _KDME sheets only, refuses an error in Z341 or a formula in N341, puts N341 back when the goal seek does not reach 0"
+Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 
 Private Const TARGET_CELL As String = "Z341"    ' computed - assumed loss (MPa)
 Private Const CHANGING_CELL As String = "N341"  ' assumed loss DfpES (MPa), typed
@@ -24,7 +25,7 @@ End Sub
 ' Scripted entry (tests): sheetName "" = active sheet. Returns "" when solved, else the reason;
 ' N341 is then as it was before.
 Public Function KAYIP_RUN(Optional ByVal sheetName As String = "") As String
-    Dim ws As Object, tgt As Range, chg As Range, oldVal As Variant, solved As Boolean, calcWas As Long
+    Dim ws As Object, tgt As Range, chg As Range, oldVal As Variant, solved As Boolean, calcWas As Long, wsh As Worksheet
 
     If sheetName = "" Then
         Set ws = ActiveSheet
@@ -40,22 +41,24 @@ Public Function KAYIP_RUN(Optional ByVal sheetName As String = "") As String
         Exit Function
     End If
 
-    Set tgt = ws.Range(TARGET_CELL)
-    Set chg = ws.Range(CHANGING_CELL)
+    ' by the names of this sheet (owner 2026-11-12), created at Z341 / N341 when missing
+    Set wsh = ws
+    Set tgt = McAnchor(wsh, "M_KAYIP_HEDEF", TARGET_CELL, True)
+    Set chg = McAnchor(wsh, "M_KAYIP_DEGISEN", CHANGING_CELL, True)
     If Not tgt.HasFormula Then
-        KAYIP_RUN = ws.Name & "!" & TARGET_CELL & " holds no formula, so there is nothing to solve. Nothing was changed."
+        KAYIP_RUN = ws.Name & "!" & tgt.Address(False, False) & " holds no formula, so there is nothing to solve. Nothing was changed."
         Exit Function
     End If
     If chg.HasFormula Then
-        KAYIP_RUN = ws.Name & "!" & CHANGING_CELL & " holds a formula; the goal seek needs a typed value there. Nothing was changed."
+        KAYIP_RUN = ws.Name & "!" & chg.Address(False, False) & " holds a formula; the goal seek needs a typed value there. Nothing was changed."
         Exit Function
     End If
     If IsError(tgt.Value) Then
-        KAYIP_RUN = ws.Name & "!" & TARGET_CELL & " shows " & tgt.Text & ", so the loss cannot be solved. Fill the inputs of this span first. " & CHANGING_CELL & " was not changed."
+        KAYIP_RUN = ws.Name & "!" & tgt.Address(False, False) & " shows " & tgt.Text & ", so the loss cannot be solved. Fill the inputs of this span first. " & chg.Address(False, False) & " was not changed."
         Exit Function
     End If
     If Not IsNumeric(tgt.Value) Or IsEmpty(tgt.Value) Then
-        KAYIP_RUN = ws.Name & "!" & TARGET_CELL & " is not a number ('" & tgt.Text & "'). Nothing was changed."
+        KAYIP_RUN = ws.Name & "!" & tgt.Address(False, False) & " is not a number ('" & tgt.Text & "'). Nothing was changed."
         Exit Function
     End If
 
@@ -82,8 +85,8 @@ Public Function KAYIP_RUN(Optional ByVal sheetName As String = "") As String
     If Not solved Then
         chg.Value = oldVal
         ws.Calculate
-        KAYIP_RUN = "The goal seek did not bring " & ws.Name & "!" & TARGET_CELL & " to 0 (within " & TOL_MPA & " MPa). " & _
-            CHANGING_CELL & " was put back to " & CStr(oldVal) & ". Check the inputs of the loss block."
+        KAYIP_RUN = "The goal seek did not bring " & ws.Name & "!" & tgt.Address(False, False) & " to 0 (within " & TOL_MPA & " MPa). " & _
+            chg.Address(False, False) & " was put back to " & CStr(oldVal) & ". Check the inputs of the loss block."
     End If
     If calcWas <> xlCalculationAutomatic Then Application.Calculation = calcWas
 End Function

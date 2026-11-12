@@ -19,8 +19,10 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "dxf-alignment"
-Private Const SCRIPT_VERSION As String = "2026-11-06d"
-Private Const SCRIPT_CHANGELOG As String = "Inputs and messages through the macro window; Span radius in the column next to G_AKS_XY (centrifugal load of MIDAS_KOPRU); G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked"
+Private Const SCRIPT_VERSION As String = "2026-11-12a"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Inputs and messages through the macro window; Span radius in the column next to G_AKS_XY (centrifugal load of MIDAS_KOPRU); G_AKS_XY default position A224:B264; axes at the drawn crossing points instead of the span list, axis names A1 / A2 / P1.. checked"
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 10|Girdiler|DXF'ten g\u00FCzergah oku|DXF_OKU_OLUSTUR||Plan DXF dosyas\u0131ndaki eksen ve aks \u00E7izgilerini okur, aks koordinatlar\u0131n\u0131 ve a\u00E7\u0131kl\u0131k yar\u0131\u00E7aplar\u0131n\u0131 INPUT sayfas\u0131na yazar.|
 Private Const R_STRAIGHT As Double = 50000#     ' a span flatter than this counts as straight (m)
 
 Private Const MSG_TITLE As String = "DXF_OKU"

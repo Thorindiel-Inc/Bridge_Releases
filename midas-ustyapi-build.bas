@@ -41,9 +41,11 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
-Private Const SCRIPT_CHANGELOG As String = "Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ...; Reads the span sheets 4<letter>_KDME and 4<letter>_KILIF in this workbook, no 4-7 file dialog; Mass at the centroid of section (STYP bMASSOFFSET false); self-weight mass in X, Y and Z (was Z only)"
+Private Const SCRIPT_VERSION As String = "2026-11-12c"
+Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ..."
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
+' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
+'@TOOL 50|MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet
 
 Private Const MSG_TITLE As String = "MIDAS_USTYAPI"
 
@@ -415,33 +417,37 @@ End Sub
 ' O5:O14 strands per row, D4:N4 stations in m from the bearing, D5:N14 debonded strands per row
 ' at each station), fpi / strand area / humidity from 1_RAPOR, fpu / Ep / diameter from INPUT
 Private Sub ReadStrands(wb As Workbook)
-    Dim ws As Worksheet, r As Long, j As Long, n As Long, d As Double
+    Dim ws As Worksheet, r As Long, j As Long, n As Long, d As Double, blk As Range, r0 As Long
     Set ws = ChapterSheet(wb, "KILIF")
-    If UCase$(Trim$(CStr(ws.Range("B3").Value))) <> "SIRA" Or LCase$(Trim$(CStr(ws.Range("O3").Value))) <> "halatlar" Then _
-        Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: layout changed (B3 'SIRA' / O3 'Halatlar' expected)."
+    ' strand table by its name M_KILIF_HALAT (B3:O14 of the original layout, a name of this sheet);
+    ' below, row r and column j keep the original numbering (blk.Cells(r - 2, j - 1) = original cell)
+    Set blk = McAnchor(ws, "M_KILIF_HALAT", "B3:O14", True)
+    r0 = blk.Row - 3
+    If UCase$(Trim$(CStr(blk.Cells(1, 1).Value))) <> "SIRA" Or LCase$(Trim$(CStr(blk.Cells(1, 14).Value))) <> "halatlar" Then _
+        Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: layout changed (" & blk.Cells(1, 1).Address(False, False) & " 'SIRA' / " & blk.Cells(1, 14).Address(False, False) & " 'Halatlar' expected)."
     nDb = 0
     For j = 4 To 14
-        If IsNumeric(ws.Cells(4, j).Value) And Not IsEmpty(ws.Cells(4, j).Value) Then nDb = j - 3 Else Exit For
+        If IsNumeric(blk.Cells(2, j - 1).Value) And Not IsEmpty(blk.Cells(2, j - 1).Value) Then nDb = j - 3 Else Exit For
     Next j
     If nDb < 1 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: no stations in D4:N4."
     ReadLLStations wb
     ReDim dbX(1 To nDb): ReDim rowZ(1 To 10): ReDim rowN(1 To 10): ReDim dbN(1 To 10, 1 To nDb)
-    For j = 1 To nDb: dbX(j) = sark + CDbl(ws.Cells(4, j + 3).Value): Next j
+    For j = 1 To nDb: dbX(j) = sark + CDbl(blk.Cells(2, j + 2).Value): Next j
     nRow = 0
     For r = 5 To 14
-        n = CLng(NumOr0(ws.Cells(r, 15).Value))
+        n = CLng(NumOr0(blk.Cells(r - 2, 14).Value))
         If n > 0 Then
             nRow = nRow + 1
-            rowZ(nRow) = Num(ws.Cells(r, 3).Value, "KILIFLAMA C" & r & " (strand row height)") / 100#
+            rowZ(nRow) = Num(blk.Cells(r - 2, 2).Value, "KILIFLAMA " & blk.Cells(r - 2, 2).Address(False, False) & " (strand row height)") / 100#
             rowN(nRow) = n
             For j = 1 To nDb
-                dbN(nRow, j) = CLng(NumOr0(ws.Cells(r, j + 3).Value))
-                If dbN(nRow, j) > n Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA row " & r & ": more debonded than strands."
+                dbN(nRow, j) = CLng(NumOr0(blk.Cells(r - 2, j + 2).Value))
+                If dbN(nRow, j) > n Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA row " & (r0 + r) & ": more debonded than strands."
                 If j > 1 Then
-                    If dbN(nRow, j) > dbN(nRow, j - 1) Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA row " & r & ": debonded count grows along the girder."
+                    If dbN(nRow, j) > dbN(nRow, j - 1) Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA row " & (r0 + r) & ": debonded count grows along the girder."
                 End If
             Next j
-            If dbN(nRow, nDb) <> 0 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA row " & r & ": strands still debonded at the last station."
+            If dbN(nRow, nDb) <> 0 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA row " & (r0 + r) & ": strands still debonded at the last station."
         End If
     Next r
     If nRow = 0 Then Err.Raise vbObjectError + 15, , "4-7 KILIFLAMA: no strands in O5:O14."
