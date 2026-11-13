@@ -7,6 +7,7 @@ Option Explicit
 ' Report sheets = every sheet whose name starts with a number and "_" (1_GIRIS, 2_YUKLER,
 ' 1_RAPOR, ...), in tab order. On a report sheet:
 '   heading  : code in AD (3A, 3A1, 3A11 ...), text in AE
+'              a code written with dots (8.7.10, 8.7.10.1) is the number itself: use it where a level can pass 9
 '   caption  : code in Z ("T-12" table / "S-12" figure, S = S-cedilla), text in AG
 '   page     : print page of the row (one print-area piece = one page) + W45 - 1
 ' A caption on a one-row print-area piece is a placeholder (the figure itself is on another
@@ -19,8 +20,8 @@ Option Explicit
 ' of pages changes. Do not put anything else below page 1 in columns A:X of the list sheets.
 
 Private Const SCRIPT_ID As String = "report-lists"
-Private Const SCRIPT_VERSION As String = "2026-11-12b"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Hidden sheets are skipped (report sheets and landscape link targets), so a hidden sheet set (e.g. the unused foundation type of an abutment) is neither listed nor linked"
+Private Const SCRIPT_VERSION As String = "2026-11-13a"
+Private Const SCRIPT_CHANGELOG As String = "A heading code written with dots (8.7.10.1) is listed as it is, so a heading number can have two digits; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Hidden sheets are skipped (report sheets and landscape link targets), so a hidden sheet set (e.g. the unused foundation type of an abutment) is neither listed nor linked"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 110|Rapor|\u0130\u00E7indekiler|ICINDEKILER_AYARLA||\u0130\u00E7indekiler listesini sayfa numaralar\u0131 ve ba\u011Flant\u0131lar\u0131yla yeniden olu\u015Fturur.|
@@ -506,6 +507,11 @@ End Function
 ' 3A11 -> 3.A.1.1. (first four characters, as the old sheet formula); 4A111 -> 4.A.1.1.1. (span number in the code)
 Private Function Numbering(code As String) As String
     Dim i As Long, lim As Long
+    If InStr(code, ".") > 0 Then            ' dotted code = the number itself, levels may have two digits
+        Numbering = code
+        If Right$(code, 1) <> "." Then Numbering = code & "."
+        Exit Function
+    End If
     lim = IIf(UCase$(Mid$(code, 2, 1)) Like "[A-Z]", 5, 4)
     For i = 1 To Len(code)
         If i > lim Then Exit For
