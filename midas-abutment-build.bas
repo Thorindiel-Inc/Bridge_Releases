@@ -9,8 +9,9 @@ Option Explicit
 '  Inputs only by workbook names:
 '    KA_*  local abutment block of INPUT (geometry, piles, soil, mesh, stiffness factors) and the
 '          KA_ names on the 1_RAPOR load cells (seat loads KA_Y_*, pressures KA_P_*, kh KA_KH)
-'    KA_KOMBINASYON = LC!A1:AN27, read by column position (D..Q = the 14 load cases in a fixed
-'          order; its O1 header says PEQ-X but the column is PEQ-Y), R..AN = combinations
+'    KA_KOMBINASYON = sheet LC, read by column position (D..R = the 15 load cases in a fixed
+'          order, WL after WS since 2026-11-13; its P header says PEQ-X but the column is PEQ-Y),
+'          S.. = combinations
 '    G_KIRIS_SAYISI / G_KIRIS_GABARI / G_HESAP_ACIKLIK (A1 = span type 1, A2 = last filled),
 '    G_YATAY_GABARI (out-to-out width of the wing walls), G_DIGER_BETONLAR, G_BIRIM_AGIRLIK_BETONARME
 '    KA_VEREVLIK (skew, degrees, + = support line counter-clockwise in plan); missing = square
@@ -38,7 +39,7 @@ Option Explicit
 '  ACTL-M1 NUMINC 5 (compression-only springs).
 '  Load cases (owner 2026-11-10, both foundation types): every 'Add' row of KA_KOMBINASYON is one
 '  factored USER load case with the LC name (Servis-1 ... TKDY-Y, DEAD); inside it every component
-'  load carries the load group of its component (DC, EV, EH0, EHA, LL, LS, EQ-X, EQ-Y, TU, WS, PEQ-X,
+'  load carries the load group of its component (DC, EV, EH0, EHA, LL, LS, EQ-X, EQ-Y, TU, WS, WL, PEQ-X,
 '  PEQ-Y, BR/ACC, CF on the seat loads and pressures; SPLIT_GROUPS = False merges them into one item
 '  per node / plate). Self weight and its kh inertia: one body-force record per case in group DC
 '  (FV [kh fPEQ-Y, kh fPEQ-X, -fDC]; a second record in one case makes the analysis fail, T6). Combinations (owner M22): only the 'Envelope' rows
@@ -56,8 +57,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-abutment-build"
-Private Const SCRIPT_VERSION As String = "2026-11-12b"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
+Private Const SCRIPT_VERSION As String = "2026-11-13a"
+Private Const SCRIPT_CHANGELOG As String = "Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 70|MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|
@@ -76,7 +77,7 @@ Private Const M_WINGL As Long = 4
 Private Const M_WINGR As Long = 5
 Private Const M_EARL As Long = 6
 Private Const M_EARR As Long = 7
-Private Const N_CASE As Long = 14
+Private Const N_CASE As Long = 15
 Private Const SPLIT_GROUPS As Boolean = True    ' one load group per component inside each factored case
 Private Const GRP_BR As String = "BR/ACC"         ' load group of the braking component ("BR-ACC" if Civil NX refuses "/")
 
@@ -90,7 +91,7 @@ Private nLay As Long, layD() As Double, layK() As Double, kvTip As Double, kvFoo
 Private meshM As Double, fPlate As Double, fPile As Double
 Private eConc As Double, denConc As Double, clsConc As String
 Private nGird As Long, spanCol As Long, nSeatWant As Long
-Private qDC As Double, qLL As Double, qTUX As Double, qTUY As Double, qWSX As Double, qWSY As Double, qCF As Double, qBR As Double, qPX As Double, qPY As Double
+Private qDC As Double, qLL As Double, qTUX As Double, qTUY As Double, qWSX As Double, qWSY As Double, qWL As Double, qCF As Double, qBR As Double, qPX As Double, qPY As Double
 Private pEH0 As Double, pEHA As Double, pEV As Double, pLS As Double, pEQX As Double, pEQY As Double, pEQs As Double, pPEQX As Double, pPEQY As Double, khSeis As Double
 Private projName As String, clientName As String, bridgeName As String
 Private warnText As String, askUser As Boolean, trSign As Long   ' trSign: +1 transverse loads toward +x, -1 toward -x
@@ -296,11 +297,10 @@ Private Sub ReadInputs()
         If kvFoot <= 0 Then Err.Raise vbObjectError + 39, , "KA_TEMEL_KV must be > 0."
     End If
     qDC = NV("KA_Y_DC"): qLL = NV("KA_Y_LL"): qTUX = NV("KA_Y_TUX"): qTUY = NV("KA_Y_TUY")
-    qWSX = NV("KA_Y_WSX"): qWSY = NV("KA_Y_WSY"): qCF = NV("KA_Y_CF"): qBR = NV("KA_Y_BR"): qPX = NV("KA_Y_PEQX"): qPY = NV("KA_Y_PEQY")
+    qWSX = NV("KA_Y_WSX"): qWSY = NV("KA_Y_WSY"): qWL = NV("KA_Y_WL"): qCF = NV("KA_Y_CF"): qBR = NV("KA_Y_BR"): qPX = NV("KA_Y_PEQX"): qPY = NV("KA_Y_PEQY")
     pEH0 = NV("KA_P_EH0"): pEHA = NV("KA_P_EHA"): pEV = NV("KA_P_EV"): pLS = NV("KA_P_LS")
     pEQX = NV("KA_P_EQX"): pEQY = NV("KA_P_EQY"): pEQs = NV("KA_P_EQ_EGIM"): pPEQX = NV("KA_P_PEQX"): pPEQY = NV("KA_P_PEQY"): khSeis = NV("KA_KH")
     nSeatWant = CLng(NumOr0(NmRange(ThisWorkbook, "KA_MESNET_NOKTA").Cells(1, 1).Value))
-    If Abs(qCF) > EPS Then Warn "KA_Y_CF = " & JN(qCF) & " is not applied: case CF stays empty as in the template (OPEN for the owner)."
     projName = NSOr("G_PROJE_ADI"): clientName = NSOr("G_IDARE_ADI"): bridgeName = NSOr("G_KOPRU_ADI")
     SetCases
     ReadCombos
@@ -308,23 +308,25 @@ End Sub
 
 Private Sub SetCases()
     Dim a As Variant, i As Long, p As Variant
-    a = Array("DC|D", "EV|EV", "EH0|EH", "EHA|EH", "LL|L", "LS|LS", "EQ-X|E", "EQ-Y|E", "TU|T", "WS|W", "PEQ-X|E", "PEQ-Y|E", "BR/ACC|BRK", "CF|CF")
+    a = Array("DC|D", "EV|EV", "EH0|EH", "EHA|EH", "LL|L", "LS|LS", "EQ-X|E", "EQ-Y|E", "TU|T", "WS|W", "WL|WL", "PEQ-X|E", "PEQ-Y|E", "BR/ACC|BRK", "CF|CF")
     For i = 1 To N_CASE
         p = Split(a(i - 1), "|")
         caseNm(i) = p(0): caseTy(i) = p(1)
     Next i
 End Sub
 
-' KA_KOMBINASYON (LC!A1:AN27): row 1 headers, then one combination per row:
-' A name, C Add / Envelope, D..Q factors of the 14 cases (fixed order), R.. factors of combinations
+' KA_KOMBINASYON (sheet LC): row 1 headers, then one combination per row:
+' A name, C Add / Envelope, D.. factors of the N_CASE cases (fixed order), then factors of combinations
 Private Sub ReadCombos()
     Dim r As Range, i As Long, c As Long, nm As String, kind As String, it As String, v As Variant, hdr As String, k As Long, j As Long, chg As Boolean, refs As Object, p As Variant, q As Variant
     Dim st As String, act As Boolean, tier As Long, maxT As Long
     Set r = NmRange(ThisWorkbook, "KA_KOMBINASYON")
-    If r.Columns.Count < 17 Then Err.Raise vbObjectError + 40, , "KA_KOMBINASYON must reach column Q (14 load cases)."
-    For c = 4 To 17
+    If r.Columns.Count < 3 + N_CASE Then Err.Raise vbObjectError + 40, , "KA_KOMBINASYON must hold the " & N_CASE & " load-case columns after the name, state and type columns."
+    If StrComp(Trim$(CStr(r.Cells(1, 3 + CaseIndex("WL")).Value)), "WL", vbTextCompare) <> 0 Then Err.Raise vbObjectError + 61, , _
+        "KA_KOMBINASYON has no WL column after WS (header '" & Trim$(CStr(r.Cells(1, 3 + CaseIndex("WL")).Value)) & "' there). Insert the train-wind column WL after WS, as in the KA1 workbook of 2026-11-13."
+    For c = 4 To 3 + N_CASE
         hdr = Trim$(CStr(r.Cells(1, c).Value))
-        If StrComp(hdr, caseNm(c - 3), vbTextCompare) <> 0 And Not (c = 15 And hdr = "PEQ-X") Then
+        If StrComp(hdr, caseNm(c - 3), vbTextCompare) <> 0 And Not (caseNm(c - 3) = "PEQ-Y" And hdr = "PEQ-X") Then
             Warn "KA_KOMBINASYON header " & ColName(r.Cells(1, c).Column) & "1 = '" & hdr & "', read as " & caseNm(c - 3) & " (column order is fixed)."
         End If
     Next c
@@ -345,7 +347,7 @@ Private Sub ReadCombos()
         If st <> "" And st <> "ACTIVE" And st <> "INACTIVE" Then Warn "KA_KOMBINASYON row " & i & " (" & nm & "): column B = '" & st & "' is read as Active."
         it = ""
         If Left$(kind, 3) = "ENV" Then
-            For c = 18 To r.Columns.Count
+            For c = 4 + N_CASE To r.Columns.Count
                 v = r.Cells(i, c).Value
                 If Not IsError(v) Then
                     If IsNumeric(v) And Not IsEmpty(v) Then
@@ -355,7 +357,7 @@ Private Sub ReadCombos()
             Next c
             nCmb = nCmb + 1: cmbKind(nCmb) = 1
         Else
-            For c = 4 To 17
+            For c = 4 To 3 + N_CASE
                 v = r.Cells(i, c).Value
                 If Not IsError(v) Then
                     If IsNumeric(v) And Not IsEmpty(v) Then
@@ -930,6 +932,8 @@ Private Sub SeatF(ByVal c As String, ByRef fx As Double, ByRef fy As Double, ByR
         Case "LL": fz = -qLL * g
         Case "TU": fy = qTUX * g: fx = trSign * qTUY * g
         Case "WS": fx = trSign * qWSY * g: fy = qWSX * g
+        Case "WL": fx = trSign * qWL * g
+        Case "CF": fx = trSign * qCF * g
         Case "PEQ-X": fy = qPX * g
         Case "PEQ-Y": fx = trSign * qPY * g
         Case "BR/ACC": fy = qBR * g
@@ -1684,7 +1688,7 @@ End Function
 Private Function OpenItems() As String
     OpenItems = "Owner rules (2026-11-10, plan 4.1 M1-M23): earth pressure on the stem and backwall to the footing mid-plane, wing walls from the footing top; dynamic increment as an inverted triangle; EV on the heel only; " & _
         "longitudinal seat loads toward the span; the transverse direction moves the seat WS / TU-Y / PEQ-Y loads, the PEQ-Y inertia and the wing wall with the transverse soil pressure; no vertical seismic; seismic stiffness factors 0.5 on all 8 components of every wall plate, none on the footing, piles Iyy / Izz 0.5 (TKDY 4.3.7.6 / 7.2.4.4); " & _
-        "skewed heel, toe, footing length and pile row spacing normal to the stem; combinations: envelopes only (LCOM-GEN). Still OPEN: case CF stays empty (KA_Y_CF is not applied)." & vbCrLf
+        "skewed heel, toe, footing length and pile row spacing normal to the stem; combinations: envelopes only (LCOM-GEN). Seat loads WL (KA_Y_WL) and CF (KA_Y_CF) act across the bridge in the transverse direction chosen for the build." & vbCrLf
 End Function
 
 Private Sub Warn(ByVal t As String)

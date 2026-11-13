@@ -12,7 +12,9 @@ Option Explicit
 '  SEISMIC = only what the response spectrum needs: DC, DW_1, DW_2, LL_KUTLE (80 kN/m static
 '  train case), loads to masses, Ritz, spectra, EQ cases, TKDY / H-TKDY combinations; stiffness
 '  factors with no boundary group (a group + db/BCCT did not reach the modes), so EVERY case
-'  in that model runs at the reduced stiffness.
+'  in that model runs at the reduced stiffness. P-Delta (owner 2026-11-13): axial force from DC, DW_1,
+'  DW_2 and LL_KUTLE with the TKDY combination factors (Tablo 14), the gravity part of the TKDY
+'  combinations and of the mass; the static model has none (owner: deflections there are small).
 ' ----------------------------------------------------------------------------
 '  Button macro: MIDAS_KOPRU_OLUSTUR
 '    0. asks STATIC, SEISMIC or RTI
@@ -20,7 +22,9 @@ Option Explicit
 '    2. asks element length, bearing link length, fixed horizontal stiffness kh
 '    3. reads 1-3A: span list, G_AYAK_TABLOSU (one row per axis), span table right of
 '       G_SABIT_UC (fixed end SOL / SAG, Yatay Gabari, Kiris, Mesnet: left bearing of each
-'       span, row 'Son' = last right), G_BASLIK_KESIT, G_BASLIK_BOYU, girder data.
+'       span, row 'Son' = last right), G_BASLIK_KESIT, G_BASLIK_BOYU, girder data;
+'       G_AYAK_KOLON (optional; Kolon Sayisi, Kolon Araligi on the rows of the pier table, INPUT L:M): columns
+'       per pier (owner 2026-11-13).
 '       One deck section per Yatay Gabari + Kiris combination. Joint spacing: B25, or the
 '       cell of the same Hesap Acikligi in B25:G25 when filled.
 '    4. summary; Yes = clean pass on the model open in Civil NX, MCT import of the
@@ -30,7 +34,10 @@ Option Explicit
 '  Levels: deck node Z 0 (section offset CT), bearing top -(H + tc), bearing bottom = bearing seat
 '  (cap top for a rectangle or when the bearings sit on the web of the inverted T, flange top when they
 '  sit on its ledges); cap nodes at the cap centroid (offset CC), pier top = cap bottom, pier base =
-'  pier top - table height (foundation top to cap bottom; owner 2026-11-09).
+'  pier top - table height (foundation top to cap bottom; owner 2026-11-09). Several columns (owner 2026-11-13):
+'  equally spaced along the cap, symmetric about the axis, the section of the pier row, each one rigid to the cap
+'  node above it, fixed base; the macro stops when they overlap or do not fit the cap length. A column within
+'  10 cm of a cap node already there (bearing, centre) is tied to that node instead of a new one (owner 2026-11-13).
 '  X: A1 bearing axis = 0; pier bearings at e from the pier axis, e = (axis spacing - Hesap Acikligi) / 2
 '  (end spans: axis spacing - Hesap Acikligi); the two spans at a pier must agree (owner 2026-11-09).
 '  Plan: G_AKS_XY (axis X / Y from the DXF, DXF_OKU; A1 first, span count + 1 rows, chords checked
@@ -42,8 +49,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-12b"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew per span from the span table (column R picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both; rail as a rail-shaped H per track, groups for the result pull (rail and track nodes per track, deck ends at every axis), braking / traction loads on segments without a rail node now staged"
+Private Const SCRIPT_VERSION As String = "2026-11-13b"
+Private Const SCRIPT_CHANGELOG As String = "Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew per span from the span table (Verevlik column picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 60|MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan
@@ -53,6 +60,7 @@ Private Const DEF_MESH As Double = 1.5          ' deck element length (m)
 Private Const DEF_LINK_LEN As Double = 0.35     ' bearing link length (m)
 Private Const DEF_K_FIX As Double = 100000#     ' fixed horizontal bearing stiffness kh (kN/m)
 Private Const N_PIER_EL As Long = 5             ' at least this many equal elements per pier
+Private Const COL_MERGE As Double = 0.1         ' a column this close to a cap node (bearing, centre) is tied to it (owner 2026-11-13)
 Private Const MAX_PIER_EL As Double = 3#        ' and no element longer than this (m) (owner 2026-11-05)
 Private Const GRAV_STYP As Double = 9.806
 Private Const SEC_CAP As Long = 3
@@ -88,6 +96,8 @@ Private Const EQ_FUNC As String = "DD2a"        ' KOS 1, KK level, elastic (owne
 Private Const EQ_STIFF As Double = 0.5          ' TKDY effective bending stiffness: deck, cap, pier
 Private Const EQ_STIFF_SLAB As Double = 0.25    ' TKDY: connection slab
 Private Const RITZ_X As Long = 35, RITZ_Y As Long = 35, RITZ_Z As Long = 30   ' for now (owner 2026-11-06)
+Private Const PDEL_ITER As Long = 5            ' seismic model P-Delta iterations (owner's model 2026-11-13)
+Private Const PDEL_TOL As Double = 0.00001     ' and convergence tolerance
 Private Const LINK_ON_SKEW As Boolean = False   ' bearing link axes along the girders on a skewed support (owner 2026-11-09); True = along the support line
 Private Const MASS_CASE As String = "LL_KUTLE"  ' uniform train load x Tablo 14 TKDY LL factor: mass and TKDY combinations (owner 2026-11-06)
 Private Const BMLD_CHUNK As Long = 60
@@ -101,6 +111,8 @@ Private capS(1 To 5) As Double, capL As Double, capRect As Boolean, capYc As Dou
 Private eLs() As Double, eRs() As Double, ePier() As Double, seatOnLedge() As Boolean
 Private nSp As Long, spL() As Double, fixLeft() As Boolean
 Private pH() As Double, pSec() As Long     ' pier 1..nSp-1: height, section number
+Private pCols() As Long, pSpc() As Double  ' pier 1..nSp-1: number of columns, spacing along the cap (m)
+Private nColTied As Long                   ' columns tied to a cap node within COL_MERGE
 Private nPS As Long, psTyp() As String, psEn() As Double, psBoy() As Double, psT() As Double
 ' deck types: one per Yatay Gabari + Kiris combination
 Private nDk As Long, spType() As Long, tHes(1 To MAX_TYPES) As Long, tGab(1 To MAX_TYPES) As Long
@@ -347,11 +359,63 @@ SpansDone:
         End If
         pSec(i) = SEC_PIER0 + q - 1
     Next i
+    ReadPierColumns wb, tb
     ReadLoadData wb
     For i = 1 To nDk
         If (tJoint(i) - tLc(i)) / 2 <= sark + 0.0005 Then warnText = warnText & "- " & tName(i) & ": joint spacing gives no deck-end slab." & vbCrLf
     Next i
 End Sub
+
+' columns per pier (owner 2026-11-13): optional name G_AYAK_KOLON = 2 columns (Kolon Sayisi, Kolon Araligi in m
+' along the cap) on the rows of G_AYAK_TABLOSU (INPUT L:M); no name or an empty count = one column.
+' The columns are equally spaced, symmetric about the axis and take the section of the pier row (En along the cap).
+Private Sub ReadPierColumns(wb As Workbook, tb As Range)
+    Dim r As Range, i As Long, rr As Long, v As Variant, nc As Double, w As Double, reach As Double
+    If nSp < 2 Then Exit Sub
+    ReDim pCols(1 To nSp - 1): ReDim pSpc(1 To nSp - 1)
+    For i = 1 To nSp - 1: pCols(i) = 1: Next i
+    On Error Resume Next
+    Set r = wb.Names("G_AYAK_KOLON").RefersToRange
+    On Error GoTo 0
+    If r Is Nothing Then Exit Sub
+    If r.Columns.Count <> 2 Or r.Row <> tb.Row Or r.Rows.Count <> tb.Rows.Count Or r.Worksheet.Name <> tb.Worksheet.Name Then _
+        Err.Raise vbObjectError + 32, , "G_AYAK_KOLON must be 2 columns (Kolon Sayisi, Kolon Araligi) on the rows of G_AYAK_TABLOSU."
+    For i = 1 To nSp - 1
+        For rr = 1 To tb.Rows.Count
+            If StrComp(Trim$(CStr(tb.Cells(rr, 1).Value)), "P" & i, vbTextCompare) = 0 Then Exit For
+        Next rr
+        If rr <= tb.Rows.Count Then
+            v = r.Cells(rr, 1).Value
+            If IsError(v) Then Err.Raise vbObjectError + 32, , "P" & i & " Kolon Sayisi: error value."
+            If Trim$(CStr(v)) <> "" Then
+                nc = Num(v, "P" & i & " Kolon Sayisi")
+                If nc < 1 Or nc <> Int(nc) Then Err.Raise vbObjectError + 32, , "P" & i & " Kolon Sayisi must be a whole number, 1 or more."
+                pCols(i) = CLng(nc)
+                If pCols(i) > 1 Then
+                    pSpc(i) = Num(r.Cells(rr, 2).Value, "P" & i & " Kolon Araligi")
+                    w = psEn(pSec(i) - SEC_PIER0 + 1)
+                    reach = (pCols(i) - 1) / 2# * pSpc(i) + w / 2
+                    If pSpc(i) < w - 0.0005 Then Err.Raise vbObjectError + 32, , "P" & i & ": the columns overlap (Kolon Araligi " & Format(pSpc(i), "0.000") & " m < En " & Format(w, "0.000") & " m)."
+                    If reach > capL / 2 + 0.0005 Then Err.Raise vbObjectError + 32, , "P" & i & ": the columns reach " & Format(reach, "0.000") & " m from the axis, cap half length " & Format(capL / 2, "0.000") & " m (G_BASLIK_BOYU)."
+                End If
+            End If
+        End If
+    Next i
+End Sub
+
+' place of column c of pier i along the cap, from the axis (owner 2026-11-13: equal spacing, symmetric)
+Private Function ColV(ByVal i As Long, ByVal c As Long) As Double
+    ColV = (c - (pCols(i) + 1) / 2#) * pSpc(i)
+End Function
+
+' piers with more than one column, for the summary (empty when every pier has one)
+Private Function PierColText() As String
+    Dim i As Long
+    For i = 1 To nSp - 1
+        If pCols(i) > 1 Then PierColText = PierColText & IIf(PierColText = "", "; columns: ", ", ") & "P" & i & " " & pCols(i) & " at " & Format(pSpc(i), "0.00") & " m"
+    Next i
+    If nColTied > 0 Then PierColText = PierColText & " (" & nColTied & " tied to a cap node within " & Format(COL_MERGE * 100, "0") & " cm)"
+End Function
 
 ' first span sheet of the 4A chapter: bearing values (only Mesnet - 1 today)
 Private Function FirstKdme(wb As Workbook) As Worksheet
@@ -486,7 +550,7 @@ Private Sub SeisChecks(wb As Workbook)
     If iMin > 0 And rMin <= 2 Then warnText = warnText & "- Span " & iMin & ": span / deck width = " & Format(rMin, "0.00") & " (<= 2). TKDY 4.3.2.4 allows the deck as one bar line only above 2 (otherwise 4.3.2.5)." & vbCrLf
 End Sub
 
-' skew (owner 2026-11-09): span table column R (4 right of G_SABIT_UC) = 1..5 picks G_VEREVLIK B22:F22, 0 or empty
+' skew (owner 2026-11-09): span table Verevlik column (4 right of G_SABIT_UC, T since 2026-11-13) = 1..5 picks G_VEREVLIK B22:F22, 0 or empty
 ' = square. Degrees from the normal to the girders, + = support line turned counter-clockwise in plan (A1 -> A2
 ' left to right). A span has its skew at both ends; the two spans at a pier must agree (one cap, one direction).
 Private Sub ReadSkew(wb As Workbook, r As Range)
@@ -681,7 +745,7 @@ Private Sub BuildModel()
     Set nodeKey = CreateObject("Scripting.Dictionary")
     Set capSlaves = CreateObject("Scripting.Dictionary")
     Set rigMap = CreateObject("Scripting.Dictionary")
-    nCnt = 0: eCnt = 0: nLink = 0: nBrg = 0
+    nCnt = 0: eCnt = 0: nLink = 0: nBrg = 0: nColTied = 0
     ReDim dkA(1 To nSp): ReDim dkB(1 To nSp): ReDim mnA(1 To nSp): ReDim mnB(1 To nSp): ReDim dxS(1 To nSp)
     ReDim brgNode(1 To 2 * nSp): ReDim brgSpan(1 To 2 * nSp)
     grpDeck = "": grpCap = "": grpPier = "": rigdJson = "": elnkJson = "": consJson = ""
@@ -735,30 +799,39 @@ Private Sub BuildModel()
     Next i
 
     ' caps and piers
-    Dim ys As Object, yk As Variant, top As Long, q As Variant, sp As Variant, nEl As Long
+    Dim ys As Object, yk As Variant, top As Long, q As Variant, sp As Variant, nEl As Long, cc As Long, vc As Double, vm As Double
     For i = 1 To nSp - 1
         Set ys = CreateObject("Scripting.Dictionary")
         AddX ys, -capL / 2: AddX ys, capL / 2: AddX ys, 0
         For Each sp In Array(i, i + 1)
             For j = 0 To tNG(spType(sp)) - 1: AddX ys, (j - (tNG(spType(sp)) - 1) / 2#) * tSG(spType(sp)) / Cos(skA(i) * PI / 180): Next j
         Next sp
+        ' a column within COL_MERGE of a cap node already there (bearing, centre) gets no node of its own (owner 2026-11-13)
+        For cc = 1 To pCols(i)
+            If NearX(ys, ColV(i, cc), COL_MERGE) = ColV(i, cc) Then AddX ys, ColV(i, cc)
+        Next cc
         yk = SortedKeys(ys)
         For k = UBound(yk) To 2 Step -1
             Member grpCap, 3, SEC_CAP, CapN(i, yk(k), zTop(i) - capYc), CapN(i, yk(k - 1), zTop(i) - capYc)
         Next k
-        ' pier top = cap bottom (owner 2026-11-09), rigid to the cap centroid node
-        top = CapN(i, 0, zTop(i) - capS(1))
-        Rigid CapN(i, 0, zTop(i) - capYc), CStr(top)
-        a = top
+        ' pier top = cap bottom (owner 2026-11-09), rigid to the cap centroid node; several columns (owner
+        ' 2026-11-13): each one built the same way at its place on the cap
         nEl = -Int(-pH(i) / MAX_PIER_EL + 0.000000001)
         If nEl < N_PIER_EL Then nEl = N_PIER_EL
-        For k = 1 To nEl
-            b = CapN(i, 0, zTop(i) - capS(1) - pH(i) * k / nEl)
-            Member grpPier, 3, pSec(i), a, b
-            pierAng(CStr(eCnt)) = -phiA(i)
-            a = b
-        Next k
-        Fix1 a
+        For cc = 1 To pCols(i)
+            vc = ColV(i, cc): vm = NearX(ys, vc, COL_MERGE)
+            If Abs(vm - vc) > 0.0005 Then nColTied = nColTied + 1
+            top = CapN(i, vc, zTop(i) - capS(1))
+            Rigid CapN(i, vm, zTop(i) - capYc), CStr(top)
+            a = top
+            For k = 1 To nEl
+                b = CapN(i, vc, zTop(i) - capS(1) - pH(i) * k / nEl)
+                Member grpPier, 3, pSec(i), a, b
+                pierAng(CStr(eCnt)) = -phiA(i)
+                a = b
+            Next k
+            Fix1 a
+        Next cc
     Next i
     For Each q In capSlaves.Keys
         Rigid CLng(q), CStr(capSlaves(q))
@@ -1310,6 +1383,12 @@ Private Function AxisBearingText() As String
     AxisBearingText = Format(mn, "0.000") & IIf(mx - mn > 0.0005, " - " & Format(mx, "0.000"), "") & " m (calculated)"
 End Function
 
+' Summary part for the P-Delta control (seismic model only; IIf evaluates both branches).
+Private Function PdelText() As String
+    If Not seisMode Then Exit Function
+    PdelText = ", P-Delta (DC, DW x " & JN(facRows("TKDY")(0)) & ", " & MASS_CASE & " x " & JN(facRows("TKDY")(1)) & ", " & PDEL_ITER & " iterations)"
+End Function
+
 Private Function Summary() As String
     Dim s As String, i As Long, f As Long, tot As Double
     For i = 1 To nSp
@@ -1319,12 +1398,12 @@ Private Function Summary() As String
     s = SCRIPT_ID & " " & SCRIPT_VERSION & vbCrLf & bridgeName & ": " & nSp & " spans, length " & Format(tot, "0.00") & " m, " & nSp - 1 & " piers" & vbCrLf & _
         dkLog & "Slab " & Format(tc, "0.000") & " m, sarkiklik " & sark & " m; concrete " & clsG & " / " & clsS & " / " & clsO & IIf(rtiMode, " (MIDAS EN04 database, Ecm)", " (AASHTO Ec " & Format(eG, "0") & " / " & Format(eS, "0") & " / " & Format(eO, "0") & " MPa)") & vbCrLf & _
         "Bearings: kv " & Format(kEB, "0") & ", free ky " & Format(kyB, "0.0") & ", kh " & Format(kFix, "0") & ", link " & linkLen & " m; " & f & " spans fixed left, " & nSp - f & " right" & vbCrLf & _
-        "Cap " & IIf(capRect, "rectangle " & capS(1) & " x " & capS(4), "inverted T H " & capS(1)) & ", length " & capL & " m, centroid " & Format(capYc, "0.000") & " m below its top, pier top at the cap bottom; " & nPS & " pier section(s)" & vbCrLf & _
+        "Cap " & IIf(capRect, "rectangle " & capS(1) & " x " & capS(4), "inverted T H " & capS(1)) & ", length " & capL & " m, centroid " & Format(capYc, "0.000") & " m below its top, pier top at the cap bottom; " & nPS & " pier section(s)" & PierColText() & vbCrLf & _
         "Axis to bearing " & AxisBearingText() & IIf(capRect, "", ", seat on the " & IIf(seatOnLedge(1), "ledges", "web")) & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
         IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & SkewText() & vbCrLf & _
         IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _
-        IIf(seisMode, "EQ " & EQ_FUNC & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z, IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
+        IIf(seisMode, "EQ " & EQ_FUNC & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z & PdelText(), IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     If rtiMode Then s = s & vbCrLf & "RTI: " & nTrk & " rail line(s), " & rN(1) & " rail nodes per line, " & nWin & " train windows + " & IIf(rtiNL, nLL & " nonlinear live load stages + ", "") & "TU+, TU-, END; " & bgUsed.Count & " spring groups, " & lgUsed.Count & " load groups; embankment " & RTI_EMB & " m"
     Summary = s
@@ -1719,6 +1798,10 @@ Private Sub AddSeismicPayloads()
     Add "db/SECF", "{""Assign"":{" & s & "}}"
     Add "db/LTOM", "{""Assign"":{""1"":{""DIR"":""XYZ"",""bNODAL"":true,""bBEAM"":true,""bFLOOR"":true,""bPRES"":true,""GRAV"":" & JN(GRAV_STYP) & _
         ",""vLC"":[{""LCNAME"":""DW_1"",""FACTOR"":1},{""LCNAME"":""DW_2"",""FACTOR"":1},{""LCNAME"":" & QS(MASS_CASE) & ",""FACTOR"":" & JN(facRows("TKDY")(1)) & "}]}}}"
+    ' P-Delta: geometric stiffness from the gravity part of the TKDY combinations (owner 2026-11-13)
+    Add "db/PDEL", "{""Assign"":{""1"":{""ITER"":" & PDEL_ITER & ",""TOL"":" & JN(PDEL_TOL) & ",""PDEL_CASES"":[" & _
+        "{""LCNAME"":""DC"",""FACTOR"":" & JN(facRows("TKDY")(0)) & "},{""LCNAME"":""DW_1"",""FACTOR"":" & JN(facRows("TKDY")(0)) & "}," & _
+        "{""LCNAME"":""DW_2"",""FACTOR"":" & JN(facRows("TKDY")(0)) & "},{""LCNAME"":" & QS(MASS_CASE) & ",""FACTOR"":" & JN(facRows("TKDY")(1)) & "}]}}}"
     Add "db/EIGV", "{""Assign"":{""1"":{""TYPE"":""RITZ"",""bINCNL"":false,""iGNUM"":0,""vRITZ"":[{""KIND"":""GROUND"",""GROUND"":""ACCX"",""iNOG"":" & RITZ_X & "},{""KIND"":""GROUND"",""GROUND"":""ACCY"",""iNOG"":" & RITZ_Y & "},{""KIND"":""GROUND"",""GROUND"":""ACCZ"",""iNOG"":" & RITZ_Z & "}]}}}"
     s = ""
     For i = 1 To specNames.Count
@@ -2529,6 +2612,15 @@ Private Sub AddX(d As Object, ByVal v As Double)
     d(CStr(d.Count)) = v
 End Sub
 
+' the value kept in d nearest to v when it lies within tol, else v (a column top is tied to that cap node)
+Private Function NearX(d As Object, ByVal v As Double, ByVal tol As Double) As Double
+    Dim k As Variant, best As Double
+    NearX = v: best = tol
+    For Each k In d.Keys
+        If Abs(CDbl(d(k)) - v) <= best Then best = Abs(CDbl(d(k)) - v): NearX = CDbl(d(k))
+    Next k
+End Function
+
 Private Function SortedKeys(d As Object) As Variant
     Dim a() As Double, i As Long, j As Long, t As Double, k As Variant
     ReDim a(1 To d.Count)
@@ -2557,7 +2649,7 @@ End Sub
 
 Private Function CleanTables() As Variant
     CleanTables = Array("LCOM-CONC", "LCOM-GEN", "BCCT", "DYNF", "SPLC", "SPFC", "ETMP", "CNLD", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
-        "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", "SECF", "MLFC", _
+        "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "PDEL", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", "SECF", "MLFC", _
         "NSPR", "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
 End Function
 

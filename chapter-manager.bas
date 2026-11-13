@@ -19,25 +19,29 @@ Option Explicit
 '      (G_SON_NUMARA) = the end of the last report sheet
 '    - whole-bridge chapters (WHOLE_SHEETS): one set of sheets, not per span: never copied or
 '      deleted, placed after the span chapters and chained like them; WHOLE_END = its last page cell
-'    - exports: e.g. Phi3 of span n -> INPUT row 92 column B+n-1 (G_PHI3)
+'    - exports: e.g. Phi3 of span n -> G_PHI3 cell n (INPUT row 92); bearing PD / PLL / ky / dL of span n -> G_MESNET_*
 '    - then the ToC and figure lists (RAPOR_LISTE) are rebuilt
 '  Report sheet = name starts with a digit and does not end with _Y / _YATAY
 '  (landscape companions are link targets of the main sheet's placeholders).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "chapter-manager"
-Private Const SCRIPT_VERSION As String = "2026-11-12b"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
+Private Const SCRIPT_VERSION As String = "2026-11-13a"
+Private Const SCRIPT_CHANGELOG As String = "Each span type exports its bearing loads for the abutments into INPUT rows G_MESNET_PD, G_MESNET_PLL, G_MESNET_KY, G_MESNET_DL (one column per span type, written and cleared with the span sheets); exports found by names, not fixed rows; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 40|Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|
 
 Private Const MSG_TITLE As String = "BOLUM_YONETICI"
-' chapter types: code | suffixes (main first, ';') | heading code cells ('cell' or 'cell>code', ';') | export: cell>INPUT row (column B = span 1)
+' chapter types: code | suffixes (main first, ';') | heading code cells ('cell' or 'cell>code', ';') |
+' exports (';'): M_source:default cell>G_target:default INPUT row - span n of the chapter goes to cell n of the 6-cell G_ row
+' (found by its name, created at B:G of the default row when missing); the span sheet's cell is found by its sheet-level
+' M_ name (created at the default cell when missing, copied with the sheet set). 4X_KDME exports the abutment seat loads
+' (owner 2026-11-13): PD and PLL of the bearing check (N), elastomer ky (kN/m), largest bearing movement (mm)
 ' WHOLE = the place of the whole-bridge sheets (WHOLE_SHEETS) in the chapter order
 ' a one-character code gets a letter per span (3A, 3B ...; 4A, 4B ...), see Tag
 ' order of the entries = order of the chapters in the workbook
-Private Const REGISTRY As String = "3|DYN;DYN_Y|Z6|Q122>92,WHOLE,4|KDME;KDME_Y;KILIF|Z6;Z904>5;Z1134>6;Z1318>7|"
+Private Const REGISTRY As String = "3|DYN;DYN_Y|Z6|M_PHI3:Q122>G_PHI3:92,WHOLE,4|KDME;KDME_Y;KILIF|Z6;Z904>5;Z1134>6;Z1318>7|M_MESNET_PD:I1145>G_MESNET_PD:267;M_MESNET_PLL:I1146>G_MESNET_PLL:268;M_MESNET_KY:S1203>G_MESNET_KY:269;M_MESNET_DL:N1217>G_MESNET_DL:270"
 Private Const WHOLE_SHEETS As String = "3B_RTI;3B_RTI_Y"
 Private Const WHOLE_END As String = "3B_RTI>3B_RTI_Y!$AI$95"   ' last print piece of 3B_RTI is a placeholder row: its last page is on the landscape sheet
 Private Const SPAN_NAME As String = "G_HESAP_ACIKLIK"
@@ -353,33 +357,45 @@ End Function
 
 ' ---- exports (e.g. Phi3 per span) ----
 Private Sub WriteExports(wb As Workbook)
-    Dim reg As Variant, k As Long, f() As String, sfx() As String, ex() As String, rowNo As Long, i As Long, inp As Worksheet, nm As String
+    Dim reg As Variant, k As Long, f() As String, sfx() As String, it As Variant, src() As String, tgt() As String
+    Dim i As Long, inp As Worksheet, nm As String, dst As Range, cel As Range, v As Variant
     Set inp = wb.Worksheets("INPUT")
     reg = Split(REGISTRY, ",")
     For k = LBound(reg) To UBound(reg)
         If reg(k) = "WHOLE" Then GoTo NextChapter
         f = Split(reg(k), "|"): sfx = Split(f(1), ";")
-        If UBound(f) >= 3 Then
-            If f(3) <> "" Then
-                ex = Split(f(3), ">"): rowNo = CLng(ex(1))
-                If Trim$(CStr(inp.Cells(rowNo, 1).Value)) = "" Then inp.Cells(rowNo, 1).Value = ChrW(934) & "3"
-                For i = 1 To MAX_SPANS
-                    nm = Tag(f(0), i) & "_" & sfx(0)
-                    If SheetExists(wb, nm) Then
-                        inp.Cells(rowNo, 1 + i).Formula = "='" & nm & "'!$" & ColOf(ex(0)) & "$" & RowOf(ex(0))
-                    Else
-                        inp.Cells(rowNo, 1 + i).ClearContents
-                    End If
-                Next i
-                On Error Resume Next
-                wb.Names("G_PHI3").Delete
-                On Error GoTo 0
-                wb.Names.Add Name:="G_PHI3", RefersTo:="=INPUT!$B$" & rowNo & ":$G$" & rowNo
+        If UBound(f) < 3 Then GoTo NextChapter
+        For Each it In Split(f(3), ";")
+            If Len(it) = 0 Then GoTo NextItem
+            src = Split(Split(it, ">")(0), ":"): tgt = Split(Split(it, ">")(1), ":")
+            Set dst = McAnchor(inp, tgt(0), "B" & tgt(1) & ":G" & tgt(1))
+            If dst.Cells.Count < MAX_SPANS Then Err.Raise vbObjectError + 7, , tgt(0) & " must hold " & MAX_SPANS & " cells (one per span), it has " & dst.Cells.Count & "."
+            If IsNull(dst.MergeCells) Or dst.MergeCells Then Err.Raise vbObjectError + 8, , tgt(0) & " lies on merged cells; move it to plain cells (Name Manager)."
+            If dst.Column > 1 Then
+                v = dst.Cells(1, 1).Offset(0, -1).Value
+                If Not IsError(v) Then
+                    If Trim$(CStr(v)) = "" Then dst.Cells(1, 1).Offset(0, -1).Value = ExportLabel(tgt(0))
+                End If
             End If
-        End If
+            For i = 1 To MAX_SPANS
+                nm = Tag(f(0), i) & "_" & sfx(0)
+                If SheetExists(wb, nm) Then
+                    Set cel = McAnchor(wb.Worksheets(nm), src(0), src(1), True)
+                    dst.Cells(1, i).Formula = "='" & nm & "'!" & cel.Address
+                Else
+                    dst.Cells(1, i).ClearContents
+                End If
+            Next i
+NextItem:
+        Next it
 NextChapter:
     Next k
 End Sub
+
+' column A text of an export row when that cell is empty
+Private Function ExportLabel(ByVal gName As String) As String
+    If gName = "G_PHI3" Then ExportLabel = ChrW(934) & "3" Else ExportLabel = gName
+End Function
 
 ' ---- ToC / figure lists ----
 Private Sub RunLists(wb As Workbook)
