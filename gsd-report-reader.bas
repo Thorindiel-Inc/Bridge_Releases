@@ -30,20 +30,32 @@ Option Explicit
 '  rows MIDAS_AYAK read (M_TESIR_BLOK) by name; differences are reported, nothing is stopped.
 '  Stamp: M_GSD_DAMGA (file, its date, time of the read).
 '  Test entry: GSD_OKU_RUN <folder>, <groups: empty = all, or 1,3-5>, <report file> (no questions).
+'
+'  Single-sheet mode (2026-11-17b, owner: abutment piles in the 8'6 workbook): a workbook without OA_GRUP_TABLO
+'  and with a sheet MIDAS_CIKTISI_KAZIK reads one export into that sheet. The file is picked in a file dialog on
+'  every run (pile exports are named e.g. A1_KAZIK_1AS.xlsx); the window field Gruplar is not used. Areas as above
+'  except M_GSD_MM AY1:BV10086 and M_GSD_ORAN BX1:CU10086 (the pile export's My-Mz sheet has a long table; the
+'  sheet's own ratio formulas read to row 10086). The loads are compared with M_TESIR_BLOK CW26:DE3839 (typed by
+'  the owner until a pile-load reader exists); nothing is written there. No group-sheet figures: the P-M figure
+'  of 2A_KAZIK is an Excel chart of the sheet's cells and follows by itself.
+'  The design-load check reads the export's header row, so both layouts are understood: one row per load
+'  (No, Name, Pu, My, Mz, Vy, Vz, T) and two rows per load (Pu, My, Mz over Vy, Vz, T).
+'  Test entry in this mode: GSD_OKU_RUN <export file>, "", <report file>.
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "gsd-report-reader"
-Private Const SCRIPT_VERSION As String = "2026-11-17a"
-Private Const SCRIPT_CHANGELOG As String = "new: GSD Excel exports (Property, P-M Curve, My-Mz Curve, P-My-Mz Curve; values and pictures) into the MIDAS_<group> data sheets of the 8'7 workbook, every group or ticked groups, design loads checked against the MIDAS_AYAK rows"
+Private Const SCRIPT_VERSION As String = "2026-11-17b"
+Private Const SCRIPT_CHANGELOG As String = "Abutment workbook (8'6): the pile GSD export (file picked every run) into MIDAS_CIKTISI_KAZIK, loads compared with the typed force block; the load check understands the one-row-per-load export layout too; new: GSD Excel exports (Property, P-M Curve, My-Mz Curve, P-My-Mz Curve; values and pictures) into the MIDAS_<group> data sheets of the 8'7 workbook, every group or ticked groups, design loads checked against the MIDAS_AYAK rows"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
-'@TOOL 86|MIDAS sonu\u00E7lar\u0131|GSD sonu\u00E7lar\u0131|GSD_OKU_AC||GSD'nin Excel'e aktard\u0131\u011F\u0131 raporlar\u0131 (<ayaklar>_Section1.xlsx) grubun MIDAS_<grup> sayfas\u0131na okur: kesit \u00F6zellikleri, P-M ve My-Mz e\u011Frileri, oran tablosu ve resimler; grup sayfas\u0131ndaki iki grafi\u011Fi yeniler. Klas\u00F6r her \u00E7al\u0131\u015Ft\u0131rmada sorulur. GSD dosyalar\u0131na bir \u015Fey yazmaz.|grup~Gruplar~c~T\u00FCm\u00FC/Se\u00E7ili gruplar
+'@TOOL 86|MIDAS sonu\u00E7lar\u0131|GSD sonu\u00E7lar\u0131|GSD_OKU_AC||GSD'nin Excel'e aktard\u0131\u011F\u0131 raporlar\u0131 (<ayaklar>_Section1.xlsx) grubun MIDAS_<grup> sayfas\u0131na okur: kesit \u00F6zellikleri, P-M ve My-Mz e\u011Frileri, oran tablosu ve resimler; grup sayfas\u0131ndaki iki grafi\u011Fi yeniler. Klas\u00F6r her \u00E7al\u0131\u015Ft\u0131rmada sorulur. Kenar ayak dosyas\u0131nda kaz\u0131k raporu (dosya sorulur) MIDAS_CIKTISI_KAZIK sayfas\u0131na okunur; Gruplar alan\u0131 kullan\u0131lmaz. GSD dosyalar\u0131na bir \u015Fey yazmaz.|grup~Gruplar~c~T\u00FCm\u00FC/Se\u00E7ili gruplar
 
 Private Const MSG_TITLE As String = "GSD_OKU"
 Private Const N_GTAB As String = "OA_GRUP_TABLO"
 Private Const M_DATA_NO As String = "M_TESIR_NO"
 Private Const M_CHAIN As String = "M_AYAK_ZINCIR"
 Private Const GROUP_TPL As String = "SABLON_AYAK"
+Private Const SINGLE_SHEET As String = "MIDAS_CIKTISI_KAZIK"   ' data sheet of a workbook without pier groups (8'6 abutment piles)
 Private Const SH_PROP As String = "Property"
 Private Const SH_PM As String = "P-M Curve"
 Private Const SH_MM As String = "My-Mz Curve"
@@ -59,6 +71,7 @@ Private mScripted As Boolean
 Private mLog As String
 Private mLastFolder As String
 Private mLastW As Double                      ' width of the last picture that took an old picture's width
+Private mSingle As Boolean                    ' single-sheet mode (no pier groups)
 
 ' ============================================================================
 Public Sub GSD_OKU_AC()
@@ -80,6 +93,8 @@ Private Function RunPull(ByVal folder As String, ByVal groups As String) As Stri
     On Error GoTo Fail
     mLog = ""
     Set wb = ThisWorkbook
+    mSingle = Not HasName(wb, N_GTAB)
+    If mSingle Then RunPull = RunSingle(wb, folder): Exit Function
     gt = NmRange(wb, N_GTAB).Value
     nG = UBound(gt, 1)
 
@@ -168,12 +183,18 @@ End Function
 
 ' one group: its export into its data sheet; returns the summary line ("FAIL: ..." when it could not be read)
 Private Function PullGroup(wb As Workbook, ByVal k As Long, ByVal gName As String, ByVal path As String) As String
-    Dim ds As Worksheet, gs As Worksheet, xb As Workbook, s As String, note As String, ev As Boolean
+    Dim ds As Worksheet
+    Set ds = DataSheetOf(wb, k)
+    If ds Is Nothing Then PullGroup = "FAIL: group " & k & " (" & gName & "): no data sheet: run 'Ayak grubu sayfalari' (ORTA_AYAK) first": Exit Function
+    PullGroup = PullSheet(wb, ds, k, path, "group " & k & " (" & gName & ")")
+End Function
+
+' one export into one data sheet; k > 0: the two figures of group k's sheet are made again
+Private Function PullSheet(wb As Workbook, ds As Worksheet, ByVal k As Long, ByVal path As String, ByVal tag As String) As String
+    Dim gs As Worksheet, xb As Workbook, s As String, note As String, ev As Boolean
     Dim pPM As Object, pMM As Object, st As Range, w As Object
     On Error GoTo Fail
     mLastW = 0
-    Set ds = DataSheetOf(wb, k)
-    If ds Is Nothing Then Err.Raise vbObjectError + 21, , "no data sheet: run 'Ayak grubu sayfalari' (ORTA_AYAK) first"
     ev = Application.EnableEvents
     Application.EnableEvents = False
     Set xb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True, AddToMru:=False)
@@ -186,16 +207,16 @@ Private Function PullGroup(wb As Workbook, ByVal k As Long, ByVal gName As Strin
     ' ---- values ----
     s = "prop " & CopyBlock(xb.Worksheets(SH_PROP), McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), False, note)
     s = s & ", P-M " & CopyBlock(xb.Worksheets(SH_PM), McAnchor(ds, "M_GSD_PM", "Z1:AW33", True), True, note)
-    s = s & ", My-Mz " & CopyBlock(xb.Worksheets(SH_MM), McAnchor(ds, "M_GSD_MM", "AY1:BV29", True), True, note)
-    s = s & ", ratios " & CopyBlock(xb.Worksheets(SH_RATIO), McAnchor(ds, "M_GSD_ORAN", "BX1:CU3839", True), True, note)
+    s = s & ", My-Mz " & CopyBlock(xb.Worksheets(SH_MM), AreaMM(ds), True, note)
+    s = s & ", ratios " & CopyBlock(xb.Worksheets(SH_RATIO), AreaOran(ds), True, note)
 
     ' ---- pictures of the data sheet ----
     SwapPicture xb.Worksheets(SH_PROP), ds, McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), "GSD_KESIT", note
     Set pPM = SwapPicture(xb.Worksheets(SH_PM), ds, McAnchor(ds, "M_GSD_PM", "Z1:AW33", True), "GSD_PM", note, PIC_COLS)
-    Set pMM = SwapPicture(xb.Worksheets(SH_MM), ds, McAnchor(ds, "M_GSD_MM", "AY1:BV29", True), "GSD_MM", note, PIC_COLS)
-    SwapPicture xb.Worksheets(SH_RATIO), ds, McAnchor(ds, "M_GSD_ORAN", "BX1:CU3839", True), "GSD_PMM", note
+    Set pMM = SwapPicture(xb.Worksheets(SH_MM), ds, AreaMM(ds), "GSD_MM", note, PIC_COLS)
+    SwapPicture xb.Worksheets(SH_RATIO), ds, AreaOran(ds), "GSD_PMM", note
 
-    ' ---- design loads against the MIDAS_AYAK rows ----
+    ' ---- design loads against the force block ----
     note = note & CheckLoads(xb.Worksheets(SH_PROP), ds)
 
     ' ---- stamp ----
@@ -206,23 +227,82 @@ Private Function PullGroup(wb As Workbook, ByVal k As Long, ByVal gName As Strin
     Set xb = Nothing
 
     ' ---- the two figures of the group sheet ----
-    Set gs = GroupSheetOf(wb, k)
-    If gs Is Nothing Then
-        note = note & "  no group sheet: figures not renewed." & vbCrLf
-    Else
-        ds.Calculate
-        GroupFigure ds, pPM, McAnchor(ds, "M_GSD_PM", "Z1:AW33", True), gs, "M_GSD_SEKIL_PM", "B216:L230", "GSD_PM", note
-        GroupFigure ds, pMM, McAnchor(ds, "M_GSD_MM", "AY1:BV29", True), gs, "M_GSD_SEKIL_MM", "M216:X230", "GSD_MM", note
+    If k > 0 Then
+        Set gs = GroupSheetOf(wb, k)
+        If gs Is Nothing Then
+            note = note & "  no group sheet: figures not renewed." & vbCrLf
+        Else
+            ds.Calculate
+            GroupFigure ds, pPM, McAnchor(ds, "M_GSD_PM", "Z1:AW33", True), gs, "M_GSD_SEKIL_PM", "B216:L230", "GSD_PM", note
+            GroupFigure ds, pMM, AreaMM(ds), gs, "M_GSD_SEKIL_MM", "M216:X230", "GSD_MM", note
+        End If
     End If
-    PullGroup = ds.Name & ": " & s & IIf(Len(note) > 0, vbCrLf & note, "")
-    If Right$(PullGroup, 2) = vbCrLf Then PullGroup = Left$(PullGroup, Len(PullGroup) - 2)
+    PullSheet = ds.Name & ": " & s & IIf(Len(note) > 0, vbCrLf & note, "")
+    If Right$(PullSheet, 2) = vbCrLf Then PullSheet = Left$(PullSheet, Len(PullSheet) - 2)
     Exit Function
 Fail:
     s = Err.Description
     On Error Resume Next
     Application.EnableEvents = True
     If Not xb Is Nothing Then xb.Close SaveChanges:=False
-    PullGroup = "FAIL: group " & k & " (" & gName & "): " & s
+    PullSheet = "FAIL: " & tag & ": " & s
+End Function
+
+' single-sheet mode: one export (picked in a file dialog; the test entry passes it) into SINGLE_SHEET
+Private Function RunSingle(wb As Workbook, ByVal path As String) As String
+    Dim ds As Worksheet, s As String, cm As Long, act As Object
+    On Error GoTo Fail
+    If Not HasSheet(wb, SINGLE_SHEET) Then RunSingle = "STOPPED: this workbook has no pier groups (" & N_GTAB & ") and no sheet " & SINGLE_SHEET & ": nothing to read into.": Exit Function
+    Set ds = wb.Worksheets(SINGLE_SHEET)
+    If Not mScripted Then
+        path = AskFile(wb)
+        If Len(path) = 0 Then RunSingle = "STOPPED: no file chosen: nothing was read.": Exit Function
+    End If
+    If Len(path) = 0 Then RunSingle = "STOPPED: no export file given.": Exit Function
+    If Len(Dir$(path)) = 0 Then RunSingle = "STOPPED: file not found: " & path: Exit Function
+    mLastFolder = Left$(path, InStrRev(path, "\") - 1)
+    If Not mScripted Then
+        s = "File: " & path & vbCrLf & vbCrLf & "The GSD values and pictures of sheet " & ds.Name & " are replaced. Continue?"
+        If UiMsg(s, vbOKCancel + vbQuestion, MSG_TITLE) <> vbOK Then RunSingle = "STOPPED: nothing was read.": Exit Function
+    End If
+    Set act = ActiveSheet
+    cm = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    Logp "GSD: " & ds.Name
+    s = PullSheet(wb, ds, 0, path, ds.Name)
+    Application.Calculation = cm
+    Application.Calculate
+    On Error Resume Next
+    act.Parent.Activate
+    act.Activate
+    On Error GoTo Fail
+    Application.ScreenUpdating = True
+    RunSingle = IIf(Left$(s, 5) = "FAIL:", "STOPPED: ", "Done. ") & "File: " & path & vbCrLf & s & IIf(Len(mLog) > 0, vbCrLf & mLog, "")
+    Exit Function
+Fail:
+    s = Err.Description
+    On Error Resume Next
+    If cm <> 0 Then Application.Calculation = cm
+    Application.ScreenUpdating = True
+    RunSingle = "STOPPED: " & s
+End Function
+
+' areas whose default differs in single-sheet mode (the default is used only when the sheet lacks the name)
+Private Function AreaMM(ds As Worksheet) As Range
+    If mSingle Then
+        Set AreaMM = McAnchor(ds, "M_GSD_MM", "AY1:BV10086", True)
+    Else
+        Set AreaMM = McAnchor(ds, "M_GSD_MM", "AY1:BV29", True)
+    End If
+End Function
+
+Private Function AreaOran(ds As Worksheet) As Range
+    If mSingle Then
+        Set AreaOran = McAnchor(ds, "M_GSD_ORAN", "BX1:CU10086", True)
+    Else
+        Set AreaOran = McAnchor(ds, "M_GSD_ORAN", "BX1:CU3839", True)
+    End If
 End Function
 
 ' values of the export sheet into the area (same cell positions). fit True: the export must fit the area;
@@ -416,7 +496,9 @@ End Function
 Private Function CheckLoads(src As Worksheet, ds As Worksheet) As String
     Dim blk As Range, bv As Variant, d As Object, i As Long, j As Long, r As Long, r0 As Long, nR As Long, sv As Variant
     Dim nm As String, nGsd As Long, nMiss As Long, nDif As Long, firstMiss As String, firstDif As String, g(1 To 6) As Double, rowB As Long, bad As Boolean, used As Long, nVz As Long
+    Dim c As Long, c2 As Long, cNm As Long, hRow As Long, stp As Long, col(1 To 6) As Long, rOff(1 To 6) As Long, t As String, ro As Long, srcB As String
     On Error GoTo Quit
+    srcB = IIf(mSingle, "force block (M_TESIR_BLOK)", "MIDAS_AYAK")
     Set blk = McAnchor(ds, "M_TESIR_BLOK", "CW26:DE3839", True)
     bv = blk.Value
     Set d = CreateObject("Scripting.Dictionary")
@@ -424,17 +506,56 @@ Private Function CheckLoads(src As Worksheet, ds As Worksheet) As String
         nm = CellTxt(bv(i, 3))
         If Len(nm) > 0 Then d(nm) = i: used = i
     Next i
-    If used = 0 Then CheckLoads = "  loads: the data sheet has no MIDAS_AYAK rows to compare with." & vbCrLf: Exit Function
+    If used = 0 Then CheckLoads = "  loads: the data sheet has no " & srcB & " rows to compare with." & vbCrLf: Exit Function
     With src.UsedRange
         nR = .Row + .Rows.Count - 1
     End With
     sv = src.Range(src.Cells(1, 1), src.Cells(nR, 24)).Value
-    For r = 1 To nR - 2
-        If CellTxt(sv(r, 3)) = "No" And CellTxt(sv(r, 5)) = "Name" Then r0 = r + 2: Exit For
+    ' header row: a cell 'No' whose next filled cell to the right is 'Name'
+    For r = 1 To nR - 1
+        For c = 1 To 23
+            If CellTxt(sv(r, c)) = "No" Then
+                For c2 = c + 1 To 24
+                    If Len(CellTxt(sv(r, c2))) > 0 Then Exit For
+                Next c2
+                If c2 <= 24 Then
+                    If CellTxt(sv(r, c2)) = "Name" Then hRow = r: cNm = c2: Exit For
+                End If
+            End If
+        Next c
+        If hRow > 0 Then Exit For
     Next r
-    If r0 = 0 Then CheckLoads = "  loads: no 'Design Load Combination' table in the export." & vbCrLf: Exit Function
-    For r = r0 To nR - 1 Step 2
-        nm = CellTxt(sv(r, 5))
+    If hRow = 0 Then CheckLoads = "  loads: no 'Design Load Combination' table in the export." & vbCrLf: Exit Function
+    ' columns by their heading (Pu(kN), My(kN.m), ...) on the header row or the row below it:
+    ' one row per load (all six on the header row) or two rows per load (Vy, Vz, T on the second row)
+    For ro = 0 To 1
+        For c = 1 To 24
+            t = CellTxt(sv(hRow + ro, c))
+            If InStr(t, "(") > 1 Then t = Trim$(Left$(t, InStr(t, "(") - 1))
+            j = 0
+            Select Case t
+                Case "Pu": j = 1
+                Case "My": j = 2
+                Case "Mz": j = 3
+                Case "Vy": j = 4
+                Case "Vz": j = 5
+                Case "T": j = 6
+            End Select
+            If j > 0 Then
+                If col(j) = 0 Then col(j) = c: rOff(j) = ro
+            End If
+        Next c
+    Next ro
+    For j = 1 To 6
+        If col(j) = 0 Then CheckLoads = "  loads: not compared (the export's load table has no " & Choose(j, "Pu", "My", "Mz", "Vy", "Vz", "T") & " column)." & vbCrLf: Exit Function
+    Next j
+    stp = 1
+    For j = 1 To 6
+        If rOff(j) = 1 Then stp = 2
+    Next j
+    r0 = hRow + stp
+    For r = r0 To nR - stp + 1 Step stp
+        nm = CellTxt(sv(r, cNm))
         If Len(nm) = 0 Then Exit For
         nGsd = nGsd + 1
         If Not d.Exists(nm) Then
@@ -442,8 +563,9 @@ Private Function CheckLoads(src As Worksheet, ds As Worksheet) As String
             If nMiss = 1 Then firstMiss = nm
         Else
             rowB = d(nm)
-            g(1) = NumOr0(sv(r, 10)): g(2) = NumOr0(sv(r, 15)): g(3) = NumOr0(sv(r, 20))
-            g(4) = NumOr0(sv(r + 1, 10)): g(5) = NumOr0(sv(r + 1, 15)): g(6) = NumOr0(sv(r + 1, 20))
+            For j = 1 To 6
+                g(j) = NumOr0(sv(r + rOff(j), col(j)))
+            Next j
             bad = False
             ' Vz apart: the GSD export of 2026-11 prints Vy in its Vz column too (measured on two exports)
             For j = 1 To 6
@@ -458,7 +580,7 @@ Private Function CheckLoads(src As Worksheet, ds As Worksheet) As String
             d.Remove nm
         End If
     Next r
-    CheckLoads = "  loads: " & nGsd & " in the export, " & (nGsd - nMiss - nDif) & " equal to the MIDAS_AYAK rows"
+    CheckLoads = "  loads: " & nGsd & " in the export, " & (nGsd - nMiss - nDif) & " equal to the " & srcB & " rows"
     If nDif > 0 Then CheckLoads = CheckLoads & "; " & nDif & " DIFFER (first: " & firstDif & ")"
     If nMiss > 0 Then CheckLoads = CheckLoads & "; " & nMiss & " NOT on the data sheet (first: " & firstMiss & ")"
     If nVz > 0 Then CheckLoads = CheckLoads & "; Vz differs in " & nVz & " (Pu, My, Mz, Vy, T compared; the export repeats Vy as Vz)"
@@ -481,6 +603,23 @@ Private Function AskFolder(wb As Workbook) As String
         If Len(start) > 0 Then .InitialFileName = start & "\"
         If .Show <> -1 Then Exit Function
         AskFolder = CStr(.SelectedItems(1))
+    End With
+End Function
+
+' single-sheet mode: the export file
+Private Function AskFile(wb As Workbook) As String
+    Dim fd As Object, start As String
+    start = mLastFolder
+    If Len(start) = 0 Then start = wb.path
+    Set fd = Application.FileDialog(3)          ' msoFileDialogFilePicker
+    With fd
+        .title = U("GSD Excel raporu (kaz\u0131k)")
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Excel", "*.xlsx"
+        If Len(start) > 0 Then .InitialFileName = start & "\"
+        If .Show <> -1 Then Exit Function
+        AskFile = CStr(.SelectedItems(1))
     End With
 End Function
 
@@ -612,6 +751,13 @@ Private Function GroupSheetOf(wb As Workbook, ByVal k As Long) As Worksheet
             End If
         End If
     Next ws
+End Function
+
+Private Function HasName(wb As Workbook, ByVal nm As String) As Boolean
+    Dim r As Range
+    On Error Resume Next
+    Set r = wb.Names(nm).RefersToRange
+    HasName = Not r Is Nothing
 End Function
 
 Private Function HasSheet(xb As Workbook, ByVal nm As String) As Boolean
