@@ -10,9 +10,11 @@ Option Explicit
 '  RTI = rail layer, track springs and stages, see the RTI BRANCH section.
 '  Three models (owner 2026-11-06): STATIC = all loads, full stiffness, no mass / spectra.
 '  SEISMIC = only what the response spectrum needs: DC, DW_1, DW_2, LL_KUTLE (80 kN/m static
-'  train case), loads to masses, Ritz, spectra, EQ cases, TKDY / H-TKDY combinations; stiffness
+'  train case, one track at most: owner 2026-11-16), loads to masses, Ritz, spectra, EQ cases, TKDY / H-TKDY combinations; stiffness
 '  factors with no boundary group (a group + db/BCCT did not reach the modes), so EVERY case
-'  in that model runs at the reduced stiffness. P-Delta (owner 2026-11-13): axial force from DC, DW_1,
+'  in that model runs at the reduced stiffness. Earthquake level (owner 2026-11-16): the window picks DD1 / DD2 / DD2a / DD3
+'  for the EQ cases (elastic SPECTRUM curve, default DD2a); DD1 also sets torsion x 0.2 on caps and piers and shear
+'  areas x 0.5 on the deck (not the connection slab). P-Delta (owner 2026-11-13): axial force from DC, DW_1,
 '  DW_2 and LL_KUTLE with the TKDY combination factors (Tablo 14), the gravity part of the TKDY
 '  combinations and of the mass; the static model has none (owner: deflections there are small).
 ' ----------------------------------------------------------------------------
@@ -49,11 +51,11 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-13b"
-Private Const SCRIPT_CHANGELOG As String = "Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew per span from the span table (Verevlik column picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings; RTI: track springs along the track on curved spans (links rail to track), windows load exactly 300 m / 30 m (partial element loads), loaded springs under the whole second train, single track (G_GABARI_HAT_2 empty or 0): braking or traction, never both"
+Private Const SCRIPT_VERSION As String = "2026-11-16a"
+Private Const SCRIPT_CHANGELOG As String = "Seismic model: earthquake level DD1 / DD2 / DD2a / DD3 picked in the window (DD1: torsion x 0.2 on caps and piers, deck shear areas x 0.5); Seismic model: LL_KUTLE on one track at most (80 kN/m, also on two-track decks); Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; Skew per span from the span table (Verevlik column picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
-'@TOOL 60|MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan
+'@TOOL 60|MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan;dd~Deprem d\u00FCzeyi (Sismik)~c~DD2a/DD1/DD2/DD3
 
 Private Const MSG_TITLE As String = "MIDAS_KOPRU"
 Private Const DEF_MESH As Double = 1.5          ' deck element length (m)
@@ -92,7 +94,10 @@ Private Const RAIL_E As Double = 210000000#     ' kN/m2
 Private Const RAIL_SIZE As String = "0.172,0.144,0.033,0.051,0.3,0.015,0,0,0,0" ' m: H, B1, tw, tf1, B2, tf2 of 2 x UIC 60 per track
 Private Const SEC_RAIL As Long = 90
 Private Const MAT_RAIL As Long = 9
-Private Const EQ_FUNC As String = "DD2a"        ' KOS 1, KK level, elastic (owner 2026-11-06)
+Private Const EQ_FUNC As String = "DD2a"        ' default level: KOS 1, KK level, elastic (owner 2026-11-06)
+Private Const EQ_LEVELS As String = "DD2a/DD1/DD2/DD3"   ' order of the window list; the EQ cases use the picked curve (owner 2026-11-16)
+Private Const EQ_TORS_DD1 As Double = 0.2      ' DD1: torsion factor on caps and piers (owner 2026-11-16)
+Private Const EQ_SHEAR_DD1 As Double = 0.5     ' DD1: shear area factor Asy, Asz on the deck, not the connection slab (owner 2026-11-16)
 Private Const EQ_STIFF As Double = 0.5          ' TKDY effective bending stiffness: deck, cap, pier
 Private Const EQ_STIFF_SLAB As Double = 0.25    ' TKDY: connection slab
 Private Const RITZ_X As Long = 35, RITZ_Y As Long = 35, RITZ_Z As Long = 30   ' for now (owner 2026-11-06)
@@ -100,6 +105,7 @@ Private Const PDEL_ITER As Long = 5            ' seismic model P-Delta iteration
 Private Const PDEL_TOL As Double = 0.00001     ' and convergence tolerance
 Private Const LINK_ON_SKEW As Boolean = False   ' bearing link axes along the girders on a skewed support (owner 2026-11-09); True = along the support line
 Private Const MASS_CASE As String = "LL_KUTLE"  ' uniform train load x Tablo 14 TKDY LL factor: mass and TKDY combinations (owner 2026-11-06)
+Private Const MASS_TRACKS As Long = 1           ' LL_KUTLE carries at most this many tracks (owner 2026-11-16)
 Private Const BMLD_CHUNK As Long = 60
 Private Const Q_BAL As Long = 1, Q_KERB As Long = 2, Q_RAIL As Long = 3, Q_PANEL As Long = 4, Q_PROT As Long = 5, Q_TRK As Long = 6, Q_ENL As Long = 7
 
@@ -146,6 +152,7 @@ Private tQ(1 To MAX_TYPES, 1 To 7) As Double, tKL(1 To MAX_TYPES) As Double, tKR
 Private wG As Double, wV As Double, alphaLM As Double, qsk As Double, tuPos As Double, tuNeg As Double, vDes As Double, qvk As Double, railH As Double
 Private facRows As Object, dcMax As Double, dcMin As Double, dcMax4 As Double, dwMax As Double, dwMin As Double, eqMain As Double, eqOther As Double
 Private specNames As Collection, specJson As Collection, phiByElem As Boolean
+Private eqLevel As String   ' spectrum curve of the EQ cases (DD1 / DD2 / DD2a / DD3)
 Private skS() As Double, skA() As Double   ' skew per span / per axis (deg), + = support line turned counter-clockwise in plan
 Private spR() As Double, dkA() As Long, dkB() As Long, mnA() As Long, mnB() As Long, dxS() As Double
 Private brgNode() As Long, brgSpan() As Long, nBrg As Long
@@ -160,17 +167,19 @@ Public Sub MIDAS_KOPRU_OLUSTUR()
     RunBuild "", False, False, False
 End Sub
 
-Public Sub MIDAS_KOPRU_PAYLOAD(ByVal outDir As String, Optional ByVal seismicModel As Boolean = False, Optional ByVal rtiModel As Boolean = False, Optional ByVal rtiNonlinear As Boolean = False)
+Public Sub MIDAS_KOPRU_PAYLOAD(ByVal outDir As String, Optional ByVal seismicModel As Boolean = False, Optional ByVal rtiModel As Boolean = False, Optional ByVal rtiNonlinear As Boolean = False, Optional ByVal eqLvl As String = "")
     rtiNL = rtiNonlinear
+    eqLevel = IIf(eqLvl = "", EQ_FUNC, eqLvl)
     RunBuild outDir, True, seismicModel, rtiModel
 End Sub
 
 ' scripted build, no dialogs (tests)
-Public Sub MIDAS_KOPRU_BUILD(ByVal reportFile As String, ByVal apiKey As String, Optional ByVal saveModel As Boolean = True, Optional ByVal seismicModel As Boolean = False, Optional ByVal rtiModel As Boolean = False, Optional ByVal rtiNonlinear As Boolean = False)
+Public Sub MIDAS_KOPRU_BUILD(ByVal reportFile As String, ByVal apiKey As String, Optional ByVal saveModel As Boolean = True, Optional ByVal seismicModel As Boolean = False, Optional ByVal rtiModel As Boolean = False, Optional ByVal rtiNonlinear As Boolean = False, Optional ByVal eqLvl As String = "")
     Dim rep As String
     On Error GoTo Fail
     warnText = ""
     seisMode = seismicModel: rtiMode = rtiModel: rtiNL = rtiNonlinear
+    eqLevel = IIf(eqLvl = "", EQ_FUNC, eqLvl)
     meshDx = DEF_MESH: linkLen = DEF_LINK_LEN: kFix = DEF_K_FIX
     PrepareModel
     McSetKey apiKey
@@ -205,6 +214,10 @@ Private Sub RunBuild(ByVal outDir As String, ByVal dry As Boolean, ByVal seismic
         seisMode = (v = 2): rtiMode = (v = 3)
         ' live load gate of the RTI model: 1 moving load (default), 2 moving load + nonlinear stages
         rtiNL = rtiMode And (UiIdx("ll", 1) = 2)
+        ' earthquake level of the seismic model (owner 2026-11-16), first item = DD2a
+        v = UiIdx("dd", 1)
+        If v < 1 Or v > UBound(Split(EQ_LEVELS, "/")) + 1 Then v = 1
+        eqLevel = Split(EQ_LEVELS, "/")(v - 1)
     End If
     If Not dry Then
         If Not AskModelValues() Then Exit Sub
@@ -1217,7 +1230,7 @@ Private Sub BuildPayloads()
     Add "db/UNIT", "{""Assign"":{""1"":{""FORCE"":""KN"",""DIST"":""M"",""HEAT"":""J"",""TEMPER"":""C""}}}"
     Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":false,""bSELFWEIGHT"":true,""SMASS"":1}}}"
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
-        ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(seisMode, " SEISMIC", IIf(rtiMode, " RTI", "")))) & "}}}"
+        ",""TITLE"":" & QS(Pj(bridgeName)) & ",""COMMENT"":" & QS(Pj(nSp & " spans; " & SCRIPT_ID & " " & SCRIPT_VERSION & IIf(seisMode, " SEISMIC " & eqLevel, IIf(rtiMode, " RTI", "")))) & "}}}"
     Dim sMat As String
     If rtiMode Then sMat = "," & RailMat()
     Add "db/MATL", "{""Assign"":{" & MatJson(1, clsG, eG, denG) & "," & MatJson(2, clsS, eS, denS) & "," & MatJson(3, clsO, eO, denS) & sMat & "}}"
@@ -1402,8 +1415,8 @@ Private Function Summary() As String
         "Axis to bearing " & AxisBearingText() & IIf(capRect, "", ", seat on the " & IIf(seatOnLedge(1), "ledges", "web")) & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
         IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & SkewText() & vbCrLf & _
-        IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _
-        IIf(seisMode, "EQ " & EQ_FUNC & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z & PdelText(), IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
+        IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static on one track at most, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _
+        IIf(seisMode, "EQ " & eqLevel & IIf(eqLevel = "DD1", " (torsion x " & JN(EQ_TORS_DD1) & " caps / piers, deck Asy Asz x " & JN(EQ_SHEAR_DD1) & ")", "") & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z & PdelText(), IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
     If rtiMode Then s = s & vbCrLf & "RTI: " & nTrk & " rail line(s), " & rN(1) & " rail nodes per line, " & nWin & " train windows + " & IIf(rtiNL, nLL & " nonlinear live load stages + ", "") & "TU+, TU-, END; " & bgUsed.Count & " spring groups, " & lgUsed.Count & " load groups; embankment " & RTI_EMB & " m"
     Summary = s
@@ -1426,7 +1439,7 @@ Private Sub ReadLoadData(wb As Workbook)
     ' rail level above the slab top: no input cell (owner 2026-11-06), ballast + protection concrete + sleeper and rail
     railH = Num(NmRange(wb, "G_BALAST_YUKSEKLIGI").Cells(1).Value, "G_BALAST_YUKSEKLIGI") + _
             Num(NmRange(wb, "G_KORUMA_BETONU_YUKSEKLIGI").Cells(1).Value, "G_KORUMA_BETONU_YUKSEKLIGI") + RAIL_OVER_BALLAST
-    If NumOr0(NmRange(wb, "G_KOPRU_ONEM_SINIFI").Cells(1).Value) <> 1 Then warnText = warnText & "- KOS is not 1: EQ cases still use " & EQ_FUNC & "." & vbCrLf
+    If NumOr0(NmRange(wb, "G_KOPRU_ONEM_SINIFI").Cells(1).Value) <> 1 Then warnText = warnText & "- KOS is not 1: EQ cases use " & eqLevel & " as picked." & vbCrLf
     ReadCombTables wb.Worksheets("1_GIRIS")
     If seisMode Then ReadSpectra wb.Worksheets("SPECTRUM")
     If rtiMode Then
@@ -1463,9 +1476,9 @@ Private Sub ReadSpectra(ws As Worksheet)
         End If
     Next col
     For r = 1 To specNames.Count
-        If specNames(r) = EQ_FUNC Then Exit Sub
+        If specNames(r) = eqLevel Then Exit Sub
     Next r
-    Err.Raise vbObjectError + 52, , "SPECTRUM: curve " & EQ_FUNC & " not found."
+    Err.Raise vbObjectError + 52, , "SPECTRUM: curve " & eqLevel & " not found."
 End Sub
 
 Private Sub ReadCombTables(ws As Worksheet)
@@ -1581,7 +1594,7 @@ Private Sub BuildLoads()
             AddLoad e, "DW_1", "GZ", 1, "LY", -w / 2, -(tQ(d, Q_RAIL) + tQ(d, Q_PANEL)) * n / 2
             AddLoad e, "DW_2", "GZ", -1, "LY", 0, -(tQ(d, Q_PROT) + tQ(d, Q_TRK)) * n
             If seisMode Then
-                AddLoad e, MASS_CASE, "GZ", -1, "LY", 0, -qvk * NTracks(d)
+                AddLoad e, MASS_CASE, "GZ", -1, "LY", 0, -qvk * IIf(NTracks(d) > MASS_TRACKS, MASS_TRACKS, NTracks(d))
             Else
                 AddLoad e, "WS-Y", "LY", -1, "LY", 0, wG
                 AddLoad e, "WL", "LY", 1, "LZ", railH + WL_HEIGHT, wV
@@ -1788,12 +1801,15 @@ End Sub
 Private Sub AddSeismicPayloads()
     Dim s As String, i As Long
     ' TKDY effective stiffness: bending x EQ_STIFF (deck, cap, piers), EQ_STIFF_SLAB (connection slab)
+    ' DD1 (owner 2026-11-16): torsion x EQ_TORS_DD1 on cap and piers, shear areas x EQ_SHEAR_DD1 on the deck
+    Dim torSub As Double, shDk As Double
+    torSub = IIf(eqLevel = "DD1", EQ_TORS_DD1, 1): shDk = IIf(eqLevel = "DD1", EQ_SHEAR_DD1, 1)
     For i = 1 To nDk
-        s = s & SecfSeis(DeckSec(i), EQ_STIFF, 3) & "," & SecfSeis(SlabSec(i), EQ_STIFF_SLAB, 1) & ","
+        s = s & SecfSeis(DeckSec(i), EQ_STIFF, 3, 1, shDk) & "," & SecfSeis(SlabSec(i), EQ_STIFF_SLAB, 1) & ","
     Next i
-    s = s & SecfSeis(SEC_CAP, EQ_STIFF, 1)
+    s = s & SecfSeis(SEC_CAP, EQ_STIFF, 1, torSub)
     For i = 1 To nPS
-        s = s & "," & SecfSeis(SEC_PIER0 + i - 1, EQ_STIFF, 1)
+        s = s & "," & SecfSeis(SEC_PIER0 + i - 1, EQ_STIFF, 1, torSub)
     Next i
     Add "db/SECF", "{""Assign"":{" & s & "}}"
     Add "db/LTOM", "{""Assign"":{""1"":{""DIR"":""XYZ"",""bNODAL"":true,""bBEAM"":true,""bFLOOR"":true,""bPRES"":true,""GRAV"":" & JN(GRAV_STYP) & _
@@ -1819,13 +1835,13 @@ Private Function AnyTwoTracks() As Boolean
     Next d
 End Function
 
-Private Function SecfSeis(ByVal sec As Long, ByVal f As Double, ByVal part As Long) As String
-    SecfSeis = QS(CStr(sec)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":"""",""AREA_SF"":1,""ASY_SF"":1,""ASZ_SF"":1,""IXX_SF"":1,""IYY_SF"":" & JN(f) & ",""IZZ_SF"":" & JN(f) & _
+Private Function SecfSeis(ByVal sec As Long, ByVal f As Double, ByVal part As Long, Optional ByVal fT As Double = 1, Optional ByVal fS As Double = 1) As String
+    SecfSeis = QS(CStr(sec)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":"""",""AREA_SF"":1,""ASY_SF"":" & JN(fS) & ",""ASZ_SF"":" & JN(fS) & ",""IXX_SF"":" & JN(fT) & ",""IYY_SF"":" & JN(f) & ",""IZZ_SF"":" & JN(f) & _
         ",""WGT_SF"":1,""W_SF"":1,""IPART"":" & part & ",""bDiffIJ"":false}]}"
 End Function
 
 Private Function RsCase(ByVal no As Long, ByVal nm As String, ByVal ang As Long) As String
-    RsCase = QS(CStr(no)) & ":{""NAME"":" & QS(nm) & ",""DIR"":""XY"",""ANGLE"":" & ang & ",""SCALE"":1,""PMFT"":1,""bDAMP"":false,""INTERP"":""LOG"",""DESC"":"""",""COMTYPE"":""CQC"",""bADDSIGN"":true,""iSIGNTYPE"":0,""bMODE"":false,""aFUNCNAME"":[" & QS(EQ_FUNC) & "]}"
+    RsCase = QS(CStr(no)) & ":{""NAME"":" & QS(nm) & ",""DIR"":""XY"",""ANGLE"":" & ang & ",""SCALE"":1,""PMFT"":1,""bDAMP"":false,""INTERP"":""LOG"",""DESC"":"""",""COMTYPE"":""CQC"",""bADDSIGN"":true,""iSIGNTYPE"":0,""bMODE"":false,""aFUNCNAME"":[" & QS(eqLevel) & "]}"
 End Function
 
 ' lane t on every deck element of the spans that have that track; ECC = minus the offset to the left
