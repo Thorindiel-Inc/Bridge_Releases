@@ -10,7 +10,8 @@ Option Explicit
 '  Model kind from its combinations (db/LCOM-GEN; single combinations, envelopes are not read):
 '     static model   Servis * and STR-* (a moving load or an envelope combination inside gives a (max) and a
 '                    (min) row; a combination that answers nothing as (CB) is read again as (CB:max) / (CB:min))
-'     seismic model  TKDY-EQ-* (owner 2026-11-16: not H-TKDY, not ENV_DEP)
+'     seismic model  TKDY-EQ-* and H-TKDY-EQ-* (owner 2026-11-17: H-TKDY too, the foundation workbook
+'                    takes its forces from these sheets; not ENV_DEP)
 '  Run it once with each model open. A run replaces its own model's rows and keeps the other model's
 '  rows when they were read for the same piers (stamps M_TESIR_STATIK, M_TESIR_DEPREM, M_TESIR_GRUP on
 '  the data sheet); other rows (the reference rows of the template) are dropped.
@@ -30,7 +31,8 @@ Option Explicit
 '  Written to the block M_TESIR_BLOK of MIDAS_<group> (default CW26:DE3839: counter, No, Ad, Pu, My, Mz, Vy, Vz,
 '  T) = the block that Tablo 63
 '  'Ayak Tesirleri', the shear picks and the torsion pick of the group sheet read; static rows first,
-'  then seismic (the EQ rows appended to the static rows, owner 2026-11-16). Tablo 63 grows with the rows:
+'  then seismic: the TKDY-EQ rows, then the H-TKDY-EQ rows (owner 2026-11-17: same block, after TKDY-EQ, so
+'  Tablo 63 lists them and the shear and torsion picks see them). Tablo 63 grows with the rows:
 '  ORTA_AYAK.SAYFALARI_YENILE_SESSIZ adds or removes its pages (ORTA_AYAK 2026-11-16e). Element list for later use (GSD) in M_TESIR_ELEMAN (DF6:DG400).
 '  Then ORTA_AYAK.SAYFALARI_YENILE_SESSIZ (gates, print areas, page numbers, lists).
 '  MAPI key: read by MIDAS_CORE (G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, asked; memory only).
@@ -39,8 +41,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-pier-forces"
-Private Const SCRIPT_VERSION As String = "2026-11-16c"
-Private Const SCRIPT_CHANGELOG As String = "Tablo 63 grows with the rows (ORTA_AYAK 2026-11-16e makes its pages), no row-limit note; combinations holding an envelope (Servis 4, STR-3, STR-4 through IVME/FREN) read as (max) / (min); data sheet found by its group number (M_TESIR_NO), named after the piers; new: column forces of every pier of each group (base, and top for 2 or more columns) from the open static or seismic model into the group's MIDAS_<group> sheet, which Tablo 63 reads"
+Private Const SCRIPT_VERSION As String = "2026-11-17a"
+Private Const SCRIPT_CHANGELOG As String = "H-TKDY-EQ combinations of the seismic model are read too and written after the TKDY-EQ rows (the foundation workbook uses them); Tablo 63 grows with the rows (ORTA_AYAK 2026-11-16e makes its pages), no row-limit note; combinations holding an envelope (Servis 4, STR-3, STR-4 through IVME/FREN) read as (max) / (min); data sheet found by its group number (M_TESIR_NO), named after the piers; new: column forces of every pier of each group (base, and top for 2 or more columns) from the open static or seismic model into the group's MIDAS_<group> sheet, which Tablo 63 reads"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 85|MIDAS sonu\u00E7lar\u0131|Ayak tesirleri|MIDAS_AYAK_OKU||Civil NX'te a\u00E7\u0131k statik veya sismik modelden her ayak grubunun ayaklar\u0131n\u0131n kolon tesirlerini (taban; 2 ve daha \u00E7ok kolonda \u00FCst u\u00E7 da) grubun MIDAS_<grup> sayfas\u0131na okur; Tablo 63 bunlar\u0131 g\u00F6sterir. Her model i\u00E7in bir kez \u00E7al\u0131\u015Ft\u0131r\u0131n. Modele bir \u015Fey yazmaz.|
@@ -56,7 +58,7 @@ Private Const N_TABLE As String = "G_AYAK_TABLOSU"
 Private Const N_COLS As String = "G_AYAK_KOLON"
 Private Const N_GROUP As String = "OA_GRUP_NO"
 Private Const N_GTAB As String = "OA_GRUP_TABLO"
-Private Const KIND_S As String = "S", KIND_D As String = "D"
+Private Const KIND_S As String = "S", KIND_D As String = "D", KIND_H As String = "H"
 
 Private mScripted As Boolean
 Private mLog As String
@@ -137,7 +139,7 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
     Set lc = TableGet("LCOM-GEN")
     If lc Is Nothing Then Err.Raise vbObjectError + 4, , "The open model has no load combinations (db/LCOM-GEN)."
     Set combos = ReadCombos(lc, hasS, hasD)
-    If combos.Count = 0 Then Err.Raise vbObjectError + 5, , "The open model (" & tag & ") has no Servis / STR or TKDY-EQ combination: open the static or the seismic MIDAS_KOPRU model."
+    If combos.Count = 0 Then Err.Raise vbObjectError + 5, , "The open model (" & tag & ") has no Servis / STR or TKDY-EQ / H-TKDY-EQ combination: open the static or the seismic MIDAS_KOPRU model."
     If UiStopped() Then RunRead = "STOPPED: by the user.": Exit Function
     Logp "Civil NX: pier columns (" & PIER_GROUP & ", elements, nodes)"
     Set chains = ReadChains()
@@ -163,7 +165,7 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
     End If
 
     If Not mScripted Then
-        s = "Model: " & tag & vbCrLf & "Combinations: " & combos.Count & IIf(hasS, " static (Servis, STR)", "") & IIf(hasD, " seismic (TKDY-EQ)", "") & vbCrLf & _
+        s = "Model: " & tag & vbCrLf & "Combinations: " & combos.Count & IIf(hasS, " static (Servis, STR)", "") & IIf(hasD, " seismic (TKDY-EQ, H-TKDY-EQ)", "") & vbCrLf & _
             "Piers: " & used & " in " & GroupCount(grpPiers, nG) & " groups, " & elems.Count & " column ends." & vbCrLf & vbCrLf & _
             "The forces of this model replace its rows in the MIDAS_<group> sheets. Continue?"
         If UiMsg(s, vbOKCancel + vbQuestion, MSG_TITLE) <> vbOK Then RunRead = "STOPPED: nothing was read.": Exit Function
@@ -192,14 +194,14 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
     End If
     On Error GoTo Fail
     Application.ScreenUpdating = True
-    RunRead = "Done. Model: " & tag & vbCrLf & IIf(hasS, "static (Servis, STR) ", "") & IIf(hasD, "seismic (TKDY-EQ) ", "") & combos.Count & " combinations." & vbCrLf & sumTxt & mLog
+    RunRead = "Done. Model: " & tag & vbCrLf & IIf(hasS, "static (Servis, STR) ", "") & IIf(hasD, "seismic (TKDY-EQ, H-TKDY-EQ) ", "") & combos.Count & " combinations." & vbCrLf & sumTxt & mLog
     Exit Function
 Fail:
     Application.ScreenUpdating = True
     RunRead = "STOPPED: " & Err.Description & IIf(Len(mLog) > 0, vbCrLf & mLog, "")
 End Function
 
-' single combinations of the static (Servis *, STR-*) and seismic (TKDY-EQ-*) kinds in model order:
+' single combinations of the static (Servis *, STR-*) and seismic (TKDY-EQ-*, H-TKDY-EQ-*) kinds in model order:
 ' items Array(name, hasMovingLoad, kind)
 Private Function ReadCombos(lc As Object, ByRef hasS As Boolean, ByRef hasD As Boolean) As Collection
     Dim byName As Object, ks As Variant, i As Long, rec As Object, nm As String, kind As String
@@ -217,6 +219,7 @@ Private Function ReadCombos(lc As Object, ByRef hasS As Boolean, ByRef hasD As B
         If CLng(NumOr0(rec("iTYPE"))) = 0 Then
             If nm Like "Servis *" Or nm Like "STR-*" Then kind = KIND_S: hasS = True
             If nm Like "TKDY-EQ-*" Then kind = KIND_D: hasD = True
+            If nm Like "H-TKDY-EQ-*" Then kind = KIND_H: hasD = True
         End If
         If Len(kind) > 0 Then ReadCombos.Add Array(nm, HasMV(byName, nm, 0), kind)
     Next i
@@ -420,7 +423,7 @@ Private Function WriteGroup(wb As Workbook, ByVal k As Long, piers As Collection
     Dim ds As Worksheet, stS As Range, stD As Range, stG As Range, gName As String, keepS As Boolean, keepD As Boolean
     Dim oldV As Variant, i As Long, rowsS As Collection, rowsD As Collection, rw As Variant, n As Long, out() As Variant, j As Long
     Dim c As Variant, p As Variant, cc As Long, locs As Variant, lc As Variant, sfx As Variant, sfxs As Variant, ch As Variant, key As String, v As Variant
-    Dim blk As Range, el As Range, used As Long
+    Dim blk As Range, el As Range, used As Long, rowsH As Collection
     Set ds = DataSheetOf(wb, k)
     If ds Is Nothing Then Err.Raise vbObjectError + 11, , "No data sheet for group " & k & ": run 'Ayak grubu sayfalari' (ORTA_AYAK) first."
     Set stS = McAnchor(ds, "M_TESIR_STATIK", "DG2", True)
@@ -436,7 +439,7 @@ Private Function WriteGroup(wb As Workbook, ByVal k As Long, piers As Collection
     ' rows of the other model stay when they were read for these piers
     keepS = (Not hasS) And Len(CellTxt(stS.Value)) > 0 And StrComp(CellTxt(stG.Value), gName, vbTextCompare) = 0
     keepD = (Not hasD) And Len(CellTxt(stD.Value)) > 0 And StrComp(CellTxt(stG.Value), gName, vbTextCompare) = 0
-    Set rowsS = New Collection: Set rowsD = New Collection
+    Set rowsS = New Collection: Set rowsD = New Collection: Set rowsH = New Collection
     ' rows in use: down to the last name in the block's third column
     For i = blk.Rows.Count To 1 Step -1
         If Len(CellTxt(blk.Cells(i, 3).Value)) > 0 Then used = i: Exit For
@@ -446,7 +449,7 @@ Private Function WriteGroup(wb As Workbook, ByVal k As Long, piers As Collection
         For i = 1 To UBound(oldV, 1)
             If Len(CellTxt(oldV(i, 3))) > 0 Then
                 rw = Array(oldV(i, 3), oldV(i, 4), oldV(i, 5), oldV(i, 6), oldV(i, 7), oldV(i, 8), oldV(i, 9))
-                If Left$(CellTxt(oldV(i, 3)), 5) = "TKDY-" Then
+                If Left$(CellTxt(oldV(i, 3)), 5) = "TKDY-" Or Left$(CellTxt(oldV(i, 3)), 7) = "H-TKDY-" Then
                     If keepD Then rowsD.Add rw
                 Else
                     If keepS Then rowsS.Add rw
@@ -470,12 +473,20 @@ Private Function WriteGroup(wb As Workbook, ByVal k As Long, piers As Collection
                         v = res(key)
                         rw = Array(c(0) & sfx & "_" & p(0) & IIf(p(2) > 1, "K" & cc, "") & "_" & lc, _
                                    Round(v(0), 2), Round(v(1), 2), Round(v(2), 2), Round(v(3), 2), Round(v(4), 2), Round(v(5), 2))
-                        If c(2) = KIND_S Then rowsS.Add rw Else rowsD.Add rw
+                        If c(2) = KIND_S Then
+                            rowsS.Add rw
+                        ElseIf c(2) = KIND_H Then
+                            rowsH.Add rw
+                        Else
+                            rowsD.Add rw
+                        End If
                     Next sfx
                 Next lc
             Next cc
         Next p
     Next c
+    ' H-TKDY rows after the TKDY-EQ rows, whatever the combination order of the model
+    For Each rw In rowsH: rowsD.Add rw: Next rw
     n = rowsS.Count + rowsD.Count
     If n > blk.Rows.Count Then Err.Raise vbObjectError + 13, , ds.Name & ": " & n & " rows, the sheet holds " & blk.Rows.Count & "."
     If n > 0 Then
@@ -506,7 +517,7 @@ Private Function WriteGroup(wb As Workbook, ByVal k As Long, piers As Collection
             If i <= el.Rows.Count Then el.Cells(i, 2).Value = p(0) & IIf(p(2) > 1, " K" & cc, "") & ": " & ch(0) & "-" & ch(1) & ", base " & ch(1) & " J" & IIf(p(2) > 1, ", top " & ch(0) & " I", "")
         Next cc
     Next p
-    WriteGroup = ds.Name & ": " & n & " rows (static " & rowsS.Count & ", seismic " & rowsD.Count & ")"
+    WriteGroup = ds.Name & ": " & n & " rows (static " & rowsS.Count & ", seismic " & rowsD.Count & IIf(rowsH.Count > 0, ", of them H-TKDY " & rowsH.Count, "") & ")"
 End Function
 
 ' ---- plan (test): what would be read ----

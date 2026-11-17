@@ -33,7 +33,7 @@ Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVa
 '  The window opens at a share of the monitor Excel is on and can be resized: Layout scales fonts and
 '  controls with Zoom and gives the extra room to the results log. Everything is laid out in BASE_W x BASE_H.
 '  The tool list is rows of labels: an MSForms ListBox drew at the wrong size on scaled screens.
-'  Macros read them with UiNum / UiIdx. They call UiMsg, UiInput, UiInputS, UiChoice, UiProgress,
+'  Macros read them with UiNum / UiIdx. They call UiMsg, UiInput, UiInputS, UiChoice, UiTicks, UiProgress,
 '  UiLog instead of MsgBox / InputBox: long texts scroll, nothing is cut off.
 '  frmPanel and frmAsk are built here from code, so this module ships through the UPDATE feed.
 '  Building needs "Trust access to the VBA project object model", as UPDATE does.
@@ -41,8 +41,8 @@ Private Declare PtrSafe Function ApiSetFocus Lib "user32" Alias "SetFocus" (ByVa
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "macro-panel"
-Private Const SCRIPT_VERSION As String = "2026-11-12a"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; New tool Kenar ayak modeli (MIDAS_KENARAYAK); New tool Temel tipine gore sayfalar (abutment workbooks, module KENAR_AYAK); Tools also start in workbooks whose file name has an apostrophe (8'6_...); Modal analiz sonuclari: one module (MIDAS_SEKIL merged into MIDAS_MOD); Versions: the picked tool shows its macro module and version (as installed in this workbook) beside its name, and the start line of a run in the log names them; Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed)"
+Private Const SCRIPT_VERSION As String = "2026-11-17a"
+Private Const SCRIPT_CHANGELOG As String = "New question box with tick boxes (UiTicks), first used by GSD_OKU; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; New tool Kenar ayak modeli (MIDAS_KENARAYAK); New tool Temel tipine gore sayfalar (abutment workbooks, module KENAR_AYAK); Tools also start in workbooks whose file name has an apostrophe (8'6_...); Modal analiz sonuclari: one module (MIDAS_SEKIL merged into MIDAS_MOD); Versions: the picked tool shows its macro module and version (as installed in this workbook) beside its name, and the start line of a run in the log names them; Sonuclar: the log also follows after a question (the window takes the activation back during a run); Sonuclar: the log follows the run and can be scrolled during and after it; RTI sonuclari: no LM71 scale field (the rail stress pictures are pasted by hand); Modal analiz sonuclari: read and mode pictures in one tool (Mod sekilleri row removed)"
 Private Const FORM_VERSION As String = "2026-11-06d"
 Private Const F_PANEL As String = "frmPanel"
 Private Const F_ASK As String = "frmAsk"
@@ -88,6 +88,7 @@ Private inLayout As Boolean, closed As Boolean, barPct As Double, zoomNow As Dou
 Private fKey() As String, fTyp() As String, fCnt As Long
 Private vals As Object
 Private uiBtn As Long, uiText As String, uiPick As Long, pickDef As Long, running As Boolean
+Private tickItems As Variant, tickDef As String, tickRes As String   ' UiTicks: captions, 1/0 defaults, 1/0 answer
 Private stepTxt As String, stepT As Double, runBad As Boolean   ' live log: open step, its start, a failure was logged
 Private stopReq As Boolean, stopRaised As Boolean, runBack As Long   ' Durdur: asked, raised once; colour of the Run button
 Private pHwnd As LongPtr   ' window handle of the macro window (FitWindow)
@@ -1066,6 +1067,16 @@ Public Function UiChoice(ByVal prompt As String, items As Variant, Optional ByVa
     If uiBtn = 1 Then UiChoice = uiPick
 End Function
 
+' tick boxes, one per item: returns a text of 1 / 0 per item ("101"), empty on Cancel. def = the ticks
+' shown at the start in the same form (empty = none). Called by name (Application.Run), so a workbook
+' with an older PANEL can fall back.
+Public Function UiTicks(ByVal prompt As String, items As Variant, Optional ByVal title As String = "", Optional ByVal def As String = "") As String
+    tickItems = items: tickDef = def: tickRes = ""
+    AskDialog prompt, IIf(title = "", "Makro", title), vbOKCancel, vbQuestion, False, "", Empty
+    tickItems = Empty
+    If uiBtn = 1 Then UiTicks = tickRes
+End Function
+
 Public Sub AskDone(ByVal btn As Long, ByVal txt As String, ByVal pick As Long)
     uiBtn = btn: uiText = txt: uiPick = pick
 End Sub
@@ -1073,6 +1084,7 @@ End Sub
 Private Sub AskDialog(ByVal prompt As String, ByVal title As String, ByVal kind As Long, ByVal style As Long, ByVal withInput As Boolean, ByVal def As String, items As Variant, Optional ByVal defBtn As Long = 1)
     Dim f As Object, fr As Object, lb As Object, ln As Variant, ver As String, ask As String, t As String
     Dim i As Long, last As Long, tone As Long, tp As Double, z As Double, hMax As Double, bodyH As Double, withList As Boolean
+    Dim ck As Object, nT As Long, t0 As Long
     EnsureForms
     Set f = VBA.UserForms.Add(F_ASK)
     withList = IsArray(items)
@@ -1137,6 +1149,22 @@ Private Sub AskDialog(ByVal prompt As String, ByVal title As String, ByVal kind 
         lb.top = tp
         tp = tp + 36
     End If
+    ' tick boxes (UiTicks): added to this instance of the form, read back after it closes
+    If IsArray(tickItems) Then
+        t0 = LBound(tickItems)
+        nT = UBound(tickItems) - t0 + 1
+        For i = 0 To nT - 1
+            Set ck = f.Controls.Add("Forms.CheckBox.1", "tk" & i, True)
+            ck.Caption = CStr(tickItems(t0 + i))
+            ck.Value = (Mid$(tickDef, i + 1, 1) = "1")
+            ck.Left = 16: ck.top = tp: ck.Width = ASK_W - 32: ck.Height = 20
+            On Error Resume Next
+            ck.Font.Name = "Segoe UI": ck.Font.Size = FONT_BASE: ck.BackStyle = 0
+            On Error GoTo 0
+            tp = tp + 21
+        Next i
+        tp = tp + 6
+    End If
     ' buttons
     f.Controls("lblRule").top = tp + 2
     tp = tp + 12
@@ -1163,6 +1191,11 @@ Private Sub AskDialog(ByVal prompt As String, ByVal title As String, ByVal kind 
     f.Height = (tp + 46) * z + 34
     uiBtn = 0: uiText = "": uiPick = 0
     f.Show vbModal
+    If nT > 0 And uiBtn = 1 Then
+        For i = 0 To nT - 1
+            tickRes = tickRes & IIf(f.Controls("tk" & i).Value = True, "1", "0")
+        Next i
+    End If
     Unload f
     logBounce = True
 End Sub
