@@ -8,8 +8,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-09d"
-Private Const SCRIPT_CHANGELOG As String = "Skew per span in MIDAS_KOPRU, TKDY seismic warnings; Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
+Private Const SCRIPT_VERSION As String = "2026-11-17a"
+Private Const SCRIPT_CHANGELOG As String = "MIDAS_KOPRU: LL_KUTLE on one track at most, earthquake level DD1 / DD2 / DD2a / DD3 in the window, P-Delta in the seismic model, piers with several columns; Skew per span in MIDAS_KOPRU, TKDY seismic warnings; Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
     Dim d As String
@@ -189,7 +189,7 @@ Private Function P1_1() As String
     s = s & "<tr>" & vbLf
     s = s & "<td>Use</td>" & vbLf
     s = s & "<td>Service, strength, wind, braking, temperature</td>" & vbLf
-    s = s & "<td>Response spectrum, first stage (DD2a)</td>" & vbLf
+    s = s & "<td>Response spectrum at the level picked in the window (DD2a by default)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Load cases</td>" & vbLf
@@ -199,7 +199,7 @@ Private Function P1_1() As String
     s = s & "<tr>" & vbLf
     s = s & "<td>Moving load</td>" & vbLf
     s = s & "<td>LM71</td>" & vbLf
-    s = s & "<td>None; the train is the static 80 kN/m per track case LL_KUTLE</td>" & vbLf
+    s = s & "<td>None; the train is the static 80 kN/m case LL_KUTLE on one track at most</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Stiffness</td>" & vbLf
@@ -357,7 +357,12 @@ Private Function P1_2() As String
     s = s & "<tr>" & vbLf
     s = s & "<td><code>EQ_FUNC</code></td>" & vbLf
     s = s & "<td>DD2a</td>" & vbLf
-    s = s & "<td>Spectrum used by the EQ cases</td>" & vbLf
+    s = s & "<td>Default spectrum of the EQ cases; the window field Deprem d&#252;zeyi picks DD1 / DD2 / DD2a / DD3</td>" & vbLf
+    s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
+    s = s & "<td><code>EQ_TORS_DD1</code>, <code>EQ_SHEAR_DD1</code></td>" & vbLf
+    s = s & "<td>0.2, 0.5</td>" & vbLf
+    s = s & "<td>DD1 only: torsion factor of caps and piers, shear area factor of the deck</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td><code>EQ_STIFF</code>, <code>EQ_STIFF_SLAB</code></td>" & vbLf
@@ -403,16 +408,16 @@ Private Function P1_2() As String
     s = s & "<tr>" & vbLf
     s = s & "<th>Level</th>" & vbLf
     s = s & "<th>Z</th>" & vbLf
-    s = s & "</tr>" & vbLf
-    s = s & "</thead>" & vbLf
-    s = s & "<tbody>" & vbLf
-    s = s & "<tr>" & vbLf
-    s = s & "<td>Deck node (section offset CT = top of slab)</td>" & vbLf
     P1_2 = s
 End Function
 
 Private Function P1_3() As String
     Dim s As String
+    s = s & "</tr>" & vbLf
+    s = s & "</thead>" & vbLf
+    s = s & "<tbody>" & vbLf
+    s = s & "<tr>" & vbLf
+    s = s & "<td>Deck node (section offset CT = top of slab)</td>" & vbLf
     s = s & "<td>0</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
@@ -437,7 +442,7 @@ Private Function P1_3() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Pier top</td>" & vbLf
-    s = s & "<td>Cap bottom = cap top - H, rigid link to the cap node</td>" & vbLf
+    s = s & "<td>Cap bottom = cap top - H, rigid link to the cap node above it</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Pier base</td>" & vbLf
@@ -521,9 +526,14 @@ Private Function P1_3() As String
     s = s & "</table></div>" & vbLf
     s = s & "<p><code>G_SABIT_UC</code> gives the fixed end of each span. All bearings use the chapter 4 values, so the macro accepts only" & vbLf
     s = s & "<code>Mesnet - 1</code> until chapter 4 reports the others.</p>" & vbLf
-    s = s & "<p><strong>Caps.</strong> Nodes at the cap ends, the centre and every girder of both spans.</p>" & vbLf
-    s = s & "<p><strong>Piers.</strong> One column per axis, fixed at the base, no foundation stiffness. Elements = the larger of 5 and" & vbLf
-    s = s & "height / 3 m, equal lengths. The cap centre is tied to the pier top by a rigid link.</p>" & vbLf
+    s = s & "<p><strong>Caps.</strong> Nodes at the cap ends, the centre, every girder of both spans and every column.</p>" & vbLf
+    s = s & "<p><strong>Piers.</strong> One column per axis, unless <code>G_AYAK_KOLON</code> (INPUT L:M beside the pier table: Kolon Say&#305;s&#305;, Kolon" & vbLf
+    s = s & "Aral&#305;&#287;&#305;) gives more (owner 2026-11-13): then n columns, equally spaced along the cap at the typed spacing, symmetric" & vbLf
+    s = s & "about the axis, all with the section of the pier row (En along the cap). The build stops when they overlap" & vbLf
+    s = s & "or reach past the cap ends (<code>G_BASLIK_BOYU</code>). Every column is fixed at the base, no foundation stiffness." & vbLf
+    s = s & "Elements = the larger of 5 and height / 3 m, equal lengths. Each column top is tied to the cap node above it" & vbLf
+    s = s & "by a rigid link; a column within 10 cm of a cap node already there (a bearing or the centre) is tied to that" & vbLf
+    s = s & "node instead, so the cap gets no piece shorter than 10 cm from a column (owner 2026-11-13).</p>" & vbLf
     s = s & "<p><strong>Abutments.</strong> No structure: the bearing bottom nodes are fixed.</p>" & vbLf
     s = s & "<p><strong>Numbers</strong> stay below 10500, which is kept for the rail layer. The build stops if they reach it.</p>" & vbLf
     s = s & "<hr />" & vbLf
@@ -583,6 +593,11 @@ Private Function P1_3() As String
     s = s & "<tr>" & vbLf
     s = s & "<td><code>DAIRESEL</code></td>" & vbLf
     s = s & "<td>Solid circle</td>" & vbLf
+    P1_3 = s
+End Function
+
+Private Function P1_4() As String
+    Dim s As String
     s = s & "<td>En = diameter, empty Kal&#305;nl&#305;k</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
@@ -593,11 +608,6 @@ Private Function P1_3() As String
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
     s = s & "<p><strong>Deck stiffness.</strong> Civil NX keeps the composite stiffness lines as sent and does not recalculate them, so" & vbLf
-    P1_3 = s
-End Function
-
-Private Function P1_4() As String
-    Dim s As String
     s = s & "the macro calculates them.</p>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
     s = s & "<thead>" & vbLf
@@ -668,7 +678,7 @@ Private Function P1_4() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>LL_KUTLE</td>" & vbLf
-    s = s & "<td><code>G_HAT_DUSEY_YUKU</code> &#215; tracks, centred, static</td>" & vbLf
+    s = s & "<td><code>G_HAT_DUSEY_YUKU</code> &#215; one track (also on two-track decks, owner 2026-11-16), centred, static</td>" & vbLf
     s = s & "<td>Seismic</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
@@ -744,16 +754,20 @@ Private Function P1_4() As String
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>EQ cases</td>" & vbLf
-    s = s & "<td><code>EQ-X-(+)</code>, <code>EQ-Y-(+)</code>, <code>EQ-X-(-)</code>, <code>EQ-Y-(-)</code>: angles 0, 90, 180, 270, CQC, function DD2a</td>" & vbLf
+    s = s & "<td><code>EQ-X-(+)</code>, <code>EQ-Y-(+)</code>, <code>EQ-X-(-)</code>, <code>EQ-Y-(-)</code>: angles 0, 90, 180, 270, CQC, function = the picked level (DD2a by default; elastic curve of the SPECTRUM sheet)</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Stiffness (<code>db/SECF</code>, no group)</td>" & vbLf
-    s = s & "<td>Deck, cap, piers: Iyy, Izz &#215; 0.5. Slab: Iyy, Izz &#215; 0.25. Area, shear and torsion &#215; 1</td>" & vbLf
+    s = s & "<td>Deck, cap, piers: Iyy, Izz &#215; 0.5. Slab: Iyy, Izz &#215; 0.25. Area, shear and torsion &#215; 1; with DD1 (owner 2026-11-16) cap and piers torsion &#215; 0.2 and deck Asy, Asz &#215; 0.5</td>" & vbLf
+    s = s & "</tr>" & vbLf
+    s = s & "<tr>" & vbLf
+    s = s & "<td>P-Delta (<code>db/PDEL</code>, seismic model only)</td>" & vbLf
+    s = s & "<td>DC, DW_1, DW_2 &#215; Tablo 14 TKDY DC factor and LL_KUTLE &#215; its TKDY LL factor, 5 iterations, tolerance 1e-5; Civil NX applies it to the static cases, the eigenvalue and every spectrum run. The static model has none</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
     s = s & "</table></div>" & vbLf
-    s = s & "<p>Torsion is reduced in the second seismic stage (DD1), which is not built yet.</p>" & vbLf
-    s = s & "<p>If <code>G_KOPRU_ONEM_SINIFI</code> is not 1, the summary warns; the EQ cases still use DD2a.</p>" & vbLf
+    s = s & "<p>The earthquake level is picked in the window field Deprem d&#252;zeyi (DD1 / DD2 / DD2a / DD3, default DD2a). Only DD1 changes the torsion and shear factors above.</p>" & vbLf
+    s = s & "<p>If <code>G_KOPRU_ONEM_SINIFI</code> is not 1, the summary warns; the EQ cases use the picked level.</p>" & vbLf
     s = s & "<p>The summary also warns for TKDY 4.2.1.3 (a span over 80 m with KOS 1 or 2: vertical earthquake when DTS is 1 or 2," & vbLf
     s = s & "the model has no Z case) and TKDY 4.3.2.4 (span / deck width of 2 or less: the deck as one bar line is not allowed).</p>" & vbLf
     s = s & "<p><strong>Measured on the 33-span bridge</strong> (test copy of the module, same cases and factors):</p>" & vbLf
@@ -764,6 +778,11 @@ Private Function P1_4() As String
     s = s & "<th>Result</th>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</thead>" & vbLf
+    P1_4 = s
+End Function
+
+Private Function P1_5() As String
+    Dim s As String
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Mode 1</td>" & vbLf
@@ -778,11 +797,6 @@ Private Function P1_4() As String
     s = s & "<td>79,884 t</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "</tbody>" & vbLf
-    P1_4 = s
-End Function
-
-Private Function P1_5() As String
-    Dim s As String
     s = s & "</table></div>" & vbLf
     s = s & "<hr />" & vbLf
     s = s & "<h2 id=""9-combinations"">9. Combinations</h2>" & vbLf
@@ -899,10 +913,6 @@ Private Function P1_5() As String
     s = s & "</tr>" & vbLf
     s = s & "</thead>" & vbLf
     s = s & "<tbody>" & vbLf
-    s = s & "<tr>" & vbLf
-    s = s & "<td>Second seismic stage (DD1, torsion reduced)</td>" & vbLf
-    s = s & "<td>Later</td>" & vbLf
-    s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td>Bearings other than Mesnet - 1</td>" & vbLf
     s = s & "<td>Wait for chapter 4</td>" & vbLf
