@@ -51,8 +51,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-16a"
-Private Const SCRIPT_CHANGELOG As String = "Seismic model: earthquake level DD1 / DD2 / DD2a / DD3 picked in the window (DD1: torsion x 0.2 on caps and piers, deck shear areas x 0.5); Seismic model: LL_KUTLE on one track at most (80 kN/m, also on two-track decks); Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; Skew per span from the span table (Verevlik column picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings"
+Private Const SCRIPT_VERSION As String = "2026-11-19a"
+Private Const SCRIPT_CHANGELOG As String = "Confirm box: Yes builds, No stops (the payload-only choice is gone); Seismic model: earthquake level DD1 / DD2 / DD2a / DD3 picked in the window (DD1: torsion x 0.2 on caps and piers, deck shear areas x 0.5); Seismic model: LL_KUTLE on one track at most (80 kN/m, also on two-track decks); Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; Skew per span from the span table (Verevlik column picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 60|MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan;dd~Deprem d\u00FCzeyi (Sismik)~c~DD2a/DD1/DD2/DD3
@@ -230,17 +230,11 @@ Private Sub RunBuild(ByVal outDir As String, ByVal dry As Boolean, ByVal seismic
     End If
     msg = FitBox(Summary(), "kopru_summary", 170) & vbCrLf & vbCrLf & _
           "YES = WIPE the open Civil NX model, rebuild it as the " & ModelName() & " model and SAVE it." & vbCrLf & _
-          "NO = only write the JSON payloads (MIDAS\payload_kopru)."
-    Select Case UiMsg(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
-        Case vbNo
-            WritePayloads ThisWorkbook.Path & "\MIDAS\payload_kopru"
-            UiMsg "Payloads written to " & ThisWorkbook.Path & "\MIDAS\payload_kopru", vbInformation, MSG_TITLE
-            Application.StatusBar = False
-            Exit Sub
-        Case vbCancel
-            Application.StatusBar = False
-            Exit Sub
-    End Select
+          "NO = stop, nothing is sent to Civil NX."
+    If UiMsg(msg, vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
+        Application.StatusBar = False
+        Exit Sub
+    End If
     rep = SendAll()
     Application.StatusBar = False
     UiMsg FitBox(rep, "kopru_report", 0), IIf(InStr(rep, "FAIL") > 0, vbExclamation, vbInformation), MSG_TITLE

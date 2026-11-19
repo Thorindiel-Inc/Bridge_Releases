@@ -57,8 +57,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-abutment-build"
-Private Const SCRIPT_VERSION As String = "2026-11-13a"
-Private Const SCRIPT_CHANGELOG As String = "Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
+Private Const SCRIPT_VERSION As String = "2026-11-19a"
+Private Const SCRIPT_CHANGELOG As String = "Confirm box: Yes builds, No stops (the payload-only choice is gone); Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 70|MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|
@@ -187,18 +187,11 @@ Private Sub RunBuild(ByVal outDir As String, ByVal dry As Boolean)
     End If
     msg = Summary() & vbCrLf & vbCrLf & _
           "YES = WIPE the open Civil NX model, build the abutment " & abutNm & " model and SAVE it." & vbCrLf & _
-          "NO = only write the JSON payloads (MIDAS\payload_kenarayak)."
-    Select Case UiMsg(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
-        Case vbNo
-            SeatWarnDry
-            WritePayloads ThisWorkbook.Path & "\MIDAS\payload_kenarayak"
-            UiMsg "Payloads written to " & ThisWorkbook.Path & "\MIDAS\payload_kenarayak", vbInformation, MSG_TITLE
-            Application.StatusBar = False
-            Exit Sub
-        Case vbCancel
-            Application.StatusBar = False
-            Exit Sub
-    End Select
+          "NO = stop, nothing is sent to Civil NX."
+    If UiMsg(msg, vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
+        Application.StatusBar = False
+        Exit Sub
+    End If
     rep = SendAll()
     Application.StatusBar = False
     UiMsg rep, IIf(InStr(rep, "FAIL") > 0, vbExclamation, vbInformation), MSG_TITLE

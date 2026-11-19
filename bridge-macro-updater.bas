@@ -31,6 +31,11 @@ Option Explicit
 '  An optional 4th field lists the ids a module needs, separated by commas:
 '    midas-bridge-build|2026-11-12a|...|midas-core
 '  (written by make_manifest.py from the module's SCRIPT_NEEDS constant).
+'  A 5th field holds the module's name in the VBA project (the VB_Name of the
+'  published file). A line with it always has 5 fields, an empty needs field
+'  included:
+'    kilif|2026-11-19a|...|midas-core|KILIF
+'    macro-panel|2026-11-17a|...||PANEL
 '  e.g.
 '    global-input-pull|2026-10-27a|Pulls INPUT values by key from GLOBAL_INPUT.
 '    bridge-macro-updater|2026-10-27a|Adapted from the Culvert updater.
@@ -62,6 +67,16 @@ Option Explicit
 '  updater is older than 2026-11-12a replaces the callers first and the
 '  updater last; the new updater then finds the missing module and asks once
 '  more.
+'
+'  OLD MODULES THAT ARE TAKEN OVER (2026-11-19)
+'  A module without SCRIPT_ID is invisible to this updater. The one exception:
+'  a STANDARD module that carries the name of a managed module (5th manifest
+'  field) while the workbook holds no module with that id. It is the old,
+'  unversioned form of that module (e.g. the sheet macro KILIF). It is listed
+'  on its own in the question and, on Yes, its code is replaced in place like
+'  a stale module, so buttons that point at it keep working. The old code is
+'  written to the TEMP folder first and the file is named in the report. A
+'  manifest without the 5th field offers no take-over.
 '
 '  HOW THIS MODULE UPDATES ITSELF
 '  Rewriting a module while one of its own procedures is on the call stack
@@ -100,11 +115,11 @@ Option Explicit
 '  CONFIG
 ' ---------------------------------------------------------------------------
 
-Private Const SCRIPT_VERSION As String = "2026-11-12b"
+Private Const SCRIPT_VERSION As String = "2026-11-19a"
 
 ' One-line summary of what changed in THIS version, shown when the updater
 ' finds itself stale. One physical line, no "|".
-Private Const SCRIPT_CHANGELOG As String = "Report window: at most half the screen wide, long lines wrap, each module shows only its newest change; Adds a module that an installed module needs (e.g. the shared MIDAS_CORE) before the modules that call it are replaced"
+Private Const SCRIPT_CHANGELOG As String = "Takes over an old module that has the name of a managed module and no version (shown in the question, its old code is saved in the TEMP folder first); Report window: at most half the screen wide, long lines wrap, each module shows only its newest change; Adds a module that an installed module needs (e.g. the shared MIDAS_CORE) before the modules that call it are replaced"
 
 ' Identifies this module to the updater regardless of what it was
 ' named when pasted into Excel - these files carry no VB_Name, so the
@@ -160,6 +175,8 @@ Public Sub CheckBridgeMacroUpdates()
     Dim staleNames As String
     Dim installedIds As String
     Dim addNames As String, addLog As String, addCount As Long
+    Dim plainNames As String, takeNames As String, takeLog As String, takeCount As Long
+    Dim todo As String
     Dim selfStale As Boolean, selfCompName As String, selfLog As String, selfLatest As String
     Dim trustMsg As String
     Dim answer As VbMsgBoxResult
@@ -191,7 +208,11 @@ Public Sub CheckBridgeMacroUpdates()
         For Each comp In ThisWorkbook.VBProject.VBComponents
             code = ComponentCode(comp)
             thisId = ConstValue(code, "SCRIPT_ID")
-            If Len(thisId) > 0 Then installedIds = installedIds & "|" & LCase$(thisId)
+            If Len(thisId) > 0 Then
+                installedIds = installedIds & "|" & LCase$(thisId)
+            ElseIf IsPlainModule(comp) Then
+                plainNames = plainNames & "|" & comp.Name
+            End If
             If StrComp(thisId, SCRIPT_ID, vbTextCompare) = 0 Then
                 ' This module. Never handed to InstallUpdates - it is
                 ' replaced last, by BeginSelfUpdate. Uses the constant, not
@@ -243,6 +264,10 @@ Public Sub CheckBridgeMacroUpdates()
             End If
         Next comp
 
+        ' Old modules without a version that carry a managed module's name. Their
+        ' ids count as installed from here on, so what they need is added too.
+        takeNames = TakeOvers(manifest, plainNames & "|", installedIds, takeLog, takeCount)
+
         ' Modules the installed ones need and this workbook does not have.
         addNames = MissingNeeds(manifest, installedIds & "|", addLog, addCount)
     End If
@@ -250,6 +275,7 @@ Public Sub CheckBridgeMacroUpdates()
     ' The module lists. Missing and stale first - they are what the question
     ' is about; MsgBox cuts a long text off at the bottom.
     If addCount > 0 Then report = report & "MISSING, WILL BE ADDED (" & addCount & "):" & vbCrLf & addLog & vbCrLf
+    If takeCount > 0 Then report = report & "OLD MODULE WITHOUT A VERSION, WILL BE REPLACED (" & takeCount & "):" & vbCrLf & takeLog & vbCrLf
     If staleCount > 0 Then report = report & "OUT OF DATE (" & staleCount & "):" & vbCrLf & staleLog & vbCrLf
     If selfStale Then report = report & "UPDATER ITSELF (replaced last):" & vbCrLf & selfLog & vbCrLf
     If Len(aheadLog) > 0 Then report = report & "AHEAD OF SERVER (left alone):" & vbCrLf & aheadLog & vbCrLf
@@ -264,7 +290,7 @@ Public Sub CheckBridgeMacroUpdates()
         Exit Sub
     End If
 
-    If staleCount = 0 And addCount = 0 And Not selfStale Then
+    If staleCount = 0 And addCount = 0 And takeCount = 0 And Not selfStale Then
         If okCount = 0 And Len(aheadLog) = 0 Then
             Call Tell("No Bridge modules found in this workbook." & vbCrLf & vbCrLf & _
                       report, True)
@@ -277,11 +303,23 @@ Public Sub CheckBridgeMacroUpdates()
     ' The question and its warnings FIRST: with every module stale after a
     ' release, the list alone runs past what a MsgBox can show, and the
     ' question used to be cut off.
-    prompt = "Replace the " & (staleCount + IIf(selfStale, 1, 0)) & " out-of-date module(s)"
-    If addCount > 0 Then prompt = prompt & " and add the " & addCount & " missing module(s)"
-    prompt = prompt & "?" & vbCrLf & vbCrLf & _
+    If staleCount + IIf(selfStale, 1, 0) > 0 Then
+        todo = "replace the " & (staleCount + IIf(selfStale, 1, 0)) & " out-of-date module(s)"
+    End If
+    If takeCount > 0 Then
+        todo = todo & IIf(Len(todo) > 0, ", ", "") & "replace the " & takeCount & " old module(s) that have no version"
+    End If
+    If addCount > 0 Then
+        todo = todo & IIf(Len(todo) > 0, " and ", "") & "add the " & addCount & " missing module(s)"
+    End If
+    prompt = UCase$(Left$(todo, 1)) & Mid$(todo, 2) & "?" & vbCrLf & vbCrLf & _
              "No local backup is taken - any per-workbook edit to a managed " & _
              "module is lost. Save your work before continuing." & vbCrLf & vbCrLf
+    If takeCount > 0 Then
+        prompt = prompt & "An old module without a version carries the name of a managed module: " & _
+                 "its code is replaced by the managed module of the same name. " & _
+                 "Its old code is saved in the TEMP folder first." & vbCrLf & vbCrLf
+    End If
     If selfStale Then
         prompt = prompt & "The updater itself goes LAST: the workbook is SAVED " & _
                  "automatically first, then it rewrites itself once this " & _
@@ -292,7 +330,7 @@ Public Sub CheckBridgeMacroUpdates()
     If mSilent Then
         ' scripted run: no question, and the updater never rewrites itself
         mSilentLog = mSilentLog & report & vbCrLf
-        If staleCount + addCount > 0 Then Call InstallUpdates(addNames & staleNames)
+        If staleCount + addCount + takeCount > 0 Then Call InstallUpdates(addNames & takeNames & staleNames)
         If selfStale Then mSilentLog = mSilentLog & "NOTE: the updater itself is out of date; a scripted run leaves it alone." & vbCrLf
         Exit Sub
     End If
@@ -303,7 +341,7 @@ Public Sub CheckBridgeMacroUpdates()
 
     ' Missing modules first: a module that calls them must never be in the
     ' project without them.
-    If staleCount + addCount > 0 Then Call InstallUpdates(addNames & staleNames)
+    If staleCount + addCount + takeCount > 0 Then Call InstallUpdates(addNames & takeNames & staleNames)
     If selfStale Then Call BeginSelfUpdate(selfCompName, selfLatest)
 
 End Sub
@@ -314,7 +352,9 @@ End Sub
 ' ===========================================================================
 
 ' staleList is "moduleName|scriptId|expectedVersion;" repeated. A row with an
-' empty moduleName is a module to ADD (see MissingNeeds). Each module's code is
+' empty moduleName is a module to ADD (see MissingNeeds). A row with a 4th
+' field "old" is a TAKE-OVER (see TakeOvers): the module has no version, its
+' code is saved to the TEMP folder before it is replaced. Each module's code is
 ' replaced IN PLACE, with no backup taken first (see the header comment's
 ' NO LOCAL BACKUP note) - the component is never removed and re-imported,
 ' so the module keeps its name and any references to it.
@@ -329,6 +369,7 @@ Private Sub InstallUpdates(ByVal staleList As String)
     Dim doneLog As String, failLog As String
     Dim doneCount As Long, failCount As Long
     Dim adding As Boolean, why As String
+    Dim taking As Boolean, oldPath As String
 
     rows = Split(staleList, ";")
 
@@ -337,6 +378,8 @@ Private Sub InstallUpdates(ByVal staleList As String)
             f = Split(rows(i), "|")
             adding = (Len(f(0)) = 0)
             If adding Then f(0) = f(1)          ' until it has a module name, show the id
+            taking = False
+            If UBound(f) >= 3 Then taking = (f(3) = "old")
 
             If Not FetchText(BaseUrl() & "/" & f(1) & ".bas", newCode) Then
                 failCount = failCount + 1
@@ -357,6 +400,12 @@ Private Sub InstallUpdates(ByVal staleList As String)
                 failLog = failLog & "  - " & f(0) & ": the server sent " & _
                           ConstValue(newCode, "SCRIPT_VERSION") & ", not " & f(2) & _
                           " - the release is still propagating. Try again in a few minutes." & vbCrLf
+            ElseIf taking And StrComp(ConstValue(newCode, "SCRIPT_ID"), f(1), vbTextCompare) <> 0 Then
+                ' A take-over writes over code that carries no id of its own, so
+                ' the download must be exactly the module the manifest named.
+                failCount = failCount + 1
+                failLog = failLog & "  - " & f(0) & ": the server sent the module " & _
+                          ConstValue(newCode, "SCRIPT_ID") & ", not " & f(1) & " - left as it is" & vbCrLf
             Else
                 Set comp = Nothing
                 why = "module vanished"
@@ -369,13 +418,22 @@ Private Sub InstallUpdates(ByVal staleList As String)
                     On Error GoTo 0
                 End If
 
+                oldPath = ""
+                If taking Then
+                    If Not comp Is Nothing Then oldPath = SaveOldCode(comp)
+                End If
+
                 If comp Is Nothing Then
                     failCount = failCount + 1
                     failLog = failLog & "  - " & f(0) & ": " & why & vbCrLf
+                ElseIf taking And Len(oldPath) = 0 Then
+                    failCount = failCount + 1
+                    failLog = failLog & "  - " & f(0) & ": its old code could not be saved to the TEMP folder - left as it is" & vbCrLf
                 ElseIf ReplaceComponentCode(comp, newCode) Then
                     doneCount = doneCount + 1
-                    doneLog = doneLog & "  - " & f(0) & IIf(adding, "  added  ", "  ->  ") & _
+                    doneLog = doneLog & "  - " & f(0) & IIf(adding, "  added  ", IIf(taking, "  (no version)  ->  ", "  ->  ")) & _
                               ConstValue(newCode, "SCRIPT_VERSION") & vbCrLf
+                    If taking Then doneLog = doneLog & "      old code saved: " & oldPath & vbCrLf
                     ' Read from the DOWNLOADED code, not the manifest - this
                     ' is what actually got installed, guaranteed consistent
                     ' with it even if the manifest and the module disagree.
@@ -483,6 +541,93 @@ Private Function MissingNeeds(ByVal manifest As String, ByVal installedIds As St
         i = i + 1
     Loop
     MissingNeeds = rows
+
+End Function
+
+
+' True for a standard module that is not the self-update bootstrap. Sheet,
+' ThisWorkbook, class and form modules are never taken over.
+Private Function IsPlainModule(ByVal comp As Object) As Boolean
+
+    On Error Resume Next
+    IsPlainModule = (comp.Type = STD_MODULE) And (StrComp(comp.Name, BOOTSTRAP_MODULE, vbTextCompare) <> 0)
+    If Err.Number <> 0 Then IsPlainModule = False
+    Err.Clear
+    On Error GoTo 0
+
+End Function
+
+
+' Rows ("moduleName|scriptId|version|old;") for the standard modules that carry
+' no SCRIPT_ID but the name of a managed module (5th manifest field) whose id
+' this workbook does not hold: the old, unversioned form of that module.
+' plainNames is "|name|name|"; installedIds is "|id|id" in lower case and gets
+' the ids taken over, so MissingNeeds adds what they need. Never this updater.
+Private Function TakeOvers(ByVal manifest As String, ByVal plainNames As String, _
+                           ByRef installedIds As String, _
+                           ByRef takeLog As String, ByRef takeCount As Long) As String
+
+    Dim rows() As String
+    Dim f() As String
+    Dim i As Long, p As Long, q As Long
+    Dim ln As String, takeId As String, wantName As String, realName As String
+    Dim rowsOut As String
+
+    If Len(plainNames) < 3 Then Exit Function
+
+    manifest = Replace(manifest, vbCrLf, vbLf)
+    manifest = Replace(manifest, vbCr, vbLf)
+    rows = Split(manifest, vbLf)
+
+    For i = LBound(rows) To UBound(rows)
+        ln = Trim$(rows(i))
+        If Len(ln) > 0 And Left$(ln, 1) <> "#" Then
+            f = Split(ln, "|")
+            If UBound(f) >= 4 Then
+                takeId = LCase$(Trim$(f(0)))
+                wantName = Trim$(f(4))
+                If Len(takeId) > 0 And Len(wantName) > 0 And Len(Trim$(f(1))) > 0 And _
+                   StrComp(takeId, SCRIPT_ID, vbTextCompare) <> 0 Then
+                    p = InStr(1, plainNames, "|" & wantName & "|", vbTextCompare)
+                    If p > 0 And InStr(1, installedIds & "|", "|" & takeId & "|", vbBinaryCompare) = 0 Then
+                        q = InStr(p + 1, plainNames, "|")
+                        realName = Mid$(plainNames, p + 1, q - p - 1)
+                        rowsOut = rowsOut & realName & "|" & takeId & "|" & Trim$(f(1)) & "|old;"
+                        takeCount = takeCount + 1
+                        takeLog = takeLog & "  - " & realName & "  (no version)  ->  " & takeId & " " & Trim$(f(1)) & vbCrLf
+                        If Len(Trim$(f(2))) > 0 Then takeLog = takeLog & "      " & NewestEntry(Trim$(f(2))) & vbCrLf
+                        installedIds = installedIds & "|" & takeId
+                    End If
+                End If
+            End If
+        End If
+    Next i
+    TakeOvers = rowsOut
+
+End Function
+
+
+' Writes the code of comp to <TEMP>\<SCRIPT_ID>_old_<module>_<stamp>.bas and
+' returns the path; "" when it could not be written. A take-over replaces code
+' that is in no repo, so it is kept here first.
+Private Function SaveOldCode(ByVal comp As Object) As String
+
+    Dim oldFile As String
+    Dim fileNo As Integer
+
+    On Error GoTo Failed
+    oldFile = Environ$("TEMP") & "\" & SCRIPT_ID & "_old_" & comp.Name & "_" & _
+              Format$(Now, "yyyymmdd_hhnnss") & ".bas"
+    fileNo = FreeFile
+    Open oldFile For Output As #fileNo
+    Print #fileNo, ComponentCode(comp)
+    Close #fileNo
+    SaveOldCode = oldFile
+    Exit Function
+Failed:
+    On Error Resume Next
+    If fileNo <> 0 Then Close #fileNo
+    SaveOldCode = ""
 
 End Function
 
@@ -732,17 +877,20 @@ Public Sub FinishBridgeSelfUpdate()
            "Save the workbook to keep it.", vbInformation, "Bridge macro updater"
 
     ' An updater older than 2026-11-12a could not add modules: the modules it
-    ' just replaced may need one (e.g. MIDAS_CORE). Look once more.
+    ' just replaced may need one (e.g. MIDAS_CORE). One older than 2026-11-19a
+    ' could not take over an old module without a version. Look once more.
     If AnyMissingNeeds() Then Call CheckBridgeMacroUpdates
 
 End Sub
 
-' True when an installed module needs a module this workbook lacks. False
+' True when an installed module needs a module this workbook lacks, or an old
+' module without a version waits to be taken over (see TakeOvers). False
 ' when the server or the VBA project cannot be read: the next check says why.
 Private Function AnyMissingNeeds() As Boolean
 
     Dim manifest As String, ids As String, addLog As String
     Dim addCount As Long
+    Dim plainNames As String, takeLog As String, takeCount As Long
     Dim comp As Object
     Dim thisId As String
 
@@ -750,10 +898,15 @@ Private Function AnyMissingNeeds() As Boolean
     If Not FetchText(BaseUrl() & "/manifest.txt", manifest) Then Exit Function
     For Each comp In ThisWorkbook.VBProject.VBComponents
         thisId = ConstValue(ComponentCode(comp), "SCRIPT_ID")
-        If Len(thisId) > 0 Then ids = ids & "|" & LCase$(thisId)
+        If Len(thisId) > 0 Then
+            ids = ids & "|" & LCase$(thisId)
+        ElseIf IsPlainModule(comp) Then
+            plainNames = plainNames & "|" & comp.Name
+        End If
     Next comp
+    Call TakeOvers(manifest, plainNames & "|", ids, takeLog, takeCount)
     Call MissingNeeds(manifest, ids & "|", addLog, addCount)
-    AnyMissingNeeds = (addCount > 0)
+    AnyMissingNeeds = (addCount + takeCount > 0)
 
 End Function
 
@@ -1102,7 +1255,7 @@ End Sub
 ' 9 pt is the size MsgBox shows. The window title is the report's title
 ' line minus its [version]. Line styling by prefix: OK / WARN / FAIL / NOTE
 ' step lines get a green tick / orange warning / red cross / blue info; a
-' FAILED: / WARNINGS: / SKIPPED / OUT OF DATE / OK: / UP TO DATE / UPDATED
+' FAILED: / WARNINGS: / SKIPPED / OUT OF DATE / OLD MODULE / OK: / UP TO DATE / UPDATED
 ' heading colours itself and gives its '  - ' items its symbol; gate
 ' ON/OFF lines a filled/empty circle; title and verdict bold, dashed rules
 ' grey, indented continuation lines grey. A- / A+ zoom; the window fits
@@ -1182,7 +1335,7 @@ Private Function ReportWindowScript(ByVal ok As Boolean) As String
     s = s & "  elseif ($l -match '^(FAILED|FAIL)\b.*:\s*$') { $secSym = $cross; $secColor = $red; Add-Line $null $ink $l $bold $red }" & vbCrLf
     s = s & "  elseif ($l -match '^WARNINGS?\b.*:\s*$') { $secSym = $warn; $secColor = $orange; Add-Line $null $ink $l $bold $orange }" & vbCrLf
     s = s & "  elseif ($l -match '^(SKIPPED|NOT MANAGED|AHEAD OF SERVER)\b.*:\s*$') { $secSym = $ring; $secColor = $grey; Add-Line $null $ink $l $bold $grey }" & vbCrLf
-    s = s & "  elseif ($l -match '^(OUT OF DATE|UPDATER ITSELF)\b.*:\s*$') { $secSym = $cycle; $secColor = $blue; Add-Line $null $ink $l $bold $blue }" & vbCrLf
+    s = s & "  elseif ($l -match '^(OUT OF DATE|OLD MODULE WITHOUT A VERSION|UPDATER ITSELF)\b.*:\s*$') { $secSym = $cycle; $secColor = $blue; Add-Line $null $ink $l $bold $blue }" & vbCrLf
     s = s & "  elseif ($l -match '^(OK|UP TO DATE|UPDATED)\b.*:\s*$') { $secSym = $tick; $secColor = $green; Add-Line $null $ink $l $bold $green }" & vbCrLf
     s = s & "  elseif ($l -match '^\s+- (.*)$' -and $secSym) { Add-Run '    ' $plain $ink; Add-Line $secSym $secColor $matches[1] $plain }" & vbCrLf
     s = s & "  elseif ($l -match '^\s{4,}\S') { Add-Line $null $ink $l $plain $grey }" & vbCrLf

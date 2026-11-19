@@ -41,8 +41,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-ustyapi-build"
-Private Const SCRIPT_VERSION As String = "2026-11-12c"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17; Inputs and messages through the macro window; Span sheets named 4A_, 4B_ ..."
+Private Const SCRIPT_VERSION As String = "2026-11-19a"
+Private Const SCRIPT_CHANGELOG As String = "Confirm box: Yes builds, No stops (the payload-only choice is gone); Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Macro window log shows the size of each table sent; Skew warning covers G_VEREVLIK B22:F22; HSLM vehicle and cases removed (no dynamic analysis), staged model: LM71 - S and LM71 - a=1 behind a window gate; Outer end beam optional: 0 in G_DIS_ENLEME_KALINLIGI or _BOYU = no beam, end line is slab strip only; Staged model uses AASHTO Ec (INPUT column C), dynamic keeps Eurocode Ecm; CF case loaded with the largest Qtk of 2_YUKLER Tablo 17"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 50|MIDAS modelleri|\u00DCstyap\u0131 modeli|MIDAS_USTYAPI_OLUSTUR||Civil NX'te a\u00E7\u0131k modele tek a\u00E7\u0131kl\u0131k \u0131zgara modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~A\u015Famal\u0131 (tasar\u0131m)/Dinamik (modlar);span~A\u00E7\u0131kl\u0131k~s~;strip~\u015Eerit aral\u0131\u011F\u0131 (m)~n~1.5;link~Link boyu (m)~n~0.35;kfix~Sabit yay rijitli\u011Fi (kN/m)~n~100000;mvek~Tek hat ve \u03B1=1 LM71 (a\u015Famal\u0131)~c~Hay\u0131r/Evet
@@ -213,17 +213,11 @@ Private Sub RunBuild(ByVal spanIndex As Long, ByVal outDir As String, ByVal dry 
 
     msg = FitBox(Summary(), "summary", 160) & vbCrLf & vbCrLf & _
           "YES = WIPE the open Civil NX model, rebuild it as the " & IIf(dynMode, "DYNAMIC", "STAGED") & " model and SAVE it." & IIf(dynMode, " The J measurement overwrites the open file during the build.", "") & vbCrLf & _
-          "NO = only write the JSON payloads (MIDAS\payload)."
-    Select Case UiMsg(msg, vbYesNoCancel + vbQuestion, MSG_TITLE)
-        Case vbNo
-            WritePayloads ThisWorkbook.Path & "\MIDAS\payload"
-            UiMsg "Payloads written to " & ThisWorkbook.Path & "\MIDAS\payload", vbInformation, MSG_TITLE
-            Application.StatusBar = False
-            Exit Sub
-        Case vbCancel
-            Application.StatusBar = False
-            Exit Sub
-    End Select
+          "NO = stop, nothing is sent to Civil NX."
+    If UiMsg(msg, vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
+        Application.StatusBar = False
+        Exit Sub
+    End If
 
     rep = SendAll()
     Application.StatusBar = False

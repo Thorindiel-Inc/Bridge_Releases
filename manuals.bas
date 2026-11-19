@@ -8,8 +8,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "manuals"
-Private Const SCRIPT_VERSION As String = "2026-11-17a"
-Private Const SCRIPT_CHANGELOG As String = "MIDAS_KOPRU: LL_KUTLE on one track at most, earthquake level DD1 / DD2 / DD2a / DD3 in the window, P-Delta in the seismic model, piers with several columns; Skew per span in MIDAS_KOPRU, TKDY seismic warnings; Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
+Private Const SCRIPT_VERSION As String = "2026-11-19a"
+Private Const SCRIPT_CHANGELOG As String = "Builders: the confirm box is Yes = build, No = stop (no payload-only choice); MIDAS_KOPRU: LL_KUTLE on one track at most, earthquake level DD1 / DD2 / DD2a / DD3 in the window, P-Delta in the seismic model, piers with several columns; Skew per span in MIDAS_KOPRU, TKDY seismic warnings; Macros read the span sheets, no 4-7 file; manuals inside the workbook: MIDAS_KOPRU and MIDAS_USTYAPI, button opens them in the browser"
 
 Public Sub KILAVUZ_AC()
     Dim d As String
@@ -116,7 +116,7 @@ Private Function P1_1() As String
     s = s & "   whatever is open, so keep the static and seismic models in separate files.</li>" & vbLf
     s = s & "<li>Press <strong>MIDAS GENEL MODEL</strong> on the INPUT sheet.</li>" & vbLf
     s = s & "<li>Answer the pop-ups (below). The summary box shows the bridge, the model size and any warnings.</li>" & vbLf
-    s = s & "<li><strong>Yes</strong> builds and saves. <strong>No</strong> only writes the JSON files to <code>MIDAS\payload_kopru</code>.</li>" & vbLf
+    s = s & "<li><strong>Yes</strong> builds and saves. <strong>No</strong> stops: nothing is sent to Civil NX.</li>" & vbLf
     s = s & "<li>Run the analysis in Civil NX.</li>" & vbLf
     s = s & "</ol>" & vbLf
     s = s & "<div class=""tw""><table>" & vbLf
@@ -1029,7 +1029,7 @@ Private Function P2_1() As String
     s = s & "<tbody>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td><code>MIDAS_USTYAPI_OLUSTUR</code> (button)</td>" & vbLf
-    s = s & "<td>Asks for the span and 3 model values, then shows a summary. <strong>Yes</strong> wipes and rebuilds the model that is open in Civil NX, then saves it. <strong>No</strong> only writes the JSON payloads to <code>&lt;1-2 folder&gt;\MIDAS\payload</code>.</td>" & vbLf
+    s = s & "<td>Asks for the span and 3 model values, then shows a summary. <strong>Yes</strong> wipes and rebuilds the model that is open in Civil NX, then saves it. <strong>No</strong> stops: nothing is sent to Civil NX.</td>" & vbLf
     s = s & "</tr>" & vbLf
     s = s & "<tr>" & vbLf
     s = s & "<td><code>MIDAS_USTYAPI_PAYLOAD span, path47, outDir</code></td>" & vbLf
