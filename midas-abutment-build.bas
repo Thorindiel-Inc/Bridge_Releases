@@ -59,6 +59,9 @@ Option Explicit
 '  Seat node count (owner 2026-11-11): a live build writes the mesh count into KA_MESNET_NOKTA
 '  (1_RAPOR AH190, the divisor of the report's per-node seat values) unless that cell holds a
 '  formula; a dry run only warns when they differ.
+'  Front fill (owner 2026-11-19, M30): KA_P_EV_ON (1_RAPOR J181, gsoil x KA_ON_DOLGU_YUKSEKLIK) on every footing
+'  plate in front of the stem's front face, full footing width, inside load case / group EV (EV factors);
+'  a workbook without the name builds as before (0).
 '  Loads (M1, M2, M7): seat value x girders / seat nodes on the stem-top nodes between the wing
 '  walls' inner faces; fill inertia only in PEQ-X; transverse soil pressure on the +x wing wall.
 '  Entries: MIDAS_KENARAYAK_OLUSTUR (macro window; asks the transverse direction on a skewed abutment),
@@ -70,8 +73,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-abutment-build"
-Private Const SCRIPT_VERSION As String = "2026-11-19c"
-Private Const SCRIPT_CHANGELOG As String = "Model picked in the window: Karma (default, as before), Statik (no TKDY rows, nothing cracked) or Deprem (TKDY rows only, everything cracked); Load setup picked in the window: factored load cases (as before, default) or load cases + combinations as the KA1 template (unfactored component cases, one combination per LC row, envelopes over them; a question then sets the cracked boundary: EQ / PEQ cases cracked, or all uncracked); Confirm box: Yes builds, No stops (the payload-only choice is gone); Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190)"
+Private Const SCRIPT_VERSION As String = "2026-11-19d"
+Private Const SCRIPT_CHANGELOG As String = "Front fill: KA_P_EV_ON on the toe (in front of the stem, full width) inside load case EV; Model picked in the window: Karma (default, as before), Statik (no TKDY rows, nothing cracked) or Deprem (TKDY rows only, everything cracked); Load setup picked in the window: factored load cases (as before, default) or load cases + combinations as the KA1 template (unfactored component cases, one combination per LC row, envelopes over them; a question then sets the cracked boundary: EQ / PEQ cases cracked, or all uncracked); Confirm box: Yes builds, No stops (the payload-only choice is gone); Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 70|MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|yuk~Y\u00FCk kurgusu~c~Fakt\u00F6rl\u00FC y\u00FCk durumlar\u0131/Y\u00FCk durumlar\u0131 + kombinasyonlar;model~Model~c~Karma (statik + deprem)/Statik (\u00E7atlamam\u0131\u015F)/Deprem (\u00E7atlam\u0131\u015F)
@@ -105,6 +108,7 @@ Private meshM As Double, fPlate As Double, fPile As Double
 Private eConc As Double, denConc As Double, clsConc As String
 Private nGird As Long, spanCol As Long, nSeatWant As Long
 Private qDC As Double, qLL As Double, qTUX As Double, qTUY As Double, qWSX As Double, qWSY As Double, qWL As Double, qCF As Double, qBR As Double, qPX As Double, qPY As Double
+Private pEVon As Double   ' front fill on the toe (KA_P_EV_ON, 0 = none)
 Private pEH0 As Double, pEHA As Double, pEV As Double, pLS As Double, pEQX As Double, pEQY As Double, pEQs As Double, pPEQX As Double, pPEQY As Double, khSeis As Double
 Private projName As String, clientName As String, bridgeName As String
 Private warnText As String, askUser As Boolean, trSign As Long   ' trSign: +1 transverse loads toward +x, -1 toward -x
@@ -328,6 +332,8 @@ Private Sub ReadInputs()
     qDC = NV("KA_Y_DC"): qLL = NV("KA_Y_LL"): qTUX = NV("KA_Y_TUX"): qTUY = NV("KA_Y_TUY")
     qWSX = NV("KA_Y_WSX"): qWSY = NV("KA_Y_WSY"): qWL = NV("KA_Y_WL"): qCF = NV("KA_Y_CF"): qBR = NV("KA_Y_BR"): qPX = NV("KA_Y_PEQX"): qPY = NV("KA_Y_PEQY")
     pEH0 = NV("KA_P_EH0"): pEHA = NV("KA_P_EHA"): pEV = NV("KA_P_EV"): pLS = NV("KA_P_LS")
+    pEVon = 0
+    If HasName("KA_P_EV_ON") Then pEVon = NV("KA_P_EV_ON")
     pEQX = NV("KA_P_EQX"): pEQY = NV("KA_P_EQY"): pEQs = NV("KA_P_EQ_EGIM"): pPEQX = NV("KA_P_PEQX"): pPEQY = NV("KA_P_PEQY"): khSeis = NV("KA_KH")
     nSeatWant = CLng(NumOr0(NmRange(ThisWorkbook, "KA_MESNET_NOKTA").Cells(1, 1).Value))
     projName = NSOr("G_PROJE_ADI"): clientName = NSOr("G_IDARE_ADI"): bridgeName = NSOr("G_KOPRU_ADI")
@@ -953,8 +959,13 @@ Private Function ElemP(ByVal c As String, ByVal e As Long, p() As Double) As Boo
     Select Case c
         Case "EV"
             If mem <> M_FOOT Then Exit Function
-            If Not (InRange(eCu(e), fi1, fi2) And eCv(e) <= vBk + EPS) Then Exit Function
-            For i = 1 To eNn(e): p(i) = -pEV: Next i
+            If InRange(eCu(e), fi1, fi2) And eCv(e) <= vBk + EPS Then
+                For i = 1 To eNn(e): p(i) = -pEV: Next i                 ' fill on the heel
+            ElseIf eCv(e) > vFr + EPS And Abs(pEVon) > EPS Then
+                For i = 1 To eNn(e): p(i) = -pEVon: Next i               ' front fill on the toe (owner 2026-11-19)
+            Else
+                Exit Function
+            End If
         Case "EH0", "EHA"
             If Not earth Then Exit Function
             For i = 1 To eNn(e)
@@ -1801,7 +1812,7 @@ Private Function AppliedTable() As String
 End Function
 
 Private Function OpenItems() As String
-    OpenItems = "Owner rules (2026-11-10, plan 4.1 M1-M23): earth pressure on the stem and backwall to the footing mid-plane, wing walls from the footing top; dynamic increment as an inverted triangle; EV on the heel only; " & _
+    OpenItems = "Owner rules (2026-11-10, plan 4.1 M1-M23): earth pressure on the stem and backwall to the footing mid-plane, wing walls from the footing top; dynamic increment as an inverted triangle; EV on the heel" & IIf(Abs(pEVon) > EPS, " and the front fill " & JN(pEVon) & " kN/m2 on the whole toe (in EV)", " only") & "; " & _
         "longitudinal seat loads toward the span; the transverse direction moves the seat WS / TU-Y / PEQ-Y loads, the PEQ-Y inertia and the wing wall with the transverse soil pressure; no vertical seismic; seismic stiffness factors 0.5 on all 8 components of every wall plate, none on the footing, piles Iyy / Izz 0.5 (TKDY 4.3.7.6 / 7.2.4.4); " & _
         "skewed heel, toe, footing length and pile row spacing normal to the stem; combinations: " & IIf(comboMode, "one per LC 'Add' row over the component cases, plus the envelopes", "envelopes only") & " (LCOM-GEN). Seat loads WL (KA_Y_WL) and CF (KA_Y_CF) act across the bridge in the transverse direction chosen for the build." & vbCrLf
 End Function
