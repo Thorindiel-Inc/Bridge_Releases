@@ -12,6 +12,9 @@ Option Explicit
 '  (I end of the top element for the KA builder). A new builder only needs a new PileHeads.
 '  Loads: envelopes ENV_SER, ENV_STR, ENV_DEP of db/LCOM-GEN, read as NAME(CB:max) and NAME(CB:min)
 '  (a plain (CB) answers nothing, measured 2026-11-16), Beam Force table at the head end.
+' Separate models (owner 2026-11-19, MIDAS_KENARAYAK model gate Statik / Deprem): only the envelopes the open
+' model has are read (at least one); the columns and raw rows of the others are kept when the pile list
+' (elements in order) is the one already in KAZIK_UC, else they are emptied; the stamp names what was read.
 '  Sign (owner 2026-11-17): MIDAS max = tension side, min = compression side; report compression +:
 '     Min = -Axial(ENV max), Mak = -Axial(ENV min), for Servis (ENV_SER), Dayanim (ENV_STR), Deprem (ENV_DEP).
 '  KAZIK_UC (names, created at the defaults when missing):
@@ -35,8 +38,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-pile-loads"
-Private Const SCRIPT_VERSION As String = "2026-11-19a"
-Private Const SCRIPT_CHANGELOG As String = "New: pile-head envelope loads (ENV_SER / ENV_STR / ENV_DEP, max and min) of the open abutment model into KAZIK_UC; the 2A_KAZIK per-pile table, section 8.6.7 and GEO_KAZIK grow with the pile count, page numbers and lists follow"
+Private Const SCRIPT_VERSION As String = "2026-11-19b"
+Private Const SCRIPT_CHANGELOG As String = "Reads the envelopes the open model has (static or seismic abutment model of the model gate) and keeps the others from the last read when the piles are the same; New: pile-head envelope loads (ENV_SER / ENV_STR / ENV_DEP, max and min) of the open abutment model into KAZIK_UC; the 2A_KAZIK per-pile table, section 8.6.7 and GEO_KAZIK grow with the pile count, page numbers and lists follow"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 84|MIDAS sonu\u00E7lar\u0131|Kaz\u0131k u\u00E7 y\u00FCkleri|MIDAS_KAZIK_OKU||Civil NX'te a\u00E7\u0131k kenar ayak modelinden kaz\u0131k ba\u015Flar\u0131n\u0131n zarf y\u00FCklerini (ENV_SER / ENV_STR / ENV_DEP, en b\u00FCy\u00FCk ve en k\u00FC\u00E7\u00FCk) KAZIK_UC sayfas\u0131na okur; rapor tablolar\u0131 (2A_KAZIK, 8.6.7, GEO_KAZIK) kaz\u0131k say\u0131s\u0131na g\u00F6re b\u00FCy\u00FCr. Modele bir \u015Fey yazmaz.|
@@ -118,7 +121,7 @@ End Function
 ' ============================================================================
 Private Function RunRead(ByVal planOnly As Boolean) As String
     Dim wb As Workbook, pj As String, tag As String, t As String, lc As Object, heads As Collection, src As String
-    Dim keys As String, h As Variant, res As Object, s As String, k As Variant, envs As Object, miss As String
+    Dim keys As String, h As Variant, res As Object, s As String, k As Variant, envs As Object, miss As String, envUse As String
     On Error GoTo Fail
     mLog = ""
     Set wb = ThisWorkbook
@@ -145,9 +148,13 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
         envs(UCase$(CStr(lc(k)("NAME")))) = True
     Next k
     For Each k In Split(ENV_LIST, "|")
-        If Not envs.Exists(CStr(k)) Then miss = miss & " " & k
+        If envs.Exists(CStr(k)) Then
+            envUse = envUse & IIf(envUse = "", "", "|") & k
+        Else
+            miss = miss & IIf(miss = "", "", ", ") & k
+        End If
     Next k
-    If Len(miss) > 0 Then Err.Raise vbObjectError + 5, , "The open model (" & tag & ") has no envelope" & miss & ": open the abutment model built by MIDAS_KENARAYAK."
+    If Len(envUse) = 0 Then Err.Raise vbObjectError + 5, , "The open model (" & tag & ") has none of the envelopes " & Replace(ENV_LIST, "|", ", ") & ": open the abutment model built by MIDAS_KENARAYAK."
     If UiStopped() Then RunRead = "STOPPED: by the user.": Exit Function
     Logp "Civil NX: piles (" & PILE_GROUP & ", elements, nodes)"
     Set heads = PileHeads(src)
@@ -157,7 +164,7 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
     Next h
 
     If planOnly Then
-        s = "PLAN. Model: " & tag & vbCrLf & "Envelopes: " & Replace(ENV_LIST, "|", ", ") & vbCrLf & "Piles: " & heads.Count & " (" & src & ")" & vbCrLf
+        s = "PLAN. Model: " & tag & vbCrLf & "Envelopes: " & Replace(envUse, "|", ", ") & IIf(miss = "", "", " (not in this model: " & miss & ")") & vbCrLf & "Piles: " & heads.Count & " (" & src & ")" & vbCrLf
         For Each h In heads
             s = s & "  " & h(0) & " " & h(4) & "-end node " & h(1) & " x " & Format$(h(2), "0.00") & " y " & Format$(h(3), "0.00") & vbCrLf
         Next h
@@ -166,7 +173,8 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
     End If
 
     If Not mScripted Then
-        s = "Model: " & tag & vbCrLf & "Piles: " & heads.Count & " (" & src & ")" & vbCrLf & "Envelopes: " & Replace(ENV_LIST, "|", ", ") & " (max and min)" & vbCrLf & vbCrLf & _
+        s = "Model: " & tag & vbCrLf & "Piles: " & heads.Count & " (" & src & ")" & vbCrLf & "Envelopes: " & Replace(envUse, "|", ", ") & " (max and min)" & vbCrLf & _
+            IIf(miss = "", "", "Not in this model: " & miss & " - their columns are kept from the last read when the piles are the same." & vbCrLf) & vbCrLf & _
             "The pile-head loads of this model replace the table in " & SH_UC & "; the report tables follow the pile count. Continue?"
         If UiMsg(s, vbOKCancel + vbQuestion, MSG_TITLE) <> vbOK Then RunRead = "STOPPED: nothing was read.": Exit Function
     End If
@@ -174,14 +182,14 @@ Private Function RunRead(ByVal planOnly As Boolean) As String
     ' ---- forces ----
     Set res = CreateObject("Scripting.Dictionary")
     Logp "Civil NX: pile-head forces (max)"
-    ReadTable keys, "max", res
+    ReadTable keys, "max", res, envUse
     Logp "Civil NX: pile-head forces (min)"
-    ReadTable keys, "min", res
+    ReadTable keys, "min", res, envUse
     If UiStopped() Then RunRead = "STOPPED: by the user (nothing was written).": Exit Function
 
     ' ---- write ----
     Logp "Workbook: " & SH_UC & " and the report pages"
-    s = WriteUc(wb, heads, res, tag & " | " & Format$(Now, "yyyy-mm-dd hh:nn"), src)
+    s = WriteUc(wb, heads, res, tag & " | " & Format$(Now, "yyyy-mm-dd hh:nn"), src, envUse)
     s = s & PagesRefresh(wb)
     RunRead = "Done. Model: " & tag & vbCrLf & s & mLog
     Exit Function
@@ -260,12 +268,12 @@ End Function
 
 ' Beam Force table of the pile heads for the three envelopes, side "max" or "min":
 ' res("<elem>|<ENV>|<side>") = Array(Axial, Shear-y, Shear-z, Torsion, Moment-y, Moment-z, Part text) as MIDAS gives
-Private Sub ReadTable(ByVal keys As String, ByVal side As String, res As Object)
+Private Sub ReadTable(ByVal keys As String, ByVal side As String, res As Object, ByVal envUse As String)
     Dim nm As Variant, lcs As String, body As String, resp As String, root As Object, tb As Object, head As Variant, data As Variant
     Dim iE As Long, iL As Long, iP As Long, iA As Long, iVy As Long, iVz As Long, iT As Long, iMy As Long, iMz As Long
     Dim j As Long, r As Long, ld As String, want As Object
     Set want = CreateObject("Scripting.Dictionary")
-    For Each nm In Split(ENV_LIST, "|")
+    For Each nm In Split(envUse, "|")
         lcs = lcs & IIf(lcs = "", "", ",") & QS(CStr(nm) & "(CB:" & side & ")")
         want(CStr(nm)) = True
     Next nm
@@ -327,10 +335,12 @@ Private Sub CheckUcLayout(uc As Worksheet)
         Err.Raise vbObjectError + 11, , SH_UC & " does not have the MIDAS_KAZIK layout (header 'Elem' above the pile table and the raw table): install the new " & SH_UC & " first."
 End Sub
 
-' writes the pile table, the raw head forces, the stamp, the count and the source; returns a summary line
-Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByVal stamp As String, ByVal src As String) As String
+' writes the pile table, the raw head forces, the stamp, the count and the source; returns a summary line.
+' envUse = the envelopes read ("" = all); the others keep their cells when the pile list is the one in KAZIK_UC
+Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByVal stamp As String, ByVal src As String, Optional ByVal envUse As String = "") As String
     Dim uc As Worksheet, tbl As Range, raw As Range, n As Long, out() As Variant, rw() As Variant, h As Variant, i As Long, r As Long
-    Dim env As Variant, side As Variant, v As Variant, c As Long, xs As Object, ys As Object
+    Dim env As Variant, side As Variant, v As Variant, c As Long, xs As Object, ys As Object, j As Long
+    Dim use As Object, oldT As Variant, oldR As Variant, same As Boolean, kept As String, emptied As String, prev As String, note As String
     Set uc = SheetOf(wb, SH_UC)
     If uc Is Nothing Then Err.Raise vbObjectError + 11, , "This workbook has no sheet " & SH_UC & "."
     CheckUcLayout uc
@@ -340,6 +350,23 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
     If n > tbl.Rows.Count Then Err.Raise vbObjectError + 11, , n & " piles, " & SH_UC & " holds " & tbl.Rows.Count & "."
     Set xs = Ranks(heads, 2)
     Set ys = Ranks(heads, 3)
+    Set use = CreateObject("Scripting.Dictionary")
+    For Each env In Split(IIf(envUse = "", ENV_LIST, envUse), "|")
+        use(CStr(env)) = True
+    Next env
+    ' a partial read keeps the other envelopes when the piles (elements in order) are the ones already written
+    If use.Count < 3 Then
+        oldT = tbl.Resize(n).Value
+        oldR = raw.Resize(6 * n).Value
+        same = (CLng(NumOr0(McAnchor(uc, "M_KAZIK_ADET", "B3").Value)) = n)
+        i = 0
+        For Each h In heads
+            i = i + 1
+            If same Then same = (CLng(NumOr0(oldT(i, 2))) = CLng(h(0)))
+        Next h
+        prev = CellTxt(McAnchor(uc, "M_KAZIK_DAMGA", "B2").Value)
+        If InStr(prev, " || ") > 0 Then prev = Left$(prev, InStr(prev, " || ") - 1)
+    End If
     ReDim out(1 To n, 1 To 13)
     ReDim rw(1 To 6 * n, 1 To 9)
     i = 0: r = 0
@@ -351,12 +378,17 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
         c = 7
         For Each env In Split(ENV_LIST, "|")
             For Each side In Array("max", "min")
-                v = ForceOf(res, h, CStr(env), CStr(side))
                 c = c + 1
-                out(i, c) = Round(-v(0), 2)            ' compression +: Min from (max), Mak from (min)
                 r = r + 1
-                rw(r, 1) = h(0): rw(r, 2) = env & "(" & side & ")": rw(r, 3) = v(6)
-                rw(r, 4) = v(0): rw(r, 5) = v(1): rw(r, 6) = v(2): rw(r, 7) = v(3): rw(r, 8) = v(4): rw(r, 9) = v(5)
+                If use.Exists(CStr(env)) Then
+                    v = ForceOf(res, h, CStr(env), CStr(side))
+                    out(i, c) = Round(-v(0), 2)            ' compression +: Min from (max), Mak from (min)
+                    rw(r, 1) = h(0): rw(r, 2) = env & "(" & side & ")": rw(r, 3) = v(6)
+                    rw(r, 4) = v(0): rw(r, 5) = v(1): rw(r, 6) = v(2): rw(r, 7) = v(3): rw(r, 8) = v(4): rw(r, 9) = v(5)
+                ElseIf same Then
+                    out(i, c) = oldT(i, c)
+                    For j = 1 To 9: rw(r, j) = oldR(r, j): Next j
+                End If
             Next side
         Next env
     Next h
@@ -365,6 +397,17 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
     raw.ClearContents
     tbl.Resize(n).Value = out
     raw.Resize(6 * n).Value = rw
+    If use.Count < 3 Then
+        For Each env In Split(ENV_LIST, "|")
+            If Not use.Exists(CStr(env)) Then
+                If same Then kept = kept & IIf(kept = "", "", ", ") & env Else emptied = emptied & IIf(emptied = "", "", ", ") & env
+            End If
+        Next env
+        stamp = stamp & " [" & Replace(IIf(envUse = "", ENV_LIST, envUse), "|", ", ") & "]"
+        If kept <> "" Then stamp = stamp & " || " & kept & " kept from: " & prev
+        If kept <> "" Then note = note & "Kept from the last read (same piles): " & kept & "." & vbCrLf
+        If emptied <> "" Then note = note & "Emptied (not in this model, and the piles differ from the last read): " & emptied & "." & vbCrLf
+    End If
     With McAnchor(uc, "M_KAZIK_DAMGA", "B2")
         If Len(CellTxt(.Offset(0, -1).Value)) = 0 Then .Offset(0, -1).Value = "Model"
         .Value = stamp
@@ -378,7 +421,7 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
         .Value = src
     End With
     Application.Calculate
-    WriteUc = SH_UC & ": " & n & " piles, " & 6 * n & " raw rows." & vbCrLf
+    WriteUc = SH_UC & ": " & n & " piles, " & 6 * n & " raw rows." & vbCrLf & note
 End Function
 
 ' distinct coordinates (0.01 m) of item field f -> rank 1, 2 ... from the smallest

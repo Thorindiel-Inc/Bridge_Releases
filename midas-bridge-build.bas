@@ -51,8 +51,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-bridge-build"
-Private Const SCRIPT_VERSION As String = "2026-11-19a"
-Private Const SCRIPT_CHANGELOG As String = "Confirm box: Yes builds, No stops (the payload-only choice is gone); Seismic model: earthquake level DD1 / DD2 / DD2a / DD3 picked in the window (DD1: torsion x 0.2 on caps and piers, deck shear areas x 0.5); Seismic model: LL_KUTLE on one track at most (80 kN/m, also on two-track decks); Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; Skew per span from the span table (Verevlik column picks G_VEREVLIK B22:F22): bearings, cap and pier turned; Seismic: TKDY 4.2.1.3 and 4.3.2.4 warnings"
+Private Const SCRIPT_VERSION As String = "2026-11-19b"
+Private Const SCRIPT_CHANGELOG As String = "Node local axes (db/SKEW): cap and pier nodes in the cap frame (skew included), bearing nodes and RTI ground supports along their span chord; Confirm box: Yes builds, No stops (the payload-only choice is gone); Seismic model: earthquake level DD1 / DD2 / DD2a / DD3 picked in the window (DD1: torsion x 0.2 on caps and piers, deck shear areas x 0.5); Seismic model: LL_KUTLE on one track at most (80 kN/m, also on two-track decks); Piers with several columns (INPUT L:M = G_AYAK_KOLON: number, spacing along the cap; tied to a cap node within 10 cm); Seismic model: P-Delta (DC, DW_1, DW_2, LL_KUTLE at the TKDY factors, 5 iterations), removed by the clean pass; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 60|MIDAS modelleri|K\u00F6pr\u00FC genel modeli|MIDAS_KOPRU_OLUSTUR||Civil NX'te a\u00E7\u0131k modele t\u00FCm k\u00F6pr\u00FC modelini kurar. A\u00E7\u0131k model silinir.|model~Model~c~Statik/Sismik/RTI;mesh~Eleman boyu (m)~n~1.5;link~Mesnet link boyu (m)~n~0.35;kfix~Sabit yatay rijitlik kh (kN/m)~n~100000;ll~Hareketli y\u00FCk (RTI)~c~Do\u011Frusal (MV)/Do\u011Frusal olmayan;dd~Deprem d\u00FCzeyi (Sismik)~c~DD2a/DD1/DD2/DD3
@@ -145,6 +145,8 @@ Private capSlaves As Object, polyArea As Double, deckArea As Double
 ' plan: axis points, cap direction (unit), span chord direction (unit), chord length, heading (deg)
 Private pxA() As Double, pyA() As Double, rxA() As Double, ryA() As Double, cxS() As Double, cyS() As Double, lenS() As Double, phiS() As Double, phiA() As Double
 Private pierAng As Object, maxOff As Double, nAxXY As Long
+Private nodeAng As Object   ' node local axis (deg about Z, local x from global X) per node, owner 2026-11-19: cap and pier
+                            ' nodes along phiA (skew included), bearing nodes and RTI ground supports along phiS of their span
 Private gCz As Double, gIy As Double, gIz As Double, gPer As Double
 Private dkLog As String
 ' Step B
@@ -686,6 +688,22 @@ End Function
 ' node on the cap line of axis a at distance v from the axis
 Private Function CapN(ByVal a As Long, ByVal v As Double, ByVal z As Double) As Long
     CapN = AddNode(pxA(a) + v * rxA(a), pyA(a) + v * ryA(a), z)
+    NodeAxis CapN, phiA(a)
+End Function
+
+' node local axis of n (owner 2026-11-19): local x at deg from global X in plan, z up; the first call wins;
+' 0 is not sent, so a straight square bridge has no db/SKEW table
+Private Sub NodeAxis(ByVal n As Long, ByVal deg As Double)
+    If Abs(deg) < 0.0000001 Then Exit Sub
+    If Not nodeAng.Exists(n) Then nodeAng(n) = deg
+End Sub
+
+Private Function SkewJson() As String
+    Dim k As Variant, s As String
+    For Each k In SortedLongKeys(nodeAng)
+        s = s & IIf(s = "", "", ",") & QS(CStr(k)) & ":{""iMETHOD"":1,""ANGLE_X"":0,""ANGLE_Y"":0,""ANGLE_Z"":" & JN(nodeAng(CLng(k))) & "}"
+    Next k
+    SkewJson = s
 End Function
 
 ' INPUT column type -> MIDAS DB user shape
@@ -760,6 +778,7 @@ Private Sub BuildModel()
     ReDim eMat(1 To 2000): ReDim eSec(1 To 2000): ReDim eN1(1 To 2000): ReDim eN2(1 To 2000)
     ReDim zLs(1 To nSp): ReDim zCap(0 To nSp)
     Set pierAng = CreateObject("Scripting.Dictionary")
+    Set nodeAng = CreateObject("Scripting.Dictionary")
     maxOff = 0
     BuildPlan
     For i = 1 To nSp: zLs(i) = -(tHg(spType(i)) + tc) - linkLen: Next i
@@ -856,6 +875,7 @@ Private Sub BearingLine(ByVal sp As Long, ByVal u As Double, ByVal axisNo As Lon
     For j = 0 To nG - 1
         up = SpN(sp, u - y(j) * tk, y(j), zU)
         lo = SpN(sp, u - y(j) * tk, y(j), zL)
+        NodeAxis up, phiS(sp): NodeAxis lo, phiS(sp)
         sl = sl & IIf(sl = "", "", ",") & up
         nLink = nLink + 1
         elnkJson = elnkJson & IIf(elnkJson = "", "", ",") & QS(CStr(nLink)) & ":{""NODE"":[" & up & "," & lo & "],""ANGLE"":" & JN(-phiS(sp) - IIf(LINK_ON_SKEW, skA(axisNo), 0)) & ",""LINK"":""GEN""," & _
@@ -1274,6 +1294,7 @@ Private Sub BuildPayloads()
     Else
         Add "db/BNGR", "{""Assign"":{""1"":{""NAME"":""BG_MESNET"",""AUTOTYPE"":0}}}"
     End If
+    If nodeAng.Count > 0 Then Add "db/SKEW", "{""Assign"":{" & SkewJson() & "}}"
     Add "db/CONS", "{""Assign"":{" & consJson & "}}"
     Add "db/RIGD", "{""Assign"":{" & RigdAll() & "}}"
     If rtiMode Then AddRailLinks
@@ -1408,7 +1429,7 @@ Private Function Summary() As String
         "Cap " & IIf(capRect, "rectangle " & capS(1) & " x " & capS(4), "inverted T H " & capS(1)) & ", length " & capL & " m, centroid " & Format(capYc, "0.000") & " m below its top, pier top at the cap bottom; " & nPS & " pier section(s)" & PierColText() & vbCrLf & _
         "Axis to bearing " & AxisBearingText() & IIf(capRect, "", ", seat on the " & IIf(seatOnLedge(1), "ledges", "web")) & vbCrLf & _
         "Model: " & nCnt & " nodes, " & eCnt & " elements, " & nLink & " bearings, element " & meshDx & " m" & vbCrLf & _
-        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & SkewText() & vbCrLf & _
+        IIf(nAxXY > 0, "Plan: " & nAxXY & " axis points from G_AKS_XY (DXF), largest offset from the A1-A2 chord " & Format(maxOff, "0.00") & " m", "Plan: straight") & vbCrLf & SkewText() & "; node local axes on " & nodeAng.Count & " cap / pier / bearing / support nodes" & vbCrLf & _
         IIf(seisMode, "SEISMIC MODEL: " & CaseList().Count & " cases, " & combNo & " combinations; train " & Format(qvk, "0") & " kN/m static on one track at most, reduced stiffness in EVERY case", "Loads: " & CaseList().Count & " cases, " & combNo & " combinations, " & nFW & " braking windows; rail level " & Format(railH, "0.00") & " m; alpha " & alphaLM & ", Wg " & wG & ", Wv " & wV & ", TU " & tuPos & "/" & tuNeg) & vbCrLf & _
         IIf(seisMode, "EQ " & eqLevel & IIf(eqLevel = "DD1", " (torsion x " & JN(EQ_TORS_DD1) & " caps / piers, deck Asy Asz x " & JN(EQ_SHEAR_DD1) & ")", "") & ", Ritz " & RITZ_X & "/" & RITZ_Y & "/" & RITZ_Z & PdelText(), IIf(hasCF, "Centrifugal: " & nCfSpans & " spans on a curve, up to " & Format(cfMax, "0.0") & " kN/m", "Centrifugal: none") & "; static model: no eigenvalue, spectra or seismic stiffness")
     If warnText <> "" Then s = "WARNINGS:" & vbCrLf & warnText & vbCrLf & s
@@ -1995,6 +2016,7 @@ Private Sub RailPt(ByVal t As Long, ByVal x As Double, ByVal y As Double, ByVal 
         Rigid deckNode, CStr(g)
     Else
         consJson = consJson & IIf(consJson = "", "", ",") & QS(CStr(g)) & ":{""ITEMS"":[{""ID"":1,""GROUP_NAME"":""BG_RAY"",""CONSTRAINT"":""1111110""}]}"
+        NodeAxis g, phiS(sp)
     End If
     If n = 1 Then
         rSt(t, n) = 0
@@ -2660,7 +2682,7 @@ End Sub
 Private Function CleanTables() As Variant
     CleanTables = Array("LCOM-CONC", "LCOM-GEN", "BCCT", "DYNF", "SPLC", "SPFC", "ETMP", "CNLD", "STCT", "TDPL", "TDCS", "TDNA", "TDGR", "TDNT", "CSCS", "STAG", _
         "DYFG", "MVLDeu", "MVHL", "LLAN", "MVCD", "THGC", "EIGV", "ACTL", "LTOM", "PDEL", "BMLD", "BODF", "STMP", "LDGR", "STLD", "ESSF", "SECF", "MLFC", _
-        "NSPR", "ELNK", "RIGD", "CONS", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
+        "NSPR", "ELNK", "RIGD", "CONS", "SKEW", "BNGR", "GRUP", "ELEM", "NODE", "SECT", "TMAT", "TDME", "TDMT", "MATL")
 End Function
 
 ' The project comment of a model built by this macro says which type it is (ends SEISMIC or not).

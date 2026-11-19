@@ -45,23 +45,36 @@ Option Explicit
 '  (FV [kh fPEQ-Y, kh fPEQ-X, -fDC]; a second record in one case makes the analysis fail, T6). Combinations (owner M22): only the 'Envelope' rows
 '  (ENV_SER, ENV_STR, ENV_DEP over the factored cases, ENV_ALL over those), LCOM-GEN. Boundary change: cases
 '  with TKDY in the name on EQ (cracked), the others on ST, THRSEV on EQ.
+'  Load setup gate (owner 2026-11-19, window field 'Yuk kurgusu'): 1 = factored cases as above (default);
+'  2 = load cases + combinations as the KA1 template: one unfactored USER case per component used by an active
+'  'Add' row (DC, EV, ... CF, types as the template, each in its load group of the same name; self weight -1 g in
+'  DC, kh inertia in PEQ-X / PEQ-Y), every active 'Add' row a LCOM-GEN combination of the same name with the LC
+'  factors, the envelopes over those combinations. A second question (mode 2 only) sets the boundary: 1 = as the
+'  template (EQ-X, EQ-Y, PEQ-X, PEQ-Y on the cracked set EQ, the rest on ST), 2 = every case on ST. On a spread
+'  footing the combinations add separately solved nonlinear cases (warned).
+'  Model gate (owner 2026-11-19, window field 'Model'): 1 = Karma (as above, default); 2 = Statik: only the
+'  LC rows without TKDY in the name, every case on ST (nothing cracked); 3 = Deprem: only the TKDY rows, every
+'  case on the cracked set EQ. Envelopes left without a member are not written (Statik: ENV_SER, ENV_STR,
+'  ENV_ALL; Deprem: ENV_DEP, ENV_ALL). The cracked question of setup 2 is asked for Karma only.
 '  Seat node count (owner 2026-11-11): a live build writes the mesh count into KA_MESNET_NOKTA
 '  (1_RAPOR AH190, the divisor of the report's per-node seat values) unless that cell holds a
 '  formula; a dry run only warns when they differ.
 '  Loads (M1, M2, M7): seat value x girders / seat nodes on the stem-top nodes between the wing
 '  walls' inner faces; fill inertia only in PEQ-X; transverse soil pressure on the +x wing wall.
 '  Entries: MIDAS_KENARAYAK_OLUSTUR (macro window; asks the transverse direction on a skewed abutment),
-'  MIDAS_KENARAYAK_PAYLOAD outDir [, transverseSign] (dry run, no HTTP), MIDAS_KENARAYAK_BUILD reportFile,
-'  apiKey [, saveModel [, transverseSign]] (scripted, no dialogs); transverseSign +1 = +X (template), -1 = -X.
+'  MIDAS_KENARAYAK_PAYLOAD outDir [, transverseSign [, loadSetup [, crackSetup [, modelKind]]]] (dry run, no HTTP),
+'  MIDAS_KENARAYAK_BUILD reportFile, apiKey [, saveModel [, transverseSign [, loadSetup [, crackSetup [, modelKind]]]]]
+'  (scripted, no dialogs); transverseSign +1 = +X (template), -1 = -X; loadSetup / crackSetup 1 or 2, modelKind 1-3
+'  as the gates above.
 '  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-abutment-build"
-Private Const SCRIPT_VERSION As String = "2026-11-19a"
-Private Const SCRIPT_CHANGELOG As String = "Confirm box: Yes builds, No stops (the payload-only choice is gone); Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190); New: abutment model in Civil NX (plates, piles or spread-footing springs, loads, combinations, skew) from the KA_ inputs of the abutment workbook"
+Private Const SCRIPT_VERSION As String = "2026-11-19c"
+Private Const SCRIPT_CHANGELOG As String = "Model picked in the window: Karma (default, as before), Statik (no TKDY rows, nothing cracked) or Deprem (TKDY rows only, everything cracked); Load setup picked in the window: factored load cases (as before, default) or load cases + combinations as the KA1 template (unfactored component cases, one combination per LC row, envelopes over them; a question then sets the cracked boundary: EQ / PEQ cases cracked, or all uncracked); Confirm box: Yes builds, No stops (the payload-only choice is gone); Wind on the train: load case WL (its own KA_KOMBINASYON column after WS) with the seat load KA_Y_WL across the bridge; centrifugal seat load KA_Y_CF applied across the bridge (0 = none); Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; A build writes the stem-top seat node count of the mesh into KA_MESNET_NOKTA (1_RAPOR AH190)"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
-'@TOOL 70|MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|
+'@TOOL 70|MIDAS modelleri|Kenar ayak modeli|MIDAS_KENARAYAK_OLUSTUR||Civil NX'te a\u00E7\u0131k modele kenar aya\u011F\u0131n plak modelini kaz\u0131klar\u0131 veya zemin yaylar\u0131, y\u00FCkleri ve kombinasyonlar\u0131yla kurar (KA_SECIM, KA_TEMEL_TIPI). A\u00E7\u0131k model silinir.|yuk~Y\u00FCk kurgusu~c~Fakt\u00F6rl\u00FC y\u00FCk durumlar\u0131/Y\u00FCk durumlar\u0131 + kombinasyonlar;model~Model~c~Karma (statik + deprem)/Statik (\u00E7atlamam\u0131\u015F)/Deprem (\u00E7atlam\u0131\u015F)
 
 Private Const MSG_TITLE As String = "MIDAS_KENARAYAK"
 Private Const PILE0 As Long = 14000
@@ -101,6 +114,9 @@ Private cmbAct() As Boolean, cmbEff() As Boolean   ' column B of KA_KOMBINASYON 
 Private pssfMem(1 To 7) As Long                    ' plate stiffness factor records per member, for the read-back
 Private Const PILE_COLOR As String = "0,72,72,0,192,192,0,72,72"   ' pile section colour W / HF / HE (template SECT-COLOR)
 Private nFac As Long, facIdx() As Long     ' 'Add' rows of KA_KOMBINASYON = factored load cases
+Private comboMode As Boolean, crackTpl As Boolean   ' load setup gate: cases + combinations; its boundary as the template
+Private mdlKind As Long, cmbOut() As Boolean       ' model gate: 1 Karma, 2 Statik, 3 Deprem; row left out by the model
+Private nMc As Long, mcNm() As String, mcTy() As String, mcComp() As Long   ' load cases of the model (mcComp = component in comboMode)
 
 ' ---- geometry ----
 Private e0 As Double, xW1 As Double, xW2 As Double, fi1 As Double, fi2 As Double
@@ -129,21 +145,31 @@ Private progStep As Long, progTotal As Long
 ' ============================================================================
 Public Sub MIDAS_KENARAYAK_OLUSTUR()
     trSign = 1
+    ' load setup gate (owner 2026-11-19): window field yuk, 1 = factored cases (default), 2 = cases + combinations
+    comboMode = (UiIdx("yuk", 1) = 2): crackTpl = True
+    ' model gate (owner 2026-11-19): window field model, 1 = Karma (default), 2 = Statik, 3 = Deprem
+    mdlKind = UiIdx("model", 1)
+    If mdlKind < 1 Or mdlKind > 3 Then mdlKind = 1
     RunBuild "", False
 End Sub
 
 ' transverseSign: +1 = transverse loads toward +x (template), -1 = toward -x
-Public Sub MIDAS_KENARAYAK_PAYLOAD(ByVal outDir As String, Optional ByVal transverseSign As Long = 1)
+' loadSetup: 1 = factored cases, 2 = cases + combinations; crackSetup (setup 2): 1 = EQ / PEQ cases cracked, 2 = all on ST
+Public Sub MIDAS_KENARAYAK_PAYLOAD(ByVal outDir As String, Optional ByVal transverseSign As Long = 1, Optional ByVal loadSetup As Long = 1, Optional ByVal crackSetup As Long = 1, Optional ByVal modelKind As Long = 1)
     trSign = IIf(transverseSign < 0, -1, 1)
+    comboMode = (loadSetup = 2): crackTpl = (crackSetup <> 2)
+    mdlKind = IIf(modelKind = 2 Or modelKind = 3, modelKind, 1)
     RunBuild outDir, True
 End Sub
 
 ' scripted build, no dialogs (tests)
-Public Sub MIDAS_KENARAYAK_BUILD(ByVal reportFile As String, ByVal apiKey As String, Optional ByVal saveModel As Boolean = True, Optional ByVal transverseSign As Long = 1)
+Public Sub MIDAS_KENARAYAK_BUILD(ByVal reportFile As String, ByVal apiKey As String, Optional ByVal saveModel As Boolean = True, Optional ByVal transverseSign As Long = 1, Optional ByVal loadSetup As Long = 1, Optional ByVal crackSetup As Long = 1, Optional ByVal modelKind As Long = 1)
     Dim rep As String
     On Error GoTo Fail
     askUser = False
     trSign = IIf(transverseSign < 0, -1, 1)
+    comboMode = (loadSetup = 2): crackTpl = (crackSetup <> 2)
+    mdlKind = IIf(modelKind = 2 Or modelKind = 3, modelKind, 1)
     PrepareModel
     McSetKey apiKey
     rep = SendAll(saveModel)
@@ -167,6 +193,16 @@ Private Sub PrepareModel()
             "YES = +X (as the template)" & vbCrLf & "NO = -X", vbYesNoCancel + vbQuestion, MSG_TITLE)
             Case vbYes: trSign = 1
             Case vbNo: trSign = -1
+            Case Else: Err.Raise vbObjectError + 60, , "Cancelled."
+        End Select
+    End If
+    ' cases + combinations (owner 2026-11-19): the window then asks which cases run on the cracked boundary set
+    If askUser And comboMode And mdlKind = 1 Then
+        Select Case UiMsg("Load cases + combinations: each component is its own load case, and a case runs on one boundary set only." & vbCrLf & vbCrLf & _
+            "YES = as the KA1 template: EQ-X, EQ-Y, PEQ-X, PEQ-Y on the cracked set EQ (Sismik + Statik), the other cases on ST (uncracked)" & vbCrLf & _
+            "NO = every load case on ST (uncracked); the cracked set is used by the eigen and spectrum runs only", vbYesNoCancel + vbQuestion, MSG_TITLE)
+            Case vbYes: crackTpl = True
+            Case vbNo: crackTpl = False
             Case Else: Err.Raise vbObjectError + 60, , "Cancelled."
         End Select
     End If
@@ -297,6 +333,41 @@ Private Sub ReadInputs()
     projName = NSOr("G_PROJE_ADI"): clientName = NSOr("G_IDARE_ADI"): bridgeName = NSOr("G_KOPRU_ADI")
     SetCases
     ReadCombos
+    SetModelCases
+End Sub
+
+' load cases of the model: factored mode = one USER case per active 'Add' row (named as the LC sheet);
+' comboMode = one case per component that an active 'Add' row uses, in the fixed component order
+Private Sub SetModelCases()
+    Dim i As Long, k As Long, used(1 To N_CASE) As Boolean, p As Variant, q As Variant
+    nMc = 0
+    If Not comboMode Then
+        ReDim mcNm(1 To nFac): ReDim mcTy(1 To nFac): ReDim mcComp(1 To nFac)
+        For i = 1 To nFac
+            nMc = nMc + 1: mcNm(nMc) = cmbName(facIdx(i)): mcTy(nMc) = "USER": mcComp(nMc) = 0
+        Next i
+        Exit Sub
+    End If
+    For i = 1 To nFac
+        For Each p In Split(cmbItems(facIdx(i)), ";")
+            If Len(p) > 0 Then
+                q = Split(p, "|")
+                If q(0) = "ST" Then
+                    k = CaseIndex(CStr(q(1)))
+                    If k > 0 Then used(k) = True
+                End If
+            End If
+        Next p
+    Next i
+    ReDim mcNm(1 To N_CASE): ReDim mcTy(1 To N_CASE): ReDim mcComp(1 To N_CASE)
+    For k = 1 To N_CASE
+        If used(k) Then nMc = nMc + 1: mcNm(nMc) = caseNm(k): mcTy(nMc) = caseTy(k): mcComp(nMc) = k
+    Next k
+    ' a combination may not carry the name of a load case
+    For i = 1 To nCmb
+        If CaseIndex(cmbName(i)) > 0 Then Err.Raise vbObjectError + 62, , "KA_KOMBINASYON row '" & cmbName(i) & "' has the name of a load case; rename it to build load cases + combinations."
+    Next i
+    If Not piled Then Warn "Load cases + combinations on a spread footing: the compression-only springs make every case nonlinear, so a combination adds separately solved cases (not exact where springs lift in some cases)."
 End Sub
 
 Private Sub SetCases()
@@ -325,7 +396,7 @@ Private Sub ReadCombos()
     Next c
     nCmb = 0
     ReDim cmbName(1 To r.Rows.Count): ReDim cmbKind(1 To r.Rows.Count): ReDim cmbItems(1 To r.Rows.Count): ReDim cmbTier(1 To r.Rows.Count)
-    ReDim cmbAct(1 To r.Rows.Count): ReDim cmbEff(1 To r.Rows.Count)
+    ReDim cmbAct(1 To r.Rows.Count): ReDim cmbEff(1 To r.Rows.Count): ReDim cmbOut(1 To r.Rows.Count)
     For i = 2 To r.Rows.Count
         v = r.Cells(i, 1).Value
         If IsError(v) Then GoTo NextRow
@@ -387,8 +458,11 @@ NextRow:
     ReDim facIdx(1 To nCmb)
     For i = 1 To nCmb
         cmbEff(i) = False
-        If cmbKind(i) = 0 And cmbAct(i) Then nFac = nFac + 1: facIdx(nFac) = i: cmbEff(i) = True
+        ' model gate: Statik leaves the TKDY rows out, Deprem keeps only them
+        If cmbKind(i) = 0 Then cmbOut(i) = (mdlKind = 2 And IsTkdyRow(cmbName(i))) Or (mdlKind = 3 And Not IsTkdyRow(cmbName(i)))
+        If cmbKind(i) = 0 And cmbAct(i) And Not cmbOut(i) Then nFac = nFac + 1: facIdx(nFac) = i: cmbEff(i) = True
     Next i
+    If nFac = 0 And mdlKind <> 1 Then Err.Raise vbObjectError + 44, , "KA_KOMBINASYON holds no active 'Add' row for the " & ModelName() & " model."
     If nFac = 0 Then Err.Raise vbObjectError + 44, , "KA_KOMBINASYON holds no active 'Add' row (no load case)."
     ' an envelope is written when it is active and keeps at least one written member (lower tiers first);
     ' inactive members are left out of it
@@ -408,11 +482,20 @@ NextRow:
                         End If
                     End If
                 Next p
-                If Not cmbEff(i) Then Warn "Envelope " & cmbName(i) & " is not written: none of its members is active."
+                If Not cmbEff(i) And mdlKind = 1 Then Warn "Envelope " & cmbName(i) & " is not written: none of its members is active."
             End If
         Next i
     Next tier
 End Sub
+
+' a seismic LC row (H-TKDY-X/Y, TKDY-X/Y): TKDY in the name
+Private Function IsTkdyRow(ByVal nm As String) As Boolean
+    IsTkdyRow = (InStr(UCase$(nm), "TKDY") > 0)
+End Function
+
+Private Function ModelName() As String
+    ModelName = Choose(IIf(mdlKind >= 1 And mdlKind <= 3, mdlKind, 1), "Karma", "Statik", "Deprem")
+End Function
 
 Private Function CmbIndex(ByVal nm As String) As Long
     Dim i As Long
@@ -960,16 +1043,20 @@ Private Function CnldItem(ByVal id As Long, ByVal lc As String, ByVal grp As Str
     CnldItem = "{""ID"":" & id & ",""LCNAME"":" & QS(lc) & ",""GROUP_NAME"":" & QS(grp) & ",""FX"":" & JN(fx) & ",""FY"":" & JN(fy) & ",""FZ"":" & JN(fz) & ",""MX"":0,""MY"":0,""MZ"":0}"
 End Function
 
-' load cases of the model: one factored USER case per 'Add' row, named as the LC sheet (both types)
+' load cases of the model (SetModelCases): name|type
 Private Function ModelCases() As Collection
     Dim c As New Collection, i As Long
-    For i = 1 To nFac: c.Add cmbName(facIdx(i)) & "|USER": Next i
+    For i = 1 To nMc: c.Add mcNm(i) & "|" & mcTy(i): Next i
     Set ModelCases = c
 End Function
 
-' factor of component k in model case m
+' factor of component k in model case m (comboMode: 1 for the case's own component)
 Private Function FactorOf(ByVal m As Long, ByVal k As Long) As Double
     Dim p As Variant, q As Variant
+    If comboMode Then
+        If mcComp(m) = k Then FactorOf = 1
+        Exit Function
+    End If
     For Each p In Split(cmbItems(facIdx(m)), ";")
         q = Split(p, "|")
         If q(0) = "ST" And StrComp(CStr(q(1)), caseNm(k), vbTextCompare) = 0 Then FactorOf = FactorOf + Val(q(2))
@@ -981,9 +1068,17 @@ Private Function GrpOf(ByVal k As Long) As String
     GrpOf = IIf(caseNm(k) = "BR/ACC", GRP_BR, caseNm(k))
 End Function
 
-' factored seismic cases (H-TKDY-X/Y, TKDY-X/Y) run on the cracked boundary combination EQ
+' factored seismic cases (H-TKDY-X/Y, TKDY-X/Y) run on the cracked boundary combination EQ;
+' comboMode: EQ-X, EQ-Y, PEQ-X, PEQ-Y as the template, or none (crackTpl False)
 Private Function IsSeismicCase(ByVal nm As String) As Boolean
-    IsSeismicCase = (InStr(UCase$(nm), "TKDY") > 0)
+    ' model gate: Statik = nothing cracked, Deprem = everything cracked
+    If mdlKind = 2 Then Exit Function
+    If mdlKind = 3 Then IsSeismicCase = True: Exit Function
+    If comboMode Then
+        IsSeismicCase = crackTpl And (nm = "EQ-X" Or nm = "EQ-Y" Or nm = "PEQ-X" Or nm = "PEQ-Y")
+    Else
+        IsSeismicCase = (InStr(UCase$(nm), "TKDY") > 0)
+    End If
 End Function
 
 ' ============================================================================
@@ -997,19 +1092,19 @@ Private Sub BuildPayloads()
     Set payloads = New Collection
     nGrupW = 0: nThkW = 0: nOffW = 0: nPssfW = 0: nBodfW = 0: nCnldN = 0: nCnldI = 0: nPresE = 0: nPresI = 0: nSeisW = 0
     For i = 1 To 7: pssfMem(i) = 0: Next i
-    ReDim apF(1 To nFac, 1 To 3)
+    ReDim apF(1 To nMc, 1 To 3)
     wPlate = 0
     For i = 1 To nPlate
         PlateGeo i, ar, ux, uy, uz
         wPlate = wPlate + denConc * ThkOf(eThk(i)) * ar
     Next i
-    For i = 1 To nFac
-        If IsSeismicCase(cmbName(facIdx(i))) Then nSeisW = nSeisW + 1
+    For i = 1 To nMc
+        If IsSeismicCase(mcNm(i)) Then nSeisW = nSeisW + 1
     Next i
     Add "db/UNIT", "{""Assign"":{""1"":{""FORCE"":""KN"",""DIST"":""M"",""HEAT"":""J"",""TEMPER"":""C""}}}"
     Add "db/STYP", "{""Assign"":{""1"":{""STYP"":0,""MASS"":1,""GRAV"":" & JN(GRAV_STYP) & ",""TEMP"":0,""bALIGNBEAM"":false,""bALIGNSLAB"":false,""bMASSOFFSET"":false,""bSELFWEIGHT"":true,""SMASS"":1}}}"
     Add "db/PJCF", "{""Assign"":{""1"":{""PROJECT"":" & QS(Pj(projName)) & ",""USER"":" & QS(Pj(Application.UserName)) & ",""CLIENT"":" & QS(Pj(clientName)) & _
-        ",""TITLE"":" & QS(Pj(bridgeName & " " & abutNm)) & ",""COMMENT"":" & QS(Pj(abutNm & " " & IIf(piled, "KAZIKLI", "YUZEYSEL") & "; " & SCRIPT_ID & " " & SCRIPT_VERSION & " ABUTMENT")) & "}}}"
+        ",""TITLE"":" & QS(Pj(bridgeName & " " & abutNm)) & ",""COMMENT"":" & QS(Pj(abutNm & " " & IIf(piled, "KAZIKLI", "YUZEYSEL") & "; " & SCRIPT_ID & " " & SCRIPT_VERSION & " ABUTMENT" & IIf(comboMode, " CASES+COMB" & IIf(crackTpl Or mdlKind <> 1, "", " UNCRACKED"), "") & IIf(mdlKind = 2, " STATIK", IIf(mdlKind = 3, " DEPREM", "")))) & "}}}"
     Add "db/MATL", "{""Assign"":{" & MatJ(2, clsConc, denConc) & "," & MatJ(3, clsConc & " (W=0)", 0) & "}}"
     If piled Then
         Add "db/SECT", "{""Assign"":{""1"":{""SECTTYPE"":""DBUSER"",""SECT_NAME"":""KAZIK"",""SECT_BEFORE"":{""OFFSET_PT"":""CC"",""OFFSET_CENTER"":0,""USER_OFFSET_REF"":0,""HORZ_OFFSET_OPT"":0,""USERDEF_OFFSET_YI"":0," & _
@@ -1305,12 +1400,28 @@ Private Function GrupJ() As String
 End Function
 
 ' LCOM-GEN (owner M22): no combination per factored case, only the 'Envelope' rows tier by tier (an
-' envelope used by another goes first); an item that names a factored case is a load case (ST)
+' envelope used by another goes first); an item that names a factored case is a load case (ST).
+' comboMode: first every active 'Add' row as a combination of the component cases, then the envelopes over them
 Private Sub AddCombos(mc As Collection)
     Dim t As String, i As Long, tier As Long, maxT As Long, p As Variant, q As Variant, its As String, nmb As Long, j As Long, an As String
     For i = 1 To nCmb
         If cmbTier(i) > maxT Then maxT = cmbTier(i)
     Next i
+    If comboMode Then
+        t = ""
+        For i = 1 To nFac
+            its = ""
+            For Each p In Split(cmbItems(facIdx(i)), ";")
+                If Len(p) > 0 Then
+                    q = Split(p, "|")
+                    its = its & IIf(its = "", "", ",") & "{""ANAL"":""ST"",""LCNAME"":" & QS(CStr(q(1))) & ",""FACTOR"":" & q(2) & "}"
+                End If
+            Next p
+            nmb = nmb + 1
+            t = t & IIf(t = "", "", ",") & QS(CStr(nmb)) & ":{""NO"":" & nmb & ",""NAME"":" & QS(cmbName(facIdx(i))) & ",""ACTIVE"":""ACTIVE"",""bCB"":false,""iTYPE"":0,""DESC"":"""",""vCOMB"":[" & its & "]}"
+        Next i
+        If t <> "" Then Add "db/LCOM-GEN", "{""Assign"":{" & t & "}}"
+    End If
     For tier = 1 To maxT
         t = ""
         For i = 1 To nCmb
@@ -1322,7 +1433,7 @@ Private Sub AddCombos(mc As Collection)
                         j = CmbIndex(CStr(q(1)))
                         If j > 0 Then
                             If cmbEff(j) Then
-                                an = IIf(cmbKind(j) = 0, "ST", "CB")
+                                an = IIf(cmbKind(j) = 0 And Not comboMode, "ST", "CB")
                                 its = its & IIf(its = "", "", ",") & "{""ANAL"":""" & an & """,""LCNAME"":" & QS(CStr(q(1))) & ",""FACTOR"":" & q(2) & "}"
                             End If
                         End If
@@ -1341,6 +1452,7 @@ Private Function CombCount() As Long
     For i = 1 To nCmb
         If cmbKind(i) = 1 And cmbEff(i) Then CombCount = CombCount + 1
     Next i
+    If comboMode Then CombCount = CombCount + nFac
 End Function
 
 Private Function BcctRows(mc As Collection) As String
@@ -1479,16 +1591,16 @@ Private Function ReadBack() As String
     End If
     If RbGet("db/STLD", resp, r) Then
         miss = ""
-        For i = 1 To nFac
-            If InStr(resp, """NAME"":" & QS(cmbName(facIdx(i)))) = 0 Then miss = miss & " " & cmbName(facIdx(i))
+        For i = 1 To nMc
+            If InStr(resp, """NAME"":" & QS(mcNm(i))) = 0 Then miss = miss & " " & mcNm(i)
         Next i
-        r = r & RbN("load cases", CountOf(resp, """NAME"":"), nFac) & IIf(miss = "", "", "  load cases missing:" & miss & "  FAIL" & vbCrLf)
+        r = r & RbN("load cases", CountOf(resp, """NAME"":"), nMc) & IIf(miss = "", "", "  load cases missing:" & miss & "  FAIL" & vbCrLf)
     End If
     Prog "read-back loads"
     If RbGet("db/BODF", resp, r) Then
         dup = ""
-        For i = 1 To nFac
-            If CountOf(resp, """LCNAME"":" & QS(cmbName(facIdx(i)))) > 1 Then dup = dup & " " & cmbName(facIdx(i))
+        For i = 1 To nMc
+            If CountOf(resp, """LCNAME"":" & QS(mcNm(i))) > 1 Then dup = dup & " " & mcNm(i)
         Next i
         r = r & RbN("self-weight records", CountOf(resp, """FV"":"), nBodfW) & IIf(dup = "", "", "  more than one self-weight record in:" & dup & "  FAIL" & vbCrLf)
     End If
@@ -1501,10 +1613,10 @@ Private Function ReadBack() As String
         If SPLIT_GROUPS Then r = r & RbN("pressure items with a load group", CountOf(resp, """GROUP_NAME"":") - CountOf(resp, """GROUP_NAME"":"""""), nPresI)
     End If
     Prog "read-back combinations"
-    If RbGet("db/LCOM-GEN", resp, r) Then r = r & RbN("combinations (envelopes)", CountOf(resp, """iTYPE"":"), CombCount())
+    If RbGet("db/LCOM-GEN", resp, r) Then r = r & RbN(IIf(comboMode, "combinations (LC rows + envelopes)", "combinations (envelopes)"), CountOf(resp, """iTYPE"":"), CombCount())
     If RbGet("db/BCCT", resp, r) Then
         r = r & RbN("cases on the cracked boundary set EQ", CountOf(resp, """TYPE"":""ST"",""BGCNAME"":""EQ"""), nSeisW) & _
-            RbN("cases on the boundary set ST", CountOf(resp, """TYPE"":""ST"",""BGCNAME"":""ST"""), nFac - nSeisW) & _
+            RbN("cases on the boundary set ST", CountOf(resp, """TYPE"":""ST"",""BGCNAME"":""ST"""), nMc - nSeisW) & _
             "  boundary change includes the plate stiffness factors (bPSSF): " & IIf(InStr(resp, """bPSSF"":true") > 0, "OK", "FAIL") & vbCrLf
     End If
     ReadBack = r
@@ -1638,7 +1750,8 @@ Private Function Summary() As String
     For i = 1 To eCnt
         If eKind(i) = 1 Then nPl = nPl + 1
     Next i
-    s = "Abutment " & abutNm & ", " & IIf(piled, "piled (KAZIKLI)", "spread footing (YUZEYSEL)") & ", skew " & JN(thetaDeg) & " deg, transverse loads toward " & IIf(trSign < 0, "-X", "+X") & vbCrLf & _
+    s = "Model: " & ModelName() & Choose(mdlKind, " (static and seismic rows, seismic cases cracked)", " (rows without TKDY, nothing cracked)", " (TKDY rows only, everything cracked)") & vbCrLf
+    s = s & "Abutment " & abutNm & ", " & IIf(piled, "piled (KAZIKLI)", "spread footing (YUZEYSEL)") & ", skew " & JN(thetaDeg) & " deg, transverse loads toward " & IIf(trSign < 0, "-X", "+X") & vbCrLf & _
         "Footing " & JN(fB) & " x " & JN(fL) & " x " & JN(tFt) & " m; stem " & JN(tSt) & " x " & JN(hStem) & " m, backwall " & JN(tBw) & " x " & JN(hBack) & " m; wings " & JN(wOut) & " m out to out, " & JN(tWg) & " m" & vbCrLf & _
         "Heel " & JN(heelW) & " m, toe " & JN(Round(toeUsed, 3)) & " m (normal to the stem); " & IIf(earOn, "ear walls " & JN(lEar) & " m (" & JN(hRoot) & " -> " & JN(hTip) & " m, offset " & JN(offEar) & ")", "no ear walls (KA_KULAK_BOYU or KA_KULAK_KALINLIK = 0)") & vbCrLf & _
         "Mesh " & JN(meshM) & " m: " & nCnt & " nodes, " & nPl & " plates" & IIf(piled, ", " & eCnt - nPl & " pile elements", "") & vbCrLf & _
@@ -1648,7 +1761,11 @@ Private Function Summary() As String
     Else
         s = s & "Surface springs kv " & JN(kvFoot) & " (compression only), kh " & JN(khFoot) & " kN/m3" & vbCrLf
     End If
-    s = s & "Load cases: " & nFac & " factored cases (KA_KOMBINASYON 'Add' rows), " & IIf(SPLIT_GROUPS, "one load group per component", "components merged") & "; combinations: " & CombCount() & " envelopes (LCOM-GEN)" & vbCrLf
+    If comboMode Then
+        s = s & "Load setup: LOAD CASES + COMBINATIONS (window field). Load cases: " & nMc & " unfactored component cases, each in its load group; combinations: " & nFac & " KA_KOMBINASYON 'Add' rows + " & (CombCount() - nFac) & " envelopes (LCOM-GEN); cracked set EQ: " & IIf(crackTpl, "EQ-X, EQ-Y, PEQ-X, PEQ-Y (as the template)", "no load case (all on ST)") & vbCrLf
+    Else
+        s = s & "Load cases: " & nFac & " factored cases (KA_KOMBINASYON 'Add' rows), " & IIf(SPLIT_GROUPS, "one load group per component", "components merged") & "; combinations: " & CombCount() & " envelopes (LCOM-GEN)" & vbCrLf
+    End If
     If warnText <> "" Then s = s & "WARNINGS:" & vbCrLf & warnText
     Summary = s & SkippedText() & AppliedTable() & OpenItems()
 End Function
@@ -1664,7 +1781,12 @@ Private Function SkippedText() As String
         End If
     Next i
     If t <> "" Then SkippedText = "Skipped as Inactive (KA_KOMBINASYON column B): " & t & vbCrLf
-    If u <> "" Then SkippedText = SkippedText & "Envelopes not written (no active member): " & u & vbCrLf
+    t = ""
+    For i = 1 To nCmb
+        If cmbAct(i) And cmbOut(i) Then t = t & IIf(t = "", "", ", ") & cmbName(i)
+    Next i
+    If t <> "" Then SkippedText = SkippedText & "Left out of the " & ModelName() & " model: " & t & vbCrLf
+    If u <> "" Then SkippedText = SkippedText & "Envelopes not written (no " & IIf(mdlKind = 1, "active member", "member in the " & ModelName() & " model") & "): " & u & vbCrLf
 End Function
 
 ' applied load totals per factored case (self weight with its kh inertia, seat loads, pressures); the
@@ -1672,8 +1794,8 @@ End Function
 Private Function AppliedTable() As String
     Dim t As String, m As Long
     t = "Applied loads per load case (kN; plate weight " & JN(Round(wPlate, 1)) & " kN). The macro does not run the analysis: the reaction totals of Civil NX should equal minus these." & vbCrLf
-    For m = 1 To nFac
-        t = t & "  " & cmbName(facIdx(m)) & ": FX " & JN(Round(apF(m, 1), 1)) & ", FY " & JN(Round(apF(m, 2), 1)) & ", FZ " & JN(Round(apF(m, 3), 1)) & vbCrLf
+    For m = 1 To nMc
+        t = t & "  " & mcNm(m) & ": FX " & JN(Round(apF(m, 1), 1)) & ", FY " & JN(Round(apF(m, 2), 1)) & ", FZ " & JN(Round(apF(m, 3), 1)) & vbCrLf
     Next m
     AppliedTable = t
 End Function
@@ -1681,7 +1803,7 @@ End Function
 Private Function OpenItems() As String
     OpenItems = "Owner rules (2026-11-10, plan 4.1 M1-M23): earth pressure on the stem and backwall to the footing mid-plane, wing walls from the footing top; dynamic increment as an inverted triangle; EV on the heel only; " & _
         "longitudinal seat loads toward the span; the transverse direction moves the seat WS / TU-Y / PEQ-Y loads, the PEQ-Y inertia and the wing wall with the transverse soil pressure; no vertical seismic; seismic stiffness factors 0.5 on all 8 components of every wall plate, none on the footing, piles Iyy / Izz 0.5 (TKDY 4.3.7.6 / 7.2.4.4); " & _
-        "skewed heel, toe, footing length and pile row spacing normal to the stem; combinations: envelopes only (LCOM-GEN). Seat loads WL (KA_Y_WL) and CF (KA_Y_CF) act across the bridge in the transverse direction chosen for the build." & vbCrLf
+        "skewed heel, toe, footing length and pile row spacing normal to the stem; combinations: " & IIf(comboMode, "one per LC 'Add' row over the component cases, plus the envelopes", "envelopes only") & " (LCOM-GEN). Seat loads WL (KA_Y_WL) and CF (KA_Y_CF) act across the bridge in the transverse direction chosen for the build." & vbCrLf
 End Function
 
 Private Sub Warn(ByVal t As String)

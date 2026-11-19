@@ -15,6 +15,13 @@ Option Explicit
 '  PANEL.UiTicks; with an older PANEL a typed list such as 1,3-5).
 '  What is copied, export sheet -> area of the data sheet (sheet-level names, created at the default):
 '     Property       -> M_GSD_OZELLIK  A1:X60     (rows 1-60 only: the rows below are the force rows)
+'                       by block (2026-11-19, owner: P25 export with an extra '\u25A0 Rebar' material block moved
+'                       every property 6 rows down): each block of the export ('1. Material', '\u25A0 Concrete',
+'                       '2. Section', '\u25A0 Reinforcement', '\u25A0 General' ...) goes to the row of the same
+'                       block on the template SABLON_MIDAS, the rows of a block past the next template block and
+'                       blocks the template does not have are left out and named in the report (owner: the Rebar
+'                       block stays out); the export is read down to '3. Design Load Combination'; the section
+'                       picture moves with '2. Section'. Without SABLON_MIDAS (single-sheet mode) cell by cell.
 '     P-M Curve      -> M_GSD_PM       Z1:AW33
 '     My-Mz Curve    -> M_GSD_MM       AY1:BV29
 '     P-My-Mz Curve  -> M_GSD_ORAN     BX1:CU3839 (the ratio table that Tablo 64 reads; it grows and shrinks)
@@ -44,8 +51,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "gsd-report-reader"
-Private Const SCRIPT_VERSION As String = "2026-11-17b"
-Private Const SCRIPT_CHANGELOG As String = "Abutment workbook (8'6): the pile GSD export (file picked every run) into MIDAS_CIKTISI_KAZIK, loads compared with the typed force block; the load check understands the one-row-per-load export layout too; new: GSD Excel exports (Property, P-M Curve, My-Mz Curve, P-My-Mz Curve; values and pictures) into the MIDAS_<group> data sheets of the 8'7 workbook, every group or ticked groups, design loads checked against the MIDAS_AYAK rows"
+Private Const SCRIPT_VERSION As String = "2026-11-19a"
+Private Const SCRIPT_CHANGELOG As String = "Section properties placed block by block at the rows of the data-sheet template (an export with an extra material block no longer shifts As, Area and the rest), blocks the template lacks are reported, the section picture follows; Abutment workbook (8'6): the pile GSD export (file picked every run) into MIDAS_CIKTISI_KAZIK, loads compared with the typed force block; the load check understands the one-row-per-load export layout too; new: GSD Excel exports (Property, P-M Curve, My-Mz Curve, P-My-Mz Curve; values and pictures) into the MIDAS_<group> data sheets of the 8'7 workbook, every group or ticked groups, design loads checked against the MIDAS_AYAK rows"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 86|MIDAS sonu\u00E7lar\u0131|GSD sonu\u00E7lar\u0131|GSD_OKU_AC||GSD'nin Excel'e aktard\u0131\u011F\u0131 raporlar\u0131 (<ayaklar>_Section1.xlsx) grubun MIDAS_<grup> sayfas\u0131na okur: kesit \u00F6zellikleri, P-M ve My-Mz e\u011Frileri, oran tablosu ve resimler; grup sayfas\u0131ndaki iki grafi\u011Fi yeniler. Klas\u00F6r her \u00E7al\u0131\u015Ft\u0131rmada sorulur. Kenar ayak dosyas\u0131nda kaz\u0131k raporu (dosya sorulur) MIDAS_CIKTISI_KAZIK sayfas\u0131na okunur; Gruplar alan\u0131 kullan\u0131lmaz. GSD dosyalar\u0131na bir \u015Fey yazmaz.|grup~Gruplar~c~T\u00FCm\u00FC/Se\u00E7ili gruplar
@@ -66,6 +73,7 @@ Private Const PIC_LINKED As Long = 11         ' msoLinkedPicture
 Private Const NEAR_COLS As Long = 8           ' an old picture this close to the export's place keeps its place
 Private Const NEAR_ROWS As Long = 4
 Private Const PIC_COLS As Long = 16           ' a curve picture spans the first 16 columns of its sheet (A:P), the table follows
+Private Const DATA_TPL As String = "SABLON_MIDAS"   ' data-sheet template: the rows of the Property blocks
 
 Private mScripted As Boolean
 Private mLog As String
@@ -192,7 +200,7 @@ End Function
 ' one export into one data sheet; k > 0: the two figures of group k's sheet are made again
 Private Function PullSheet(wb As Workbook, ds As Worksheet, ByVal k As Long, ByVal path As String, ByVal tag As String) As String
     Dim gs As Worksheet, xb As Workbook, s As String, note As String, ev As Boolean
-    Dim pPM As Object, pMM As Object, st As Range, w As Object
+    Dim pPM As Object, pMM As Object, st As Range, w As Object, pMap As Variant, pShift As Long
     On Error GoTo Fail
     mLastW = 0
     ev = Application.EnableEvents
@@ -205,13 +213,14 @@ Private Function PullSheet(wb As Workbook, ds As Worksheet, ByVal k As Long, ByV
     End If
 
     ' ---- values ----
-    s = "prop " & CopyBlock(xb.Worksheets(SH_PROP), McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), False, note)
+    pMap = PropMap(wb, xb.Worksheets(SH_PROP), McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), pShift, note)
+    s = "prop " & CopyBlock(xb.Worksheets(SH_PROP), McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), False, note, pMap)
     s = s & ", P-M " & CopyBlock(xb.Worksheets(SH_PM), McAnchor(ds, "M_GSD_PM", "Z1:AW33", True), True, note)
     s = s & ", My-Mz " & CopyBlock(xb.Worksheets(SH_MM), AreaMM(ds), True, note)
     s = s & ", ratios " & CopyBlock(xb.Worksheets(SH_RATIO), AreaOran(ds), True, note)
 
     ' ---- pictures of the data sheet ----
-    SwapPicture xb.Worksheets(SH_PROP), ds, McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), "GSD_KESIT", note
+    SwapPicture xb.Worksheets(SH_PROP), ds, McAnchor(ds, "M_GSD_OZELLIK", "A1:X60", True), "GSD_KESIT", note, 0, pShift
     Set pPM = SwapPicture(xb.Worksheets(SH_PM), ds, McAnchor(ds, "M_GSD_PM", "Z1:AW33", True), "GSD_PM", note, PIC_COLS)
     Set pMM = SwapPicture(xb.Worksheets(SH_MM), ds, AreaMM(ds), "GSD_MM", note, PIC_COLS)
     SwapPicture xb.Worksheets(SH_RATIO), ds, AreaOran(ds), "GSD_PMM", note
@@ -307,19 +316,33 @@ End Function
 
 ' values of the export sheet into the area (same cell positions). fit True: the export must fit the area;
 ' False: rows of the export below the area are not read (Property: the design loads). Returns 'n cells'.
-Private Function CopyBlock(src As Worksheet, area As Range, ByVal fit As Boolean, ByRef note As String) As String
+' rowMap (Property, PropMap): row r of the area takes export row rowMap(r) (0 = none, the row is cleared).
+Private Function CopyBlock(src As Worksheet, area As Range, ByVal fit As Boolean, ByRef note As String, Optional ByVal rowMap As Variant) As String
     Dim nR As Long, nC As Long, nAll As Long, lastT As Long, sv As Variant, tf As Variant, f As Range
     Dim r As Long, c As Long, v As Variant, cur As String, tgt As Range, nW As Long, nClr As Long, nKeep As Long, nLay As Long, isF As Boolean
+    Dim ex As Variant, nE As Long
     nC = area.Columns.Count
     With src.UsedRange
         nR = .Row + .Rows.Count - 1
         If .Column + .Columns.Count - 1 > nC Then note = note & "  " & src.Name & ": columns right of " & nC & " not read." & vbCrLf
     End With
-    If nR > area.Rows.Count Then
-        If fit Then Err.Raise vbObjectError + 23, , src.Name & ": " & nR & " rows, the area " & area.Address(False, False) & " holds " & area.Rows.Count
+    If IsArray(rowMap) Then
+        nE = nR
         nR = area.Rows.Count
+        ex = src.Range(src.Cells(1, 1), src.Cells(nE, nC)).Value
+        ReDim sv(1 To nR, 1 To nC)
+        For r = 1 To nR
+            If rowMap(r) > 0 And rowMap(r) <= nE Then
+                For c = 1 To nC: sv(r, c) = ex(rowMap(r), c): Next c
+            End If
+        Next r
+    Else
+        If nR > area.Rows.Count Then
+            If fit Then Err.Raise vbObjectError + 23, , src.Name & ": " & nR & " rows, the area " & area.Address(False, False) & " holds " & area.Rows.Count
+            nR = area.Rows.Count
+        End If
+        sv = src.Range(src.Cells(1, 1), src.Cells(nR, nC)).Value
     End If
-    sv = src.Range(src.Cells(1, 1), src.Cells(nR, nC)).Value
     Set f = area.Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
     If Not f Is Nothing Then lastT = f.Row - area.Row + 1
     nAll = IIf(lastT > nR, lastT, nR)
@@ -362,8 +385,104 @@ Private Function CopyBlock(src As Worksheet, area As Range, ByVal fit As Boolean
     CopyBlock = nW & IIf(nClr > 0, " (-" & nClr & ")", "")
 End Function
 
-' the picture of the export sheet replaces the picture(s) whose top left cell is in the area; returns it
-Private Function SwapPicture(src As Worksheet, ds As Worksheet, area As Range, ByVal nm As String, ByRef note As String, Optional ByVal capCols As Long = 0) As Object
+' Property rows by block: returns rowMap(1 To area rows) = export row for each row of the area (0 = none), or
+' Empty when there is no template (single-sheet mode: cell by cell as before). rowShift = export row of
+' '2. Section' minus its template row (the section picture moves with it).
+Private Function PropMap(wb As Workbook, src As Worksheet, area As Range, ByRef rowShift As Long, ByRef note As String) As Variant
+    Dim tpl As Worksheet, ta As Range, th As Object, eh As Object, tKeys() As String, tRows() As Long, nT As Long
+    Dim m() As Long, nA As Long, lastE As Long, e As Long, k As Variant, cur As String, d As Long, nxt As Long, i As Long
+    Dim leftOut As String, cut As Long
+    rowShift = 0
+    If mSingle Then Exit Function
+    If Not HasSheet(wb, DATA_TPL) Then Exit Function
+    Set tpl = wb.Worksheets(DATA_TPL)
+    On Error Resume Next
+    Set ta = tpl.Names("M_GSD_OZELLIK").RefersToRange
+    On Error GoTo 0
+    If ta Is Nothing Then Set ta = tpl.Range(area.Address)
+    nA = area.Rows.Count
+    Set th = BlockRows(tpl, ta.Row, ta.Row + nA - 1, ta.Column, ta.Columns.Count, ta.Row - 1)
+    If th.Count = 0 Then Exit Function
+    With src.UsedRange
+        lastE = .Row + .Rows.Count - 1
+    End With
+    Set eh = BlockRows(src, 1, lastE, 1, area.Columns.Count, 0)
+    ' the export's property part ends above '3. Design Load Combination'
+    For Each k In eh.keys
+        If Left$(k, 2) = "3." Then
+            If eh(k) - 1 < lastE Then lastE = eh(k) - 1
+        End If
+    Next k
+    ' template blocks in row order
+    nT = th.Count
+    ReDim tKeys(1 To nT): ReDim tRows(1 To nT)
+    i = 0
+    For Each k In th.keys
+        i = i + 1: tKeys(i) = k: tRows(i) = th(k)
+    Next k
+    ReDim m(1 To nA)
+    cur = ""
+    For e = 1 To lastE
+        For Each k In eh.keys
+            If eh(k) = e Then cur = k
+        Next k
+        If cur = "" Then
+            d = e
+            nxt = nA + 1
+            If nT > 0 Then nxt = tRows(1)
+        ElseIf th.Exists(cur) Then
+            d = th(cur) + (e - eh(cur))
+            nxt = nA + 1
+            For i = 1 To nT
+                If tRows(i) > th(cur) And tRows(i) < nxt Then nxt = tRows(i)
+            Next i
+        Else
+            d = 0
+            If InStr(1, leftOut & "|", "|" & cur & "|") = 0 Then leftOut = leftOut & "|" & cur
+        End If
+        If d >= 1 And d < nxt And d <= nA Then
+            m(d) = e
+        ElseIf d <> 0 Then
+            If RowHasValue(src, e, area.Columns.Count) Then cut = cut + 1
+        End If
+    Next e
+    If eh.Exists("2. Section") And th.Exists("2. Section") Then rowShift = eh("2. Section") - th("2. Section")
+    If Len(leftOut) > 0 Then note = note & "  " & src.Name & ": block(s) not on the data-sheet template, not copied: " & Replace(Mid$(leftOut, 2), "|", ", ") & "." & vbCrLf
+    If cut > 0 Then note = note & "  " & src.Name & ": " & cut & " row(s) longer than the template's block, not copied." & vbCrLf
+    PropMap = m
+End Function
+
+' block headers ('1. Material', a cell starting with the square mark ...) of rows r1..r2, columns c1.., keyed by
+' text (a repeated text gets ' #2' ...), value = row - rowBase
+Private Function BlockRows(ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long, ByVal c1 As Long, ByVal nC As Long, ByVal rowBase As Long) As Object
+    Dim d As Object, v As Variant, r As Long, c As Long, s As String, key As String, n As Long
+    Set d = CreateObject("Scripting.Dictionary")
+    v = ws.Range(ws.Cells(r1, c1), ws.Cells(r2, c1 + nC - 1)).Value
+    For r = 1 To r2 - r1 + 1
+        For c = 1 To nC
+            If VarType(v(r, c)) = vbString Then
+                s = Trim$(v(r, c))
+                If Left$(s, 1) = ChrW(&H25A0) Or s Like "#. *" Then
+                    key = s: n = 1
+                    Do While d.Exists(key)
+                        n = n + 1: key = s & " #" & n
+                    Loop
+                    d(key) = r1 + r - 1 - rowBase
+                    Exit For
+                End If
+            End If
+        Next c
+    Next r
+    Set BlockRows = d
+End Function
+
+Private Function RowHasValue(ws As Worksheet, ByVal r As Long, ByVal nC As Long) As Boolean
+    RowHasValue = (Application.WorksheetFunction.CountA(ws.Range(ws.Cells(r, 1), ws.Cells(r, nC))) > 0)
+End Function
+
+' the picture of the export sheet replaces the picture(s) whose top left cell is in the area; returns it.
+' rowShift: the export's rows lie this many rows below the data sheet's (Property, PropMap)
+Private Function SwapPicture(src As Worksheet, ds As Worksheet, area As Range, ByVal nm As String, ByRef note As String, Optional ByVal capCols As Long = 0, Optional ByVal rowShift As Long = 0) As Object
     Dim sh As Object, pic As Object, i As Long, o As Object, had As Boolean, l As Double, t As Double, w As Double, plc As Long, n As Object, dst As Range
     Dim dist As Long, best As Long, near As Boolean, dc As Long, dr As Long, maxW As Double
     For Each sh In src.Shapes
@@ -373,7 +492,7 @@ Private Function SwapPicture(src As Worksheet, ds As Worksheet, area As Range, B
     ' the place of the export's picture inside the area; of the old pictures of the area the one nearest to it
     ' gives the width, and the place too when it is close (the owner moved it a little); the others are leftovers
     ' of an older layout
-    Set dst = area.Cells(pic.TopLeftCell.Row, pic.TopLeftCell.Column)
+    Set dst = area.Cells(IIf(pic.TopLeftCell.Row - rowShift >= 1, pic.TopLeftCell.Row - rowShift, 1), pic.TopLeftCell.Column)
     best = -1
     For i = ds.Shapes.Count To 1 Step -1
         Set o = ds.Shapes(i)
