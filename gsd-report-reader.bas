@@ -21,7 +21,7 @@ Option Explicit
 '                       block on the template SABLON_MIDAS, the rows of a block past the next template block and
 '                       blocks the template does not have are left out and named in the report (owner: the Rebar
 '                       block stays out); the export is read down to '3. Design Load Combination'; the section
-'                       picture moves with '2. Section'. Without SABLON_MIDAS (single-sheet mode) cell by cell.
+'                       picture moves with '2. Section'. Single-sheet mode has no template: see below.
 '     P-M Curve      -> M_GSD_PM       Z1:AW33
 '     My-Mz Curve    -> M_GSD_MM       AY1:BV29
 '     P-My-Mz Curve  -> M_GSD_ORAN     BX1:CU3839 (the ratio table that Tablo 64 reads; it grows and shrinks)
@@ -45,14 +45,18 @@ Option Explicit
 '  sheet's own ratio formulas read to row 10086). The loads are compared with M_TESIR_BLOK CW26:DE3839 (typed by
 '  the owner until a pile-load reader exists); nothing is written there. No group-sheet figures: the P-M figure
 '  of 2A_KAZIK is an Excel chart of the sheet's cells and follows by itself.
+'  Property in this mode (2026-11-23a, owner: the sheet has the layout of the pier data sheets): the blocks of
+'  the sheet itself are the template (its own headers with the square mark), so the Rebar block stays out and
+'  the load table from row 62 is not touched. A sheet still in the layout before 2026-11 (no such headers) is
+'  copied cell by cell as before; an export of that older layout is refused by a sheet of the new one.
 '  The design-load check reads the export's header row, so both layouts are understood: one row per load
 '  (No, Name, Pu, My, Mz, Vy, Vz, T) and two rows per load (Pu, My, Mz over Vy, Vz, T).
 '  Test entry in this mode: GSD_OKU_RUN <export file>, "", <report file>.
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "gsd-report-reader"
-Private Const SCRIPT_VERSION As String = "2026-11-19a"
-Private Const SCRIPT_CHANGELOG As String = "Section properties placed block by block at the rows of the data-sheet template (an export with an extra material block no longer shifts As, Area and the rest), blocks the template lacks are reported, the section picture follows; Abutment workbook (8'6): the pile GSD export (file picked every run) into MIDAS_CIKTISI_KAZIK, loads compared with the typed force block; the load check understands the one-row-per-load export layout too; new: GSD Excel exports (Property, P-M Curve, My-Mz Curve, P-My-Mz Curve; values and pictures) into the MIDAS_<group> data sheets of the 8'7 workbook, every group or ticked groups, design loads checked against the MIDAS_AYAK rows"
+Private Const SCRIPT_VERSION As String = "2026-11-23a"
+Private Const SCRIPT_CHANGELOG As String = "Abutment workbook: pile section properties placed block by block on a data sheet in the pier-sheet layout (Rebar block left out), an older GSD layout is refused there; Section properties placed block by block at the rows of the data-sheet template (an export with an extra material block no longer shifts As, Area and the rest), blocks the template lacks are reported, the section picture follows; Abutment workbook (8'6): the pile GSD export (file picked every run) into MIDAS_CIKTISI_KAZIK, loads compared with the typed force block; the load check understands the one-row-per-load export layout too; new: GSD Excel exports (Property, P-M Curve, My-Mz Curve, P-My-Mz Curve; values and pictures) into the MIDAS_<group> data sheets of the 8'7 workbook, every group or ticked groups, design loads checked against the MIDAS_AYAK rows"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 86|MIDAS sonu\u00E7lar\u0131|GSD sonu\u00E7lar\u0131|GSD_OKU_AC||GSD'nin Excel'e aktard\u0131\u011F\u0131 raporlar\u0131 (<ayaklar>_Section1.xlsx) grubun MIDAS_<grup> sayfas\u0131na okur: kesit \u00F6zellikleri, P-M ve My-Mz e\u011Frileri, oran tablosu ve resimler; grup sayfas\u0131ndaki iki grafi\u011Fi yeniler. Klas\u00F6r her \u00E7al\u0131\u015Ft\u0131rmada sorulur. Kenar ayak dosyas\u0131nda kaz\u0131k raporu (dosya sorulur) MIDAS_CIKTISI_KAZIK sayfas\u0131na okunur; Gruplar alan\u0131 kullan\u0131lmaz. GSD dosyalar\u0131na bir \u015Fey yazmaz.|grup~Gruplar~c~T\u00FCm\u00FC/Se\u00E7ili gruplar
@@ -386,27 +390,33 @@ Private Function CopyBlock(src As Worksheet, area As Range, ByVal fit As Boolean
 End Function
 
 ' Property rows by block: returns rowMap(1 To area rows) = export row for each row of the area (0 = none), or
-' Empty when there is no template (single-sheet mode: cell by cell as before). rowShift = export row of
+' Empty when there is no template (single-sheet mode on a sheet in the older layout: cell by cell as before). rowShift = export row of
 ' '2. Section' minus its template row (the section picture moves with it).
 Private Function PropMap(wb As Workbook, src As Worksheet, area As Range, ByRef rowShift As Long, ByRef note As String) As Variant
     Dim tpl As Worksheet, ta As Range, th As Object, eh As Object, tKeys() As String, tRows() As Long, nT As Long
     Dim m() As Long, nA As Long, lastE As Long, e As Long, k As Variant, cur As String, d As Long, nxt As Long, i As Long
     Dim leftOut As String, cut As Long
     rowShift = 0
-    If mSingle Then Exit Function
-    If Not HasSheet(wb, DATA_TPL) Then Exit Function
-    Set tpl = wb.Worksheets(DATA_TPL)
-    On Error Resume Next
-    Set ta = tpl.Names("M_GSD_OZELLIK").RefersToRange
-    On Error GoTo 0
-    If ta Is Nothing Then Set ta = tpl.Range(area.Address)
+    If mSingle Then
+        Set tpl = area.Worksheet
+        Set ta = area
+    Else
+        If Not HasSheet(wb, DATA_TPL) Then Exit Function
+        Set tpl = wb.Worksheets(DATA_TPL)
+        On Error Resume Next
+        Set ta = tpl.Names("M_GSD_OZELLIK").RefersToRange
+        On Error GoTo 0
+        If ta Is Nothing Then Set ta = tpl.Range(area.Address)
+    End If
     nA = area.Rows.Count
     Set th = BlockRows(tpl, ta.Row, ta.Row + nA - 1, ta.Column, ta.Columns.Count, ta.Row - 1)
     If th.Count = 0 Then Exit Function
+    If mSingle Then If Not HasMarkBlock(th) Then Exit Function      ' sheet in the layout before 2026-11
     With src.UsedRange
         lastE = .Row + .Rows.Count - 1
     End With
     Set eh = BlockRows(src, 1, lastE, 1, area.Columns.Count, 0)
+    If mSingle Then If Not HasMarkBlock(eh) Then Err.Raise vbObjectError + 24, , "the export has the older GSD layout (no block headers with the square mark), the sheet " & tpl.Name & " the newer one"
     ' the export's property part ends above '3. Design Load Combination'
     For Each k In eh.keys
         If Left$(k, 2) = "3." Then
@@ -450,6 +460,14 @@ Private Function PropMap(wb As Workbook, src As Worksheet, area As Range, ByRef 
     If Len(leftOut) > 0 Then note = note & "  " & src.Name & ": block(s) not on the data-sheet template, not copied: " & Replace(Mid$(leftOut, 2), "|", ", ") & "." & vbCrLf
     If cut > 0 Then note = note & "  " & src.Name & ": " & cut & " row(s) longer than the template's block, not copied." & vbCrLf
     PropMap = m
+End Function
+
+' True when a block header starts with the square mark (GSD layout since 2026-11)
+Private Function HasMarkBlock(d As Object) As Boolean
+    Dim k As Variant
+    For Each k In d.keys
+        If Left$(CStr(k), 1) = ChrW(&H25A0) Then HasMarkBlock = True: Exit Function
+    Next k
 End Function
 
 ' block headers ('1. Material', a cell starting with the square mark ...) of rows r1..r2, columns c1.., keyed by
