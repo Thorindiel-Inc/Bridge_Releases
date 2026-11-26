@@ -17,8 +17,9 @@ Option Explicit
 '    - numbering chain: on every main sheet CG2 / CH2 / CI2 = last table / figure /
 '      page before it (formulas over the previous report sheets); INPUT M2:O2
 '      (G_SON_NUMARA) = the end of the last report sheet
-'    - whole-bridge chapters (WHOLE_SHEETS): one set of sheets, not per span: never copied or
-'      deleted, placed after the span chapters and chained like them; WHOLE_END = its last page cell
+'    - whole-bridge chapter (RTI): one set of sheets, not per span: never copied or deleted, placed
+'      after the span chapters and chained like them; found by the workbook names M_RTI_SAYFA (chapter
+'      sheet) and M_RTI_SON_SAYFA (last page cell, on its landscape sheet), so they may be renamed
 '    - exports: e.g. Phi3 of span n -> G_PHI3 cell n (INPUT row 92); bearing PD / PLL / ky / dL of span n -> G_MESNET_*
 '    - then the ToC and figure lists (RAPOR_LISTE) are rebuilt
 '  Report sheet = name starts with a digit and does not end with _Y / _YATAY
@@ -26,8 +27,8 @@ Option Explicit
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "chapter-manager"
-Private Const SCRIPT_VERSION As String = "2026-11-13a"
-Private Const SCRIPT_CHANGELOG As String = "Each span type exports its bearing loads for the abutments into INPUT rows G_MESNET_PD, G_MESNET_PLL, G_MESNET_KY, G_MESNET_DL (one column per span type, written and cleared with the span sheets); exports found by names, not fixed rows; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
+Private Const SCRIPT_VERSION As String = "2026-11-24a"
+Private Const SCRIPT_CHANGELOG As String = "RTI sheets found by the names M_RTI_SAYFA and M_RTI_SON_SAYFA, so they may be renamed (3-5_RTI, 3-5_RTI_Y); Each span type exports its bearing loads for the abutments into INPUT rows G_MESNET_PD, G_MESNET_PLL, G_MESNET_KY, G_MESNET_DL (one column per span type, written and cleared with the span sheets); exports found by names, not fixed rows; Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; RTI_SONUC stays right after SPECTRUM; inputs and messages through the macro window; One span: headings 3, 4, 5, 6, 7 without a letter; more spans: 3A, 3B ...; chapters 3 and 4 per span with a letter; KILIF sheets stay next to SPECTRUM; several heading cells per chapter, support sheets are not report sheets"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 40|Girdiler|A\u00E7\u0131kl\u0131k b\u00F6l\u00FCmlerini g\u00FCncelle|BOLUMLERI_GUNCELLE||Dolu a\u00E7\u0131kl\u0131k say\u0131s\u0131na g\u00F6re 3. ve 4. b\u00F6l\u00FCm sayfalar\u0131n\u0131 ekler veya siler; sayfa s\u0131ras\u0131n\u0131, numaralar\u0131, ba\u015Fl\u0131klar\u0131 ve listeleri g\u00FCnceller.|
@@ -38,12 +39,13 @@ Private Const MSG_TITLE As String = "BOLUM_YONETICI"
 ' (found by its name, created at B:G of the default row when missing); the span sheet's cell is found by its sheet-level
 ' M_ name (created at the default cell when missing, copied with the sheet set). 4X_KDME exports the abutment seat loads
 ' (owner 2026-11-13): PD and PLL of the bearing check (N), elastomer ky (kN/m), largest bearing movement (mm)
-' WHOLE = the place of the whole-bridge sheets (WHOLE_SHEETS) in the chapter order
+' WHOLE = the place of the whole-bridge sheets (FindWhole) in the chapter order
 ' a one-character code gets a letter per span (3A, 3B ...; 4A, 4B ...), see Tag
 ' order of the entries = order of the chapters in the workbook
 Private Const REGISTRY As String = "3|DYN;DYN_Y|Z6|M_PHI3:Q122>G_PHI3:92,WHOLE,4|KDME;KDME_Y;KILIF|Z6;Z904>5;Z1134>6;Z1318>7|M_MESNET_PD:I1145>G_MESNET_PD:267;M_MESNET_PLL:I1146>G_MESNET_PLL:268;M_MESNET_KY:S1203>G_MESNET_KY:269;M_MESNET_DL:N1217>G_MESNET_DL:270"
-Private Const WHOLE_SHEETS As String = "3B_RTI;3B_RTI_Y"
-Private Const WHOLE_END As String = "3B_RTI>3B_RTI_Y!$AI$95"   ' last print piece of 3B_RTI is a placeholder row: its last page is on the landscape sheet
+' names the whole-bridge sheets had so far, newest first: only for a workbook without the names of FindWhole
+Private Const WHOLE_MAIN As String = "3-5_RTI;3B_RTI"
+Private Const WHOLE_LAND As String = "3-5_RTI_Y;3B_RTI_Y"
 Private Const SPAN_NAME As String = "G_HESAP_ACIKLIK"
 Private Const MAX_SPANS As Long = 6
 Private Const H_IDX As String = "CF2"      ' helper cells on every main chapter sheet
@@ -53,6 +55,7 @@ Private Const H_PAGE As String = "CI2"
 
 Private scripted As Boolean
 Private msgLog As String
+Private wMain As String, wLand As String   ' whole-bridge chapter sheet and its landscape sheet ("" = none), see FindWhole
 
 ' ============================================================================
 Public Sub BOLUMLERI_GUNCELLE()
@@ -75,6 +78,7 @@ Private Sub RunSync(ByVal reportFile As String)
     Application.Calculation = xlCalculationManual
     Set spans = FilledSpans(wb)
     PurgeBrokenNames wb
+    FindWhole wb
     OrderSheets wb                       ' tabs in canonical order before any copy
     If spans.Count = 0 Then Err.Raise vbObjectError + 1, , "No span filled in " & SPAN_NAME & "."
     ok = SyncChapters(wb, spans)
@@ -238,8 +242,8 @@ Private Sub OrderSheets(wb As Workbook)
     Dim w As Variant
     For k = LBound(reg) To UBound(reg)
         If reg(k) = "WHOLE" Then
-            For Each w In Split(WHOLE_SHEETS, ";")
-                If SheetExists(wb, CStr(w)) Then
+            For Each w In Array(wMain, wLand)
+                If w <> "" Then
                     If wb.Worksheets(CStr(w)).Index <> anchor.Index + 1 Then wb.Worksheets(CStr(w)).Move After:=anchor
                     Set anchor = wb.Worksheets(CStr(w))
                 End If
@@ -337,12 +341,12 @@ End Function
 
 ' footer cell of the last print piece: column W, one row above the piece's bottom row
 Private Function LastFooter(ws As Worksheet) As String
-    Dim pa As String, p As Variant, v As Long, bot As Long, e() As String, c() As String
-    e = Split(WHOLE_END, ">")
-    If ws.Name = e(0) Then
-        ' the whole-bridge chapter ends on its landscape sheet: name M_RTI_SON_SAYFA (AI95 of the original layout)
-        c = Split(e(1), "!")
-        LastFooter = "'" & c(0) & "'!" & McAnchor(ws.Parent.Worksheets(c(0)), "M_RTI_SON_SAYFA", c(1)).Address
+    Dim pa As String, p As Variant, v As Long, bot As Long
+    If ws.Name = wMain Then
+        ' the last print piece of the whole-bridge chapter is a placeholder row, its last page is on the landscape
+        ' sheet: name M_RTI_SON_SAYFA (AI95 of the original layout)
+        If wLand = "" Then Err.Raise vbObjectError + 4, , ws.Name & ": its landscape sheet was not found (name M_RTI_SON_SAYFA)."
+        LastFooter = "'" & Replace(wLand, "'", "''") & "'!" & McAnchor(ws.Parent.Worksheets(wLand), "M_RTI_SON_SAYFA", "$AI$95").Address
         Exit Function
     End If
     pa = Replace(ws.PageSetup.PrintArea, ";", ",")
@@ -466,7 +470,7 @@ End Function
 ' chapter code if the sheet is a managed chapter sheet, else ""
 Private Function ManagedCode(ByVal nm As String) As String
     Dim reg As Variant, k As Long, f() As String, sfx() As String, i As Long, j As Long
-    If InStr(";" & WHOLE_SHEETS & ";", ";" & nm & ";") > 0 Then ManagedCode = "WHOLE": Exit Function
+    If nm <> "" And (nm = wMain Or nm = wLand) Then ManagedCode = "WHOLE": Exit Function
     reg = Split(REGISTRY, ",")
     For k = LBound(reg) To UBound(reg)
         If reg(k) = "WHOLE" Then GoTo NextChapter
@@ -477,6 +481,42 @@ Private Function ManagedCode(ByVal nm As String) As String
             Next j
         Next i
 NextChapter:
+    Next k
+End Function
+
+' the whole-bridge sheets: the chapter sheet by the workbook name M_RTI_SAYFA, its landscape sheet by M_RTI_SON_SAYFA
+' (a name follows a sheet the owner renames, 2026-11-24: 3B_RTI -> 3-5_RTI). Without the name: the landscape sheet by
+' its known names, the chapter sheet = landscape name without _Y / _YATAY, else by its known names. M_RTI_SAYFA is
+' created here, M_RTI_SON_SAYFA by LastFooter
+Private Sub FindWhole(wb As Workbook)
+    Dim s As String, ws As Worksheet
+    wMain = "": wLand = ""
+    wLand = SheetOfName(wb, "M_RTI_SON_SAYFA")
+    If wLand = "" Then wLand = FirstSheet(wb, WHOLE_LAND)
+    wMain = SheetOfName(wb, "M_RTI_SAYFA")
+    If wMain = "" And IsCompanionName(wLand) Then
+        s = Left$(wLand, InStrRev(wLand, "_") - 1)
+        If SheetExists(wb, s) Then wMain = s
+    End If
+    If wMain = "" Then wMain = FirstSheet(wb, WHOLE_MAIN)
+    If wMain <> "" Then Set ws = McAnchor(wb.Worksheets(wMain), "M_RTI_SAYFA", "$A$1").Worksheet
+End Sub
+
+' sheet a workbook name points at, "" when there is no such name
+Private Function SheetOfName(wb As Workbook, ByVal nm As String) As String
+    Dim r As Range
+    On Error Resume Next
+    Set r = wb.Names(nm).RefersToRange
+    On Error GoTo 0
+    If r Is Nothing Then Exit Function
+    If r.Worksheet.Parent.Name = wb.Name Then SheetOfName = r.Worksheet.Name
+End Function
+
+' first of the ';' separated sheets that the workbook has, "" when none
+Private Function FirstSheet(wb As Workbook, ByVal known As String) As String
+    Dim k As Variant
+    For Each k In Split(known, ";")
+        If SheetExists(wb, CStr(k)) Then FirstSheet = CStr(k): Exit Function
     Next k
 End Function
 

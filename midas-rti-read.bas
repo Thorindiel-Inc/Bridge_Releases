@@ -7,7 +7,7 @@ Private Declare PtrSafe Function IsWindowVisible Lib "user32" (ByVal h As LongPt
 Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, ByVal n As Long) As Long
 ' ============================================================================
 '  MIDAS_RTI - results of the RTI model (MIDAS_KOPRU, rail-track interaction) into
-'  sheet RTI_SONUC of the main workbook; 3B_RTI K166, K167, J207:J211 read it.
+'  sheet RTI_SONUC of the main workbook; 3-5_RTI K166, K167, J207:J211 read it.
 '
 '  Macro window (MAKROLAR) > MIDAS sonuclari > RTI sonuclari, or MIDAS_RTI_OKU.
 '  Reads the model OPEN in Civil NX through the MAPI, read only: GET db/PJCF, GRUP,
@@ -37,7 +37,7 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 '
 '  Window field 'islem': read + pictures (default), pictures only (no read: the windows and places
 '  come from RTI_SONUC E / F, whose B3 stamp must name the open model), read only. Pictures: 2
-'  model views into 3B_RTI_Y and 5 places for pictures pasted by hand, see PICTURES below; field
+'  model views into 3-5_RTI_Y (the sheet of the name M_RTI_SON_SAYFA) and 5 places for pictures pasted by hand, see PICTURES below; field
 '  'res' = picture width (4000 / 3000 / 2000 px or screen).
 '  MAPI key: read by MIDAS_CORE (name G_MAPI_KEY, then INPUT!T3, then MIDAS_MAPI_KEY, then asked; memory only).
 '  Tests: MIDAS_RTI_RECORD <folder> runs live and saves every answer to the folder;
@@ -46,18 +46,18 @@ Private Declare PtrSafe Function ShowWindow Lib "user32" (ByVal h As LongPtr, By
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-rti-read"
-Private Const SCRIPT_VERSION As String = "2026-11-12c"
-Private Const SCRIPT_CHANGELOG As String = "Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip)"
+Private Const SCRIPT_VERSION As String = "2026-11-24a"
+Private Const SCRIPT_CHANGELOG As String = "The picture sheet is found by the name M_RTI_SON_SAYFA, so it may be renamed (3-5_RTI_Y); Its macro-window row is declared in this module ('@TOOL line), so a changed or new tool needs no PANEL release; Cells read and written found by M_ names (MIDAS_CORE McAnchor), created at the old address when missing; Shared helpers (key, HTTP, JSON, files) are in the module MIDAS_CORE, which UPDATE adds; MAPI key order: G_MAPI_KEY, INPUT!T3, MIDAS_MAPI_KEY, prompt; Model pictures (pages 1 and 2) get a thin black border, as the owner frames them; Rail stress page: each place gets only its short label, on top of the picture in the corner away from the governing element; pictures there are never deleted (pasted by hand or captured earlier), an empty place gets a grey picture to replace; New label for the released 09f code, so UPDATE replaces an earlier 09f draft (that draft still captured the LM71 strip)"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
-'@TOOL 90|MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri 3B_RTI_Y'ye yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu
+'@TOOL 90|MIDAS sonu\u00E7lar\u0131|RTI sonu\u00E7lar\u0131|MIDAS_RTI_OKU||Civil NX'teki RTI modelinden ray gerilmesini ve yer de\u011Fi\u015Ftirmeleri RTI_SONUC'a, resimleri RTI yatay sayfas\u0131na yazar. Sonu\u00E7lar\u0131 de\u011Fi\u015Ftirmez.|islem~\u0130\u015Flem~c~Oku + resimle/Yaln\u0131z resimle/Yaln\u0131z oku;res~\u00C7\u00F6z\u00FCn\u00FCrl\u00FCk (px)~c~4000 px/3000 px/2000 px/Ekran boyutu
 
 Private Const MSG_TITLE As String = "MIDAS_RTI"
 Private Const OUT_SHEET As String = "RTI_SONUC"
 Private Const CHUNK_ROWS As Long = 30000
 Private Const BIG As Double = 1E+300
-' pictures (3B_RTI_Y)
-Private Const FIG_SHEET As String = "3B_RTI_Y"
+' pictures: landscape sheet of the RTI chapter, see FigSheet; the names it had so far, newest first
+Private Const FIG_SHEETS As String = "3-5_RTI_Y;3B_RTI_Y"
 Private Const PAGE_ROWS As String = "29,61,93"      ' caption rows, pages 1-3 (owner removed the displacement page)
 Private Const CAM_H As Double = 30                  ' model pictures: camera as MIDAS_SEKIL
 Private Const CAM_V As Double = 30
@@ -152,7 +152,8 @@ End Function
 Public Function MIDAS_RTI_PLACETEST(ByVal page As Long, ByVal img As String) As String
     Dim ws As Worksheet, fr As Variant, capRow As Long, res As String
     Dim f(1 To 1) As String, lbl(1 To 1) As String, man(1 To 1) As Boolean, rgt(1 To 1) As Boolean
-    Set ws = ThisWorkbook.Worksheets(FIG_SHEET)
+    Set ws = FigSheet()
+    If ws Is Nothing Then MIDAS_RTI_PLACETEST = "no RTI landscape sheet": Exit Function
     capRow = CLng(Split(PAGE_ROWS, ",")(page - 1))
     fr = PageFrame(ws, page, capRow)
     If IsEmpty(fr) Then MIDAS_RTI_PLACETEST = "no picture frame on page " & page: Exit Function
@@ -191,7 +192,7 @@ Private Function RunAll(ByVal ask As Boolean) As String
     ReadStages
     If ask Then
         If UiMsg("RTI results: " & nEl & " rail elements, " & (nN) & " nodes, " & nW & " windows." & vbCrLf & _
-                 "Reading takes several minutes and keeps Civil NX busy." & IIf(mPics, vbCrLf & "Then 2 model pictures go into " & FIG_SHEET & ", and 5 labelled places for the rail stress pictures pasted by hand: Civil NX shows each view.", "") & vbCrLf & "Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
+                 "Reading takes several minutes and keeps Civil NX busy." & IIf(mPics, vbCrLf & "Then 2 model pictures go into " & FigName() & ", and 5 labelled places for the rail stress pictures pasted by hand: Civil NX shows each view.", "") & vbCrLf & "Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then
             RunAll = "Stopped: nothing was written.": Exit Function
         End If
     End If
@@ -847,7 +848,7 @@ Private Function GetKey() As Boolean
 End Function
 
 ' ============================================================================
-'  PICTURES in 3B_RTI_Y (owner 2026-11-09: one macro with the result pull)
+'  PICTURES in 3-5_RTI_Y (owner 2026-11-09: one macro with the result pull)
 '  page 1  model, line view with supports, whole bridge
 '  page 2  model, solid, +-REG_SPANS spans around the axis of the largest dB
 '  page 3  5 places for rail axial stress pictures (Sax, N/mm2) pasted by hand: LM71, the window of
@@ -865,13 +866,31 @@ End Function
 '  the first run the old pictures go only after all the new ones are in; later runs replace only
 '  the macro's own shapes, so pictures pasted by hand stay.
 ' ============================================================================
+' the landscape sheet of the RTI chapter: the sheet of the name M_RTI_SON_SAYFA (BOLUM_YONETICI; it follows a sheet the
+' owner renames, 2026-11-24: 3B_RTI_Y -> 3-5_RTI_Y), without the name by the known names; Nothing when there is none
+Private Function FigSheet() As Worksheet
+    Dim r As Range, k As Variant, ws As Worksheet
+    On Error Resume Next
+    Set r = ThisWorkbook.Names("M_RTI_SON_SAYFA").RefersToRange
+    If Not r Is Nothing Then Set FigSheet = r.Worksheet: Exit Function
+    For Each k In Split(FIG_SHEETS, ";")
+        Set ws = ThisWorkbook.Worksheets(CStr(k))
+        If Not ws Is Nothing Then Set FigSheet = ws: Exit Function
+    Next k
+End Function
+
+Private Function FigName() As String
+    Dim ws As Worksheet
+    Set ws = FigSheet()
+    If ws Is Nothing Then FigName = "the RTI landscape sheet" Else FigName = ws.Name
+End Function
+
 Private Function Pictures() As String
     Dim ws As Worksheet, rows As Variant, p As Long, res As String, rep As String, nOk As Long
     Dim uOld As String, uSet As Boolean, folder As String
-    On Error Resume Next
-    Set ws = ThisWorkbook.Worksheets(FIG_SHEET)
     On Error GoTo Fail
-    If ws Is Nothing Then Pictures = "  Pictures: no sheet " & FIG_SHEET & " in this workbook, none taken.": Exit Function
+    Set ws = FigSheet()
+    If ws Is Nothing Then Pictures = "  Pictures: no RTI landscape sheet (name M_RTI_SON_SAYFA, or " & Replace(FIG_SHEETS, ";", " / ") & ") in this workbook, none taken.": Exit Function
     folder = Environ$("TEMP") & "\Bridge_RTI_Y"
     If mPlay = "" Then
         If Len(Dir(folder, vbDirectory)) = 0 Then MkDir folder
@@ -881,7 +900,7 @@ Private Function Pictures() As String
     rows = Split(PAGE_ROWS, ",")
     For p = 1 To 3
         res = PicturePage(ws, p, CLng(rows(p - 1)), folder)
-        If res = "" Then nOk = nOk + 1 Else rep = rep & vbCrLf & "  ! " & FIG_SHEET & " page " & p & ": " & res
+        If res = "" Then nOk = nOk + 1 Else rep = rep & vbCrLf & "  ! " & ws.Name & " page " & p & ": " & res
     Next p
 Done:
     On Error Resume Next
@@ -889,7 +908,7 @@ Done:
     ActiveAll
     If mPlay = "" Then MaximizeCivil
     If mPlay <> "" Then WriteUtf8 mPlay & "\picture_plan.txt", mPlanLog
-    Pictures = "  Pictures in " & FIG_SHEET & ": " & nOk & " of 3 pages " & IIf(mPlay = "", "replaced", "planned (dry run, list in picture_plan.txt)") & rep
+    Pictures = "  Pictures in " & ws.Name & ": " & nOk & " of 3 pages " & IIf(mPlay = "", "replaced", "planned (dry run, list in picture_plan.txt)") & rep
     Exit Function
 Fail:
     rep = rep & vbCrLf & "  ! STOPPED: " & Err.Description
@@ -1636,7 +1655,7 @@ Private Function PicturesOnly(ByVal ask As Boolean, ByVal pj As String) As Strin
         If UiMsg(msg & vbCrLf & vbCrLf & "Take the pictures with these windows anyway?", vbYesNo + vbExclamation + vbDefaultButton2, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
     End If
     If ask Then
-        If UiMsg("Pictures only: 2 model pictures and 5 places for the rail stress pictures go into " & FIG_SHEET & ", windows and places from " & OUT_SHEET & " (" & gTenWin & ", " & gCmpWin & ", " & gDbWin & ")." & vbCrLf & _
+        If UiMsg("Pictures only: 2 model pictures and 5 places for the rail stress pictures go into " & FigName() & ", windows and places from " & OUT_SHEET & " (" & gTenWin & ", " & gCmpWin & ", " & gDbWin & ")." & vbCrLf & _
                  "Civil NX shows each view. Continue?", vbYesNo + vbQuestion, MSG_TITLE) <> vbYes Then PicturesOnly = "Stopped: nothing was captured.": Exit Function
     End If
     Set mDeK = DeckEnds()

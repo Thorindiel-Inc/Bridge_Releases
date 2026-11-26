@@ -21,7 +21,8 @@ Option Explicit
 '  (a plain (CB) answers nothing, measured 2026-11-16), Beam Force table at the head end.
 ' Separate models (owner 2026-11-19, MIDAS_KENARAYAK model gate Statik / Deprem): only the envelopes the open
 ' model has are read (at least one); the columns and raw rows of the others are kept when the pile list
-' (elements in order) is the one already in KAZIK_UC, else they are emptied; the stamp names what was read.
+' (elements in order) is the one already in KAZIK_UC, else they are emptied; the stamp names what was read and, for
+' each kept envelope, the read it came from: <read> [envelopes], then per source: <envelopes> kept from: <read> [envelopes].
 '  Sign (owner 2026-11-17): MIDAS max = tension side, min = compression side; report compression +:
 '     Min = -Axial(ENV max), Mak = -Axial(ENV min), for Servis (ENV_SER), Dayanim (ENV_STR), Deprem (ENV_DEP).
 '  KAZIK_UC (names, created at the defaults when missing):
@@ -55,12 +56,13 @@ Option Explicit
 '  list] (piles and envelopes of the open model; nothing is read from the result tables or written),
 '  MIDAS_KAZIK_PLANYAZ <report file> [, 1 / 2 / 3, list] (the plan into a file), MIDAS_KAZIK_GSD_RUN and
 '  MIDAS_KAZIK_GSD_PLANYAZ <report file> [, 1 / 2 / 3, list] (the same for the GSD block), MIDAS_KAZIK_TEST_YAZ n,
-'  <report file> (n made-up piles into KAZIK_UC without a model, then the pages; for the growth tests).
+'  <report file> (n made-up piles into KAZIK_UC without a model, then the pages; for the growth tests) [, envelopes as
+'  ENV_SER|ENV_STR, stamp text, force added to every axial] (a partial read; for the stamp tests).
 ' ============================================================================
 
 Private Const SCRIPT_ID As String = "midas-pile-loads"
-Private Const SCRIPT_VERSION As String = "2026-11-23c"
-Private Const SCRIPT_CHANGELOG As String = "Foundation workbook (8'8) too: KAZIK_UC with 2_KAZIK and GEO_KAZIK; New tool: pile forces for GSD (every combination of the envelopes, chosen elements) into the load block of MIDAS_CIKTISI_KAZIK; Choice of the piles: group KAZIK (default), group KAZIK + added elements, or only chosen elements (typed as in Civil NX, or the elements selected there); Reads the envelopes the open model has (static or seismic abutment model of the model gate) and keeps the others from the last read when the piles are the same; New: pile-head envelope loads (ENV_SER / ENV_STR / ENV_DEP, max and min) of the open abutment model into KAZIK_UC; the 2A_KAZIK per-pile table, section 8.6.7 and GEO_KAZIK grow with the pile count, page numbers and lists follow"
+Private Const SCRIPT_VERSION As String = "2026-11-24a"
+Private Const SCRIPT_CHANGELOG As String = "The stamp names, for each kept envelope, the read it came from (a second read of the same model named itself); Foundation workbook (8'8) too: KAZIK_UC with 2_KAZIK and GEO_KAZIK; New tool: pile forces for GSD (every combination of the envelopes, chosen elements) into the load block of MIDAS_CIKTISI_KAZIK; Choice of the piles: group KAZIK (default), group KAZIK + added elements, or only chosen elements (typed as in Civil NX, or the elements selected there); Reads the envelopes the open model has (static or seismic abutment model of the model gate) and keeps the others from the last read when the piles are the same; New: pile-head envelope loads (ENV_SER / ENV_STR / ENV_DEP, max and min) of the open abutment model into KAZIK_UC; the 2A_KAZIK per-pile table, section 8.6.7 and GEO_KAZIK grow with the pile count, page numbers and lists follow"
 Private Const SCRIPT_NEEDS As String = "midas-core"   ' UPDATE adds this module when the workbook lacks it
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 84|MIDAS sonu\u00E7lar\u0131|Kaz\u0131k u\u00E7 y\u00FCkleri|MIDAS_KAZIK_OKU||Civil NX'te a\u00E7\u0131k kenar ayak modelinden kaz\u0131k ba\u015Flar\u0131n\u0131n zarf y\u00FCklerini (ENV_SER / ENV_STR / ENV_DEP, en b\u00FCy\u00FCk ve en k\u00FC\u00E7\u00FCk) KAZIK_UC sayfas\u0131na okur; rapor tablolar\u0131 (2A_KAZIK, 8.6.7, GEO_KAZIK) kaz\u0131k say\u0131s\u0131na g\u00F6re b\u00FCy\u00FCr. Kaz\u0131klar alan\u0131: KAZIK grubu, gruba ek elemanlar ya da yaln\u0131z se\u00E7ilen elemanlar; liste, Civil NX'te se\u00E7ili elemanlarla dolu sorulur. Modele bir \u015Fey yazmaz.|kazik~Kaz\u0131klar~c~KAZIK grubu/KAZIK grubu + ek/Yaln\u0131z se\u00E7ilen
@@ -85,6 +87,9 @@ Private Const PER2 As Long = 45            ' piles per page, 8.6.7 (3 blocks of 
 Private Const GEO_MIN As Long = 35         ' rows of the GEO_KAZIK table at least
 Private Const COL_W As Long = 23           ' W: page number, row top + 43
 Private Const TYPE_NAMES As String = "KA_TEMEL_TIPI|T_TEMEL_TIPI"
+Private Const STAMP_SEP As String = " || "                ' between the parts of the stamp
+Private Const STAMP_KEPT As String = " kept from: "
+Private Const STAMP_NONE As String = "an earlier read (not recorded)"
 
 Private mScripted As Boolean
 Private mLog As String
@@ -112,7 +117,7 @@ Public Sub MIDAS_KAZIK_PLANYAZ(ByVal reportFile As String, Optional ByVal pileMo
 End Sub
 
 ' n made-up piles (elements 14000.., 4 per row, 3 m spacing) into KAZIK_UC, then the pages; for tests
-Public Sub MIDAS_KAZIK_TEST_YAZ(ByVal n As Long, ByVal reportFile As String)
+Public Sub MIDAS_KAZIK_TEST_YAZ(ByVal n As Long, ByVal reportFile As String, Optional ByVal envUse As String = "", Optional ByVal tag As String = "", Optional ByVal addP As Double = 0)
     Dim heads As Collection, res As Object, i As Long, e As Long, s As String, env As Variant, j As Long
     On Error GoTo Fail
     mScripted = True: mLog = ""
@@ -125,11 +130,12 @@ Public Sub MIDAS_KAZIK_TEST_YAZ(ByVal n As Long, ByVal reportFile As String)
         j = 0
         For Each env In Split(ENV_LIST, "|")
             j = j + 1
-            res(e & "|" & env & "|max") = Array(-(j * 1000 + i), 1, 2, 3, 4, 5, "I[" & e & "]")
-            res(e & "|" & env & "|min") = Array(-(j * 1000 + 500 + i), 1, 2, 3, 4, 5, "I[" & e & "]")
+            res(e & "|" & env & "|max") = Array(-(j * 1000 + i + addP), 1, 2, 3, 4, 5, "I[" & e & "]")
+            res(e & "|" & env & "|min") = Array(-(j * 1000 + 500 + i + addP), 1, 2, 3, 4, 5, "I[" & e & "]")
         Next env
     Next i
-    s = WriteUc(ThisWorkbook, heads, res, "TEST " & n & " piles | " & Format$(Now, "yyyy-mm-dd hh:nn"), "test (MIDAS_KAZIK_TEST_YAZ)")
+    If tag = "" Then tag = "TEST " & n & " piles | " & Format$(Now, "yyyy-mm-dd hh:nn")
+    s = WriteUc(ThisWorkbook, heads, res, tag, "test (MIDAS_KAZIK_TEST_YAZ)", envUse)
     s = s & PagesRefresh(ThisWorkbook)
     WriteText reportFile, "Done. " & s & mLog
     Exit Sub
@@ -588,6 +594,7 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
     Dim uc As Worksheet, tbl As Range, raw As Range, n As Long, out() As Variant, rw() As Variant, h As Variant, i As Long, r As Long
     Dim env As Variant, side As Variant, v As Variant, c As Long, xs As Object, ys As Object, j As Long
     Dim use As Object, oldT As Variant, oldR As Variant, same As Boolean, kept As String, emptied As String, prev As String, note As String
+    Dim srcs As Object, never As String, e As Long, k As Variant
     Set uc = SheetOf(wb, SH_UC)
     If uc Is Nothing Then Err.Raise vbObjectError + 11, , "This workbook has no sheet " & SH_UC & "."
     CheckUcLayout uc
@@ -607,7 +614,6 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
         oldR = raw.Resize(6 * n).Value
         same = UcSame(uc, heads)
         prev = CellTxt(McAnchor(uc, "M_KAZIK_DAMGA", "B2").Value)
-        If InStr(prev, " || ") > 0 Then prev = Left$(prev, InStr(prev, " || ") - 1)
     End If
     ReDim out(1 To n, 1 To 13)
     ReDim rw(1 To 6 * n, 1 To 9)
@@ -640,14 +646,27 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
     tbl.Resize(n).Value = out
     raw.Resize(6 * n).Value = rw
     If use.Count < 3 Then
+        Set srcs = CreateObject("Scripting.Dictionary")
         For Each env In Split(ENV_LIST, "|")
+            e = e + 1
             If Not use.Exists(CStr(env)) Then
-                If same Then kept = kept & IIf(kept = "", "", ", ") & env Else emptied = emptied & IIf(emptied = "", "", ", ") & env
+                If Not same Then
+                    emptied = emptied & IIf(emptied = "", "", ", ") & env
+                ElseIf CellTxt(oldT(1, 6 + 2 * e)) = "" Then      ' emptied by an earlier read: nothing is kept
+                    never = never & IIf(never = "", "", ", ") & env
+                Else
+                    kept = kept & IIf(kept = "", "", ", ") & env
+                    k = StampSource(prev, CStr(env))
+                    srcs(k) = srcs(k) & IIf(srcs(k) = "", "", ", ") & env
+                End If
             End If
         Next env
         stamp = stamp & " [" & Replace(IIf(envUse = "", ENV_LIST, envUse), "|", ", ") & "]"
-        If kept <> "" Then stamp = stamp & " || " & kept & " kept from: " & prev
+        For Each k In srcs.keys
+            stamp = stamp & STAMP_SEP & srcs(k) & STAMP_KEPT & k
+        Next k
         If kept <> "" Then note = note & "Kept from the last read (same piles): " & kept & "." & vbCrLf
+        If never <> "" Then note = note & "Still empty (not in this model): " & never & "." & vbCrLf
         If emptied <> "" Then note = note & "Emptied (not in this model, and the piles differ from the last read): " & emptied & "." & vbCrLf
     End If
     With McAnchor(uc, "M_KAZIK_DAMGA", "B2")
@@ -664,6 +683,39 @@ Private Function WriteUc(wb As Workbook, heads As Collection, res As Object, ByV
     End With
     Application.Calculate
     WriteUc = SH_UC & ": " & n & " piles, " & 6 * n & " raw rows." & vbCrLf & note
+End Function
+
+' the read that gave the columns of env, from the stamp text: "<read> [envs] || <envs> kept from: <read> [envs] ...".
+' Up to 2026-11-23c the second read of a model named itself as the source: such a part (its own list has no env) is
+' not believed, the source is then STAMP_NONE
+Private Function StampSource(ByVal prev As String, ByVal env As String) As String
+    Dim seg As Variant, i As Long, p As Long, s As String
+    StampSource = STAMP_NONE
+    seg = Split(prev, STAMP_SEP)
+    For i = 0 To UBound(seg)
+        s = Trim$(CStr(seg(i)))
+        If i > 0 Then
+            p = InStr(s, STAMP_KEPT)
+            If p = 0 Then
+                s = ""
+            ElseIf InStr(", " & Left$(s, p - 1) & ", ", ", " & env & ", ") = 0 Then
+                s = ""
+            Else
+                s = Mid$(s, p + Len(STAMP_KEPT))
+            End If
+        End If
+        If StampHas(s, env) Then StampSource = s: Exit Function
+    Next i
+End Function
+
+' True when the read text s covers env: its closing list [ENV_..] names it, or it has no list (= all envelopes)
+Private Function StampHas(ByVal s As String, ByVal env As String) As Boolean
+    Dim p As Long, t As String
+    If Len(s) = 0 Then Exit Function
+    p = InStrRev(s, " [")
+    If Right$(s, 1) = "]" And p > 0 Then t = Mid$(s, p + 2, Len(s) - p - 2)
+    If Left$(t, 4) <> "ENV_" Then StampHas = True: Exit Function
+    StampHas = InStr(", " & t & ", ", ", " & env & ", ") > 0
 End Function
 
 ' distinct coordinates (0.01 m) of item field f -> rank 1, 2 ... from the smallest
