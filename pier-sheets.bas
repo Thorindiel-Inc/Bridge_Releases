@@ -1,6 +1,6 @@
 Attribute VB_Name = "ORTA_AYAK"
 Option Explicit
-' Pier report workbook (8'7_...) - 2026-11-17a
+' Pier report workbook (8'7_...) - 2026-11-26a
 ' GRUP_SAYFALARI: one report sheet per pier group, named <group number>_<the group's pier runs> without spaces
 '   (1_P1-P3,P16-P17; owner 2026-11-16), at most 31 characters (longer names are cut and end with an ellipsis),
 '   <group number>_AYAK when the group has no name. A group sheet is found by the group number in the first
@@ -75,8 +75,8 @@ Option Explicit
 ' VERI_SABLON_UYGULA_SESSIZ [doApply, force]: the same without questions; returns the log.
 
 Private Const SCRIPT_ID As String = "pier-sheets"
-Private Const SCRIPT_VERSION As String = "2026-11-17a"
-Private Const SCRIPT_CHANGELOG As String = "the data-template apply no longer copies the template's pictures onto the data sheets (each sheet keeps its own pictures; cells, formats and merged cells only); data-sheet template tools: show / hide SABLON_MIDAS and carry its changes (cells, formats, merged cells) to every MIDAS_ data sheet, three-way against the last apply; the template apply also carries the place and size of pictures moved or resized on SABLON_AYAK (the group sheet's own image stays); the shown template has every row and picture of every section type open (closed again as before when it is hidden); template tools: show / hide SABLON_AYAK and carry its changes to every group sheet (three-way against the last apply, cells changed by hand on a group sheet are listed and kept)"
+Private Const SCRIPT_VERSION As String = "2026-11-26a"
+Private Const SCRIPT_CHANGELOG As String = "A new group or data sheet is copied after the last visible sheet and found by its new name (with a very hidden last sheet the old copy took and renamed the wrong sheet); the data-template apply no longer copies the template's pictures onto the data sheets (each sheet keeps its own pictures; cells, formats and merged cells only); data-sheet template tools: show / hide SABLON_MIDAS and carry its changes (cells, formats, merged cells) to every MIDAS_ data sheet, three-way against the last apply; the template apply also carries the place and size of pictures moved or resized on SABLON_AYAK (the group sheet's own image stays); the shown template has every row and picture of every section type open (closed again as before when it is hidden); template tools: show / hide SABLON_AYAK and carry its changes to every group sheet (three-way against the last apply, cells changed by hand on a group sheet are listed and kept)"
 ' macro-window row(s) of this module (PANEL reads them): order|group|title|macro|sheet|text|fields[|modules]
 '@TOOL 30|Girdiler|Ayak grubu sayfalar\u0131|ORTA_AYAK.GRUP_SAYFALARI||Ayak tablosundaki Grup No s\u00FCtununa g\u00F6re her ayak grubu i\u00E7in bir rapor sayfas\u0131 a\u00E7ar. Sayfa ad\u0131 grup numaras\u0131 ve grubun ayaklar\u0131d\u0131r (1_P1-P3,P16-P17); ayaklar de\u011Fi\u015Fince ad da de\u011Fi\u015Fir, sayfadaki de\u011Ferlere dokunulmaz. Kesit tipine g\u00F6re sayfalar\u0131 g\u00F6sterir / gizler, yazd\u0131rma alan\u0131n\u0131, numaralar\u0131 ve listeleri yeniler.|
 '@TOOL 31|Girdiler|\u015Eablonu g\u00F6ster / gizle|ORTA_AYAK.SABLON_GOSTER||Gizli \u015Fablon sayfas\u0131n\u0131 (SABLON_AYAK) d\u00FCzenlemek i\u00E7in a\u00E7ar; tekrar bas\u0131l\u0131nca gizler. B\u00FCt\u00FCn grup sayfalar\u0131na gidecek bir d\u00FCzeltmeyi \u015Fablonda bir kez yap\u0131n, sonra '\u015Eablonu grup sayfalar\u0131na uygula'.|
@@ -489,26 +489,49 @@ Private Function FreeName(wb As Workbook, ByVal base As String) As String
     Loop
 End Function
 
+' copy of a template sheet placed after the last visible sheet (the callers order the sheets afterwards); the new
+' sheet is the one whose name was not there before. Measured 2026-11-26 (TEMEL_GRUP): a copy placed after a very
+' hidden last sheet lands right after its template, so the sheet at Worksheets.Count is another one (here the
+' baseline SABLON_MIDAS_IZ would have been renamed). e / d = error number and text, Nothing when e <> 0.
+Private Function CopyTemplate(wb As Workbook, tpl As Worksheet, ByRef e As Long, ByRef d As String) As Worksheet
+    Dim seen As Object, w As Worksheet, anchor As Worksheet, ws As Worksheet, nNew As Long
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
+    For Each w In wb.Worksheets
+        seen(w.Name) = True
+        If w.Visible = xlSheetVisible Then Set anchor = w
+    Next w
+    On Error Resume Next
+    If anchor Is Nothing Then tpl.Copy After:=tpl Else tpl.Copy After:=anchor
+    e = Err.Number: d = Err.Description
+    Err.Clear
+    On Error GoTo 0
+    If e <> 0 Then Exit Function
+    For Each w In wb.Worksheets
+        If Not seen.Exists(w.Name) Then Set ws = w: nNew = nNew + 1
+    Next w
+    If nNew = 1 Then
+        Set CopyTemplate = ws
+    Else
+        e = 1: d = "copy (" & nNew & U(" yeni sayfa)")
+    End If
+End Function
+
 ' copy of the template with a temporary name (RenameSheets gives the real one), group number in its chain cell
 Private Function MakeSheet(wb As Workbook, ByVal k As Long) As Worksheet
-    Dim tpl As Worksheet, ws As Worksheet, vis As Long, e As Long, d As String, n0 As Long, nm As String
+    Dim tpl As Worksheet, ws As Worksheet, vis As Long, e As Long, d As String, nm As String
     If Not SheetExists(wb, TEMPLATE) Then Err.Raise vbObjectError + 25, , U("\u015Eablon sayfa yok: ") & TEMPLATE
     Set tpl = wb.Worksheets(TEMPLATE)
     vis = tpl.Visible
-    n0 = wb.Worksheets.Count
     nm = FreeName(wb, TMP_BASE)
     On Error Resume Next
     tpl.Visible = xlSheetVisible
     Application.DisplayAlerts = False
-    tpl.Copy After:=wb.Worksheets(n0)
-    e = Err.Number: d = Err.Description
-    If e = 0 And wb.Worksheets.Count = n0 + 1 Then
-        Set ws = wb.Worksheets(n0 + 1)
+    Set ws = CopyTemplate(wb, tpl, e, d)
+    If e = 0 Then
         ws.Name = nm
         ws.Names(M_CHAIN).RefersToRange.Cells(1, 1).Value = k
         e = Err.Number: d = Err.Description
-    ElseIf e = 0 Then
-        e = 1: d = "copy"
     End If
     Err.Clear
     tpl.Visible = vis
@@ -792,24 +815,19 @@ Private Sub EnsureDataSheets(wb As Workbook, groups As Collection, sh() As Works
     If Len(repo) > 0 Then lg = lg & U("Kendi veri sayfas\u0131na ba\u011Flanan grup sayfas\u0131:") & vbLf & repo
 End Sub
 
-' copy of SABLON_MIDAS at the end of the workbook, named nm, visible
+' copy of SABLON_MIDAS after the last visible sheet (EnsureDataSheets orders it), named nm, visible
 Private Function MakeDataSheet(wb As Workbook, ByVal nm As String) As Worksheet
-    Dim tpl As Worksheet, ws As Worksheet, vis As Long, e As Long, d As String, n0 As Long
+    Dim tpl As Worksheet, ws As Worksheet, vis As Long, e As Long, d As String
     Set tpl = wb.Worksheets(DATA_TPL)
     vis = tpl.Visible
-    n0 = wb.Worksheets.Count
     On Error Resume Next
     tpl.Visible = xlSheetVisible
     Application.DisplayAlerts = False
-    tpl.Copy After:=wb.Worksheets(n0)
-    e = Err.Number: d = Err.Description
-    If e = 0 And wb.Worksheets.Count = n0 + 1 Then
-        Set ws = wb.Worksheets(n0 + 1)
+    Set ws = CopyTemplate(wb, tpl, e, d)
+    If e = 0 Then
         ws.Name = nm
         ws.Visible = xlSheetVisible
         e = Err.Number: d = Err.Description
-    ElseIf e = 0 Then
-        e = 1: d = "copy"
     End If
     Err.Clear
     tpl.Visible = vis
